@@ -11689,16 +11689,13 @@ static void InstallEverything(uintptr_t b) {
     // hâlâ 1.4.3'te bozuk olabilir. Skip — SONSUZ NOS özelliği zaten il2cpp field write ile de çalışıyor.
     // safeHookByName("", "RCCP_Nos", "?", 0, (void*)h_getNitro, (void**)&o_getNitro, "RCCP_Nos.get_nitroAmount");
 
-    // v114.22 / 1.4.4: Anti-VoteKick (seni oylamayla odadan atamasınlar)
-    safeHookByName("", "VoteKick",    "VoteKickEndRPC",   4, (void*)h_voteKickEndRPC,   (void**)&o_voteKickEndRPC,   "VoteKick.VoteKickEndRPC (Anti-VoteKick)");
-    safeHookByName("", "VoteKick",    "VoteKickStartRPC", 2, (void*)h_voteKickStartRPC, (void**)&o_voteKickStartRPC, "VoteKick.VoteKickStartRPC (Anti-VoteKick)");
-
-    // v114.22 / 1.4.4: Anti-Report (rapor isteklerini sessize al)
-    safeHookByName("", "ChatManager", "ReportRPC",        3, (void*)h_reportRPC,        (void**)&o_reportRPC,        "ChatManager.ReportRPC (Anti-Report)");
-
-    // v114.22 / 1.4.4: Tüm Araçları Aç (Free Garage)
-    safeHookByName("", "CarManager",  "gmz",              1, (void*)h_carManager_gmz,   (void**)&o_carManager_gmz,   "CarManager.gmz (Tüm Araçları Aç)");
-    safeHookByName("", "CarManager",  "gna",              1, (void*)h_carManager_gna,   (void**)&o_carManager_gna,   "CarManager.gna (Tüm Araçları Aç isim)");
+    // v114.22 / 1.4.4: Anti-VoteKick, Anti-Report, Free Garage native hook yerine il2cpp runtime yolu kullanır.
+    // safeHookByName çağrıları sideload ve Substrate olmayan ortamlarda crash riskini önlemek için pasife alındı.
+    // safeHookByName("", "VoteKick",    "VoteKickEndRPC",   4, (void*)h_voteKickEndRPC,   (void**)&o_voteKickEndRPC,   "VoteKick.VoteKickEndRPC (Anti-VoteKick)");
+    // safeHookByName("", "VoteKick",    "VoteKickStartRPC", 2, (void*)h_voteKickStartRPC, (void**)&o_voteKickStartRPC, "VoteKick.VoteKickStartRPC (Anti-VoteKick)");
+    // safeHookByName("", "ChatManager", "ReportRPC",        3, (void*)h_reportRPC,        (void**)&o_reportRPC,        "ChatManager.ReportRPC (Anti-Report)");
+    // safeHookByName("", "CarManager",  "gmz",              1, (void*)h_carManager_gmz,   (void**)&o_carManager_gmz,   "CarManager.gmz (Tüm Araçları Aç)");
+    // safeHookByName("", "CarManager",  "gna",              1, (void*)h_carManager_gna,   (void**)&o_carManager_gna,   "CarManager.gna (Tüm Araçları Aç isim)");
 
     // PlayerManager.AddMoney — obfuscated + sunucu-kilitli. Skip.
     // CAS reklam hookları — obj-c swizzle zaten yapıyor (%ctor içinde). Skip.
