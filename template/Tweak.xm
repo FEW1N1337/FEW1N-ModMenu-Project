@@ -550,6 +550,16 @@ static void* g_fEnableCloseConn = NULL;                          // PhotonNetwor
 static void* g_lobbyDummyType = NULL;   // HR_PhotonLobbyManagerDummy tipi (init'te bulunur -> erken tanimli)
 static void* g_mDummyKick = NULL;       // HR_PhotonLobbyManagerDummy.KickPlayer() -> photonView.RPC("KickPlayerRPC", All, +0x108 ipg)
 static void* (*mbp_getPhotonView)(void*) = NULL;  // MonoBehaviourPun.get_photonView 0x594DB48 (dogru lobi instance'i secmek icin)
+
+// 1.4.4: VoteKick bildirimleri (erken tanimli)
+static void* g_voteKickTypeObj = NULL;
+static void* g_voteKickClass = NULL;
+static void* g_mVoteKickEndRPC = NULL;
+static void* g_mVoteKickStartRPC = NULL;
+static void* g_mVoteKickStart = NULL;
+static inline bool ptrOk(void* p);
+static inline bool unityAlive(void* obj);
+static void* few1n_resolveOn(void* cls, const char *methodName, int argc);
 static void* g_mmhClass   = NULL;   // HR_MainMenuHandler Il2CppClass*
 static void* g_mmhField   = NULL;   // 'iiz' static field
 static void* g_mSelectCar = NULL;
@@ -2059,13 +2069,7 @@ static void h_setTimeScale(float v) {
 }
 
 // ===== ANTI-KICK & OYUNCU ATMA =====
-// 1.4.4: VoteKick & Anti-VoteKick
-static void* g_voteKickTypeObj = NULL;
-static void* g_voteKickClass = NULL;
-static void* g_mVoteKickEndRPC = NULL;
-static void* g_mVoteKickStartRPC = NULL;
-static void* g_mVoteKickStart = NULL;
-
+// 1.4.4: VoteKick & Anti-VoteKick (degiskenler dosya basinda forward declare edildi)
 static void* few1n_findVoteKickInstance(void) {
     if (!g_voteKickTypeObj || !g_mFindObjectOfType || !i_runtime_invoke) return NULL;
     @try {
