@@ -163,7 +163,6 @@ static int  g_colorIdx = 0;              // donen renk indeksi
 // ==== ACCORDION MENU (katlanir bolumler) ====
 static int  g_secBuildIdx = -1;          // build sirasinda mevcut bolum sayaci
 static bool g_secOpen[24] = {0};         // her bolum acik mi (basliga basinca degisir)
-static bool g_sectionsInitialized = false; // menu ilk acildiginda bolum secimini yap
 // ==== HACKER/PRO MODE ====
 static int  nameTrickMode = 0;            // 0=kapali 1=admin 2=mod 3=dev 4=hacker 5=matrix 6=glitch 7=binary
 static bool isMatrixChatEnabled = false;  // chat mesajlarini matrix stiline cevir
@@ -4311,7 +4310,7 @@ static UIViewController* few1n_topVC(void) {
 
 - (void)build {
     UIWindow *w = getKeyWindow();
-    if (!w) {
+    if (!w || w.bounds.size.width < 100 || w.bounds.size.height < 100) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             if (!self.panel) [self build];
         });
@@ -4391,7 +4390,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.30  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.31  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -4698,16 +4697,9 @@ static UIViewController* few1n_topVC(void) {
 
     self.contentView.frame = CGRectMake(0,0,pw,y);
     self.scrollView.contentSize = CGSizeMake(pw,y);
-    if (!g_sectionsInitialized) {
-        for (int i = 0; i < 24; i++) g_secOpen[i] = false;
-        g_secOpen[2] = true; // 🏎️ ARAC varsayilan acik (Free Garage hemen gorunsun)
-        g_secOpen[3] = true; // 💬 CHAT varsayilan acik (Renkli Mesaj hemen gorunsun)
-        g_secOpen[6] = true; // 🔑 ODA varsayilan acik (Mass Kick & VoteKick hemen gorunsun)
-        g_sectionsInitialized = true;
-    }
+    for (int i = 0; i < 24; i++) g_secOpen[i] = false;  // TUM BOLUMLER VARSAYILAN KAPALI (v114.25-8 gibi kesin stabil)
     [self reflowMenu];     // ACCORDION: bolumleri katla/ac
     [w addSubview:self.panel];
-    [self refreshUI];
 
     if (tickTimer) { [tickTimer invalidate]; tickTimer = nil; }
     tickTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self selector:@selector(tick) userInfo:nil repeats:YES];
