@@ -4042,7 +4042,7 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)editGreet;
 - (void)joinRoomByName;
 - (void)pickRoomsServerHide;
-- (void)present:(UIAlertController*)ac;
+- (void)present:(UIViewController*)ac;
 - (void)askAiDirect;
 // v114.24: Yeni troll saldiri butonlari
 - (void)targetSkyLaunch;
@@ -11476,7 +11476,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
     if (self.logOverlay) { [self.logOverlay removeFromSuperview]; self.logOverlay = nil; }
 }
 
-- (void)present:(UIAlertController*)ac {
+- (void)present:(UIViewController*)ac {
     if (!ac) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
