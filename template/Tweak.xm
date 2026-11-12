@@ -4458,12 +4458,12 @@ static UIViewController* few1n_topVC(void) {
     y += 22;
 
     y = [self header:@"🔥  1.4.4 YENİ EKLENEN ÖZEL HİLELER" atY:y];
-    y = [self toggle:@"🏎️  TÜM ARAÇLAR AÇIK (Free Garage)" sub:@"Garajdaki tüm kilitli arabaları anında bedelsiz açar" key:@"unlockcars" atY:y action:@selector(tapUnlockCars)];
     y = [self actionRow:@"🗳️  VOTE KICK (Oylama Başlat / Oyuncu Seç)" color:C_RED atY:y action:@selector(normalVoteKickPick)];
     y = [self actionRow:@"⚡  INSTANT FORCE KICK (Beklemeden Anında At)" color:C_RED atY:y action:@selector(nativeKickPick)];
     y = [self actionRow:@"💥  MASS KICK (Odadaki Herkesi At)" color:C_RED atY:y action:@selector(tapRoomKickAll)];
     y = [self actionRow:@"🛡️  ANTI-VOTE KICK DURUMU (Oylamayla Atılma Koruması)" color:C_ON atY:y action:@selector(voteKickDiagnostics)];
-    y = [self actionRow:@"🎨  RENKLİ CHAT (Zorla RichText Aç & Gönder)" color:C_GOLD atY:y action:@selector(sendColoredChat)];
+    y = [self actionRow:@"🎨  RENKLİ CHAT (Kırmızı/Yeşil/Sarı/Hex Gönder)" color:C_GOLD atY:y action:@selector(sendColoredChat)];
+    y = [self actionRow:@"🌈  TÜM ODA CHATINI RENGE BOYA" color:C_CYAN atY:y action:@selector(colorAllChat)];
 
     y = [self header:@"\U0001F3CE  ARAC" atY:y];
     y = [self toggle:@"🏎️  TÜM ARAÇLAR AÇIK (Free Garage)" sub:@"Garajdaki tüm kilitli araçları anında bedelsiz açar" key:@"unlockcars" atY:y action:@selector(tapUnlockCars)];
@@ -5900,21 +5900,6 @@ static UIViewController* few1n_topVC(void) {
 }
 
 - (void)tick {
-    // 1.4.4 Chat RichText Kilidini Sürekli Açık Tut (Renk Kodlarının Düz Yazı/Kod Olarak Görünmesini Engeller)
-    @try {
-        void* chatMgr = chatGetInst ? chatGetInst() : NULL;
-        if (chatMgr && ptrOk(chatMgr)) {
-            void* chatUI = *(void**)((uintptr_t)chatMgr + 0x40);
-            if (chatUI && ptrOk(chatUI)) {
-                void* allText = *(void**)((uintptr_t)chatUI + 0x20);
-                if (allText && ptrOk(allText)) {
-                    w_tmp_set_richText(allText, true);
-                    *(bool*)((uintptr_t)allText + 0x342) = true;
-                }
-            }
-        }
-    } @catch (...) {}
-
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
@@ -6291,21 +6276,8 @@ static UIViewController* few1n_topVC(void) {
 - (void)sendColoredChat {
     if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
 
-    // RichText kilidini hem yerel allText üzerinde hem input üzerinde aç
-    void* mgr = chatGetInst();
-    if (mgr && ptrOk(mgr)) {
-        void* chatUI = *(void**)((uintptr_t)mgr + 0x40);
-        if (chatUI && ptrOk(chatUI)) {
-            void* allText = *(void**)((uintptr_t)chatUI + 0x20);
-            if (allText && ptrOk(allText)) {
-                w_tmp_set_richText(allText, true);
-                *(bool*)((uintptr_t)allText + 0x342) = true;
-            }
-        }
-    }
-
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🎨 Renkli Mesaj Gönder"
-        message:@"Yazdığın mesaj seçili renginde gönderilir. Chat RichText kilidi açıldı." preferredStyle:UIAlertControllerStyleAlert];
+        message:@"Yazdığın mesaj seçtiğin renkte gönderilir." preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Mesajını yaz..."; tf.clearButtonMode = UITextFieldViewModeAlways; }];
     [ac addAction:[UIAlertAction actionWithTitle:@"Seçili Renkte Gönder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         NSString *t = ac.textFields.firstObject.text;
@@ -6314,15 +6286,7 @@ static UIViewController* few1n_topVC(void) {
         NSString *msg = [NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", col, t];
         @try {
             void* m = chatGetInst();
-            if (m && ptrOk(m)) {
-                void* chatUI = *(void**)((uintptr_t)m + 0x40);
-                if (chatUI && ptrOk(chatUI)) {
-                    void* allText = *(void**)((uintptr_t)chatUI + 0x20);
-                    if (allText && ptrOk(allText)) {
-                        w_tmp_set_richText(allText, true);
-                        *(bool*)((uintptr_t)allText + 0x342) = true;
-                    }
-                }
+            if (m) {
                 void* s = mkStr(msg);
                 if (s) {
                     g_modSendingRichText = true;
