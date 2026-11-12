@@ -10,30 +10,22 @@ on:
     paths:
       - 'VERSION.txt'
       - 'template/**'
-      - 'Makefile'
       - 'Tweak.xm'
+      - 'Makefile'
+      - 'FEW1NMod.plist'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ios-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  runner-test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Check GitHub runner
-        run: |
-          echo "Linux runner started"
-          date -u
-
   build:
-    needs: runner-test
+    name: Build FEW1N Mod Menu
     runs-on: macos-15
     timeout-minutes: 45
 
@@ -41,44 +33,137 @@ jobs:
       THEOS: ${{ github.workspace }}/theos
 
     steps:
-      - name: Checkout
+      # 1. Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Read version
+      # 2. Version
+      - name: Read VERSION
         shell: bash
         run: |
           set -euo pipefail
-          VERSION=$(tr -d '[:space:]' < VERSION.txt)
-          test -n "$VERSION"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Install dependencies
+          if [ ! -f VERSION.txt ]; then
+            echo "ERROR: VERSION.txt missing"
+            exit 1
+          fi
+
+          VERSION=$(tr -d '[:space:]' < VERSION.txt)
+
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: VERSION is empty"
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Building version: $VERSION"
+
+      # 3. Dependencies
+      - name: Install Dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           brew list ldid >/dev/null 2>&1 || brew install ldid
           brew list dpkg >/dev/null 2>&1 || brew install dpkg
+          brew list xz >/dev/null 2>&1 || brew install xz
+
+          echo "Xcode:"
           xcodebuild -version
 
-      - name: Setup Theos
-        uses: beerpiss/theos-action@v1
-        with:
-          theos-dir: theos
-          theos-sdks: https://github.com/theos/sdks
+          echo "SDK:"
+          xcrun --sdk iphoneos --show-sdk-path
 
-      - name: Prepare project
+      # 4. Cache
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}
+          key: theos-macos15-v2
+
+      # 5. Setup Theos
+      - name: Setup Theos
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$THEOS/makefiles/common.mk" ]; then
+            echo "Installing Theos..."
+
+            rm -rf "$THEOS"
+
+            git clone --recursive \
+              https://github.com/theos/theos.git \
+              "$THEOS"
+          fi
+
+          echo "Checking Theos..."
+
+          test -f "$THEOS/makefiles/common.mk"
+
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+          echo "Theos ready"
+
+      # 6. Setup iOS SDK
+      - name: Setup iOS SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$THEOS/sdks"
+
+          if ! find "$THEOS/sdks" \
+            -maxdepth 1 \
+            -name '*.sdk' \
+            -print -quit | grep -q .; then
+
+            echo "Downloading SDKs..."
+
+            git clone --depth 1 \
+              https://github.com/theos/sdks.git \
+              "$RUNNER_TEMP/theos-sdks"
+
+            find "$RUNNER_TEMP/theos-sdks" \
+              -maxdepth 1 \
+              -name '*.sdk' \
+              -exec cp -R {} "$THEOS/sdks/" \;
+          fi
+
+          echo "Installed SDKs:"
+          ls -la "$THEOS/sdks"
+
+      # 7. Prepare Files
+      - name: Prepare Build Files
         shell: bash
         run: |
           set -euo pipefail
 
           if [ ! -f Tweak.xm ]; then
-            cp template/Tweak.xm Tweak.xm
+            if [ -f template/Tweak.xm ]; then
+              cp template/Tweak.xm Tweak.xm
+            else
+              echo "ERROR: Tweak.xm missing"
+              exit 1
+            fi
           fi
 
           if [ -f template/Offsets.h ]; then
             cp template/Offsets.h Offsets.h
           fi
 
+          if [ ! -f template/control ]; then
+            echo "ERROR: template/control missing"
+            exit 1
+          fi
+
           cp template/control control
-          sed -i.bak "s/__VERSION__/${VERSION}/g" control
+
+          sed -i.bak \
+            "s/__VERSION__/${VERSION}/g" \
+            control
+
           rm -f control.bak
 
           if [ ! -f Makefile ]; then
@@ -92,9 +177,19 @@ jobs:
           include $(THEOS)/makefiles/common.mk
 
           TWEAK_NAME = FEW1NMod
+
           FEW1NMod_FILES = Tweak.xm
-          FEW1NMod_CFLAGS = -fobjc-arc -std=c++14
-          FEW1NMod_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics ImageIO PhotosUI
+
+          FEW1NMod_CFLAGS = -fobjc-arc -std=c++14 \
+            -Wno-deprecated-declarations \
+            -Wno-unused-variable \
+            -Wno-unused-function \
+            -Wno-format-invalid-specifier \
+            -Wno-unknown-warning-option
+
+          FEW1NMod_FRAMEWORKS = UIKit Foundation \
+            QuartzCore CoreGraphics ImageIO PhotosUI
+
           FEW1NMod_LIBRARIES = substrate
 
           include $(THEOS_MAKE_PATH)/tweak.mk
@@ -102,39 +197,105 @@ jobs:
           fi
 
           if [ ! -f FEW1NMod.plist ]; then
-            echo '{ Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer" ); }; }' > FEW1NMod.plist
+            cat > FEW1NMod.plist <<'EOF'
+          {
+            Filter = {
+              Bundles = (
+                "com.TenebryFox.DreamRoadMultiplayer"
+              );
+            };
+          }
+          EOF
           fi
 
-      - name: Build
+          echo "Build files ready"
+          ls -la Tweak.xm Makefile control FEW1NMod.plist
+
+      # 8. Build
+      - name: Build Tweak
         shell: bash
         run: |
           set -euo pipefail
+
+          export THEOS="$GITHUB_WORKSPACE/theos"
+
+          echo "Cleaning..."
           make clean
+
+          echo "Building..."
           make package FINALPACKAGE=1
 
-      - name: Prepare artifacts
+          echo "Build completed"
+
+      # 9. Prepare Output
+      - name: Prepare Output
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p output extracted
 
-          find packages -name '*.deb' -exec cp {} output/ \;
+          echo "Finding DEB..."
 
-          DEB=$(find output -name '*.deb' -print -quit)
-          test -n "$DEB"
+          DEB=$(find packages \
+            -name '*.deb' \
+            -print -quit)
+
+          if [ -z "$DEB" ]; then
+            echo "ERROR: DEB not found"
+            exit 1
+          fi
+
+          cp "$DEB" \
+            "output/FEW1NMod_${VERSION}_${GITHUB_RUN_NUMBER}.deb"
+
+          echo "Extracting DYLIB..."
 
           dpkg-deb -x "$DEB" extracted
 
-          DYLIB=$(find extracted -name '*.dylib' -print -quit)
-          test -n "$DYLIB"
+          DYLIB=$(find extracted \
+            -name '*.dylib' \
+            -print -quit)
+
+          if [ -z "$DYLIB" ]; then
+            echo "ERROR: DYLIB not found"
+            exit 1
+          fi
 
           cp "$DYLIB" output/FEW1NMod.dylib
-          ls -lh output
 
-      - name: Upload build files
+          echo "Output:"
+          ls -lh output/
+
+      # 10. Upload Artifacts
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1NMod-${{ env.VERSION }}-${{ github.run_number }}
+          name: FEW1NMod-v${{ env.VERSION }}-${{ github.run_number }}
           path: output/
           if-no-files-found: error
           retention-days: 7
+
+      # 11. Create Release
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}-build${{ github.run_number }}
+          name: FEW1N Mod Menu v${{ env.VERSION }}
+          files: |
+            output/*.deb
+            output/*.dylib
+          body: |
+            FEW1N Mod Menu Automatic Build
+
+            Version: ${{ env.VERSION }}
+            Build: ${{ github.run_number }}
+            Commit: ${{ github.sha }}
+
+            Outputs:
+            - Rootless DEB package
+            - Compiled DYLIB
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
