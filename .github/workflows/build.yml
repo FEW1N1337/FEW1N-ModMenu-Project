@@ -1,91 +1,99 @@
+
 name: Build iOS Mod Menu
 
 on:
   push:
-    branches: [ "main", "master", "claude/**" ]
+    branches:
+      - main
+      - master
+      - 'claude/**'
     paths:
       - 'VERSION.txt'
       - 'template/**'
+      - 'Makefile'
+      - 'Tweak.xm'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  runner-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check GitHub runner
+        run: |
+          echo "Linux runner started"
+          date -u
+
   build:
-    runs-on: macos-latest
+    needs: runner-test
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    env:
+      THEOS: ${{ github.workspace }}/theos
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read VERSION
+      - name: Read version
+        shell: bash
         run: |
-          # NOT: dosya ismi VERSION.txt — macOS case-insensitive FS'de duz
-          # 'VERSION' ismi libc++'in #include <version> baslgi ile catisiyor.
-          VERSION=$(tr -d ' \t\n\r' < VERSION.txt)
-          if [ -z "$VERSION" ]; then
-            echo "VERSION.txt dosyasi bos veya yok!"; exit 1
-          fi
-          echo "Surum: $VERSION"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          set -euo pipefail
+          VERSION=$(tr -d '[:space:]' < VERSION.txt)
+          test -n "$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          brew install ldid dpkg xz
-          echo "Xcode: $(xcode-select -p)"
-          echo "SDK: $(xcrun --sdk iphoneos --show-sdk-path)"
-
-      - name: Cache Theos
-        id: cache-theos
-        uses: actions/cache@v4
-        with:
-          path: ~/theos
-          key: theos-${{ runner.os }}-v1
+          brew list ldid >/dev/null 2>&1 || brew install ldid
+          brew list dpkg >/dev/null 2>&1 || brew install dpkg
+          xcodebuild -version
 
       - name: Setup Theos
-        if: steps.cache-theos.outputs.cache-hit != 'true'
-        run: |
-          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+        uses: beerpiss/theos-action@v1
+        with:
+          theos-dir: theos
+          theos-sdks: https://github.com/theos/sdks
 
-      - name: Export THEOS env
-        run: echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-
-      - name: Prepare Build Files
+      - name: Prepare project
+        shell: bash
         run: |
-          if [ ! -f Tweak.xm ] && [ -f template/Tweak.xm ]; then
-            cp template/Tweak.xm ./Tweak.xm
+          set -euo pipefail
+
+          if [ ! -f Tweak.xm ]; then
+            cp template/Tweak.xm Tweak.xm
           fi
-          # Named offset header — Tweak.xm ile ayni dizinde olmasi lazim
+
           if [ -f template/Offsets.h ]; then
-            cp template/Offsets.h ./Offsets.h
+            cp template/Offsets.h Offsets.h
           fi
-          ls -la Tweak.xm Offsets.h 2>/dev/null || true
 
-          # control: template/control __VERSION__ placeholder ile gelir, VERSION ile doldurulur.
-          if [ ! -f template/control ]; then
-            echo "template/control YOK - repo bozuk"; exit 1
-          fi
-          cp template/control ./control
-          sed -i.bak "s/__VERSION__/${VERSION}/g" control && rm -f control.bak
+          cp template/control control
+          sed -i.bak "s/__VERSION__/${VERSION}/g" control
+          rm -f control.bak
 
           if [ ! -f Makefile ]; then
-            cat > Makefile << 'EOF'
-          TARGET := iphone:clang:latest:14.0
+            cat > Makefile <<'EOF'
+          TARGET := iphone:clang:latest:15.0
           ARCHS = arm64
-          INSTALL_TARGET_PROCESSES = DreamRoadMultiplayer
           THEOS_PACKAGE_SCHEME = rootless
+
+          INSTALL_TARGET_PROCESSES = DreamRoadMultiplayer
 
           include $(THEOS)/makefiles/common.mk
 
           TWEAK_NAME = FEW1NMod
-
           FEW1NMod_FILES = Tweak.xm
-          FEW1NMod_CFLAGS = -fobjc-arc -std=c++14 -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-function -Wno-format-invalid-specifier -Wno-unknown-warning-option
+          FEW1NMod_CFLAGS = -fobjc-arc -std=c++14
           FEW1NMod_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics ImageIO PhotosUI
           FEW1NMod_LIBRARIES = substrate
 
@@ -94,68 +102,39 @@ jobs:
           fi
 
           if [ ! -f FEW1NMod.plist ]; then
-            cat > FEW1NMod.plist << 'EOF'
-          { Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer" ); }; }
-          EOF
+            echo '{ Filter = { Bundles = ( "com.TenebryFox.DreamRoadMultiplayer" ); }; }' > FEW1NMod.plist
           fi
 
-          echo "==> control:"
-          cat control
-
-      - name: Build Tweak
+      - name: Build
+        shell: bash
         run: |
-          export THEOS=$HOME/theos
+          set -euo pipefail
           make clean
           make package FINALPACKAGE=1
 
-      - name: Prepare Output
+      - name: Prepare artifacts
+        shell: bash
         run: |
-          mkdir -p output
-          cp packages/*.deb "output/FEW1NMod_${VERSION}_${{ github.run_number }}.deb"
-          DYLIB=$(find .theos/obj -name "*.dylib" | head -1)
-          if [ -n "$DYLIB" ]; then
-            echo "dylib .theos/obj icinde bulundu: $DYLIB"
-          else
-            echo "dylib .theos/obj icinde YOK - .deb icinden cikariliyor"
-            dpkg -x packages/*.deb extracted
-            DYLIB=$(find extracted -name "*.dylib" | head -1)
-            if [ -z "$DYLIB" ]; then
-              echo "HATA: .deb icinde de dylib bulunamadi"; exit 1
-            fi
-            echo "dylib .deb icinden cikarildi: $DYLIB"
-          fi
+          set -euo pipefail
+          mkdir -p output extracted
+
+          find packages -name '*.deb' -exec cp {} output/ \;
+
+          DEB=$(find output -name '*.deb' -print -quit)
+          test -n "$DEB"
+
+          dpkg-deb -x "$DEB" extracted
+
+          DYLIB=$(find extracted -name '*.dylib' -print -quit)
+          test -n "$DYLIB"
+
           cp "$DYLIB" output/FEW1NMod.dylib
-          echo "==> Output:"
-          ls -la output/
+          ls -lh output
 
-      - name: Upload .deb
+      - name: Upload build files
         uses: actions/upload-artifact@v4
         with:
-          name: FEW1N-ModMenu-v${{ env.VERSION }}-deb-${{ github.run_number }}
-          path: output/*.deb
-
-      - name: Upload .dylib
-        uses: actions/upload-artifact@v4
-        with:
-          name: FEW1N-ModMenu-v${{ env.VERSION }}-dylib-${{ github.run_number }}
-          path: output/FEW1NMod.dylib
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            output/*.deb
-            output/*.dylib
-          tag_name: v${{ env.VERSION }}-build${{ github.run_number }}
-          name: FEW1N Mod Menu v${{ env.VERSION }} (Build #${{ github.run_number }})
-          body: |
-            🚀 **FEW1N Mod Menu Otomatik Derleme**
-
-            - **Sürüm:** v${{ env.VERSION }}
-            - **Build:** #${{ github.run_number }}
-            - **Commit:** ${{ github.sha }}
-
-            `.deb` → Jailbreak (Filza/Sileo)
-            `.dylib` → Sideload (ESign/TrollStore)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: FEW1NMod-${{ env.VERSION }}-${{ github.run_number }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 7
