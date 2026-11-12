@@ -1,6 +1,6 @@
 Package: com.few1n.dreamroadmod114
 Name: FEW1N Mod Menu
-Depends: mobilesubstrate, firmware (>= 15.0)
+Depends: mobilesubstrate, firmware (>= 14.0)
 Version: __VERSION__
 Architecture: iphoneos-arm64
 Description: FEW1N Mod Menu v__VERSION__ - DreamRoadMultiplayer (Unity 6) icin mod menu; Fly D-pad, ESP, GodMode, Groq AI chat, oda sifresi (pWd), reklam engelleme, chat spam, kick RPC ve daha fazlasi.

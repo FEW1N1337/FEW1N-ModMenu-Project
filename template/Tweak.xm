@@ -163,6 +163,7 @@ static int  g_colorIdx = 0;              // donen renk indeksi
 // ==== ACCORDION MENU (katlanir bolumler) ====
 static int  g_secBuildIdx = -1;          // build sirasinda mevcut bolum sayaci
 static bool g_secOpen[24] = {0};         // her bolum acik mi (basliga basinca degisir)
+static bool g_sectionsInitialized = false; // menu ilk acildiginda bolum secimini yap
 // ==== HACKER/PRO MODE ====
 static int  nameTrickMode = 0;            // 0=kapali 1=admin 2=mod 3=dev 4=hacker 5=matrix 6=glitch 7=binary
 static bool isMatrixChatEnabled = false;  // chat mesajlarini matrix stiline cevir
@@ -4014,6 +4015,8 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)nativeKickAll;
 - (void)nativeKickByName;
 - (void)nativeKickPick;
+- (void)normalVoteKickPick;
+- (void)voteKickDiagnostics;
 - (void)targetBombCrashPick;
 - (void)showPlayerIDs;
 - (void)editAiApiKey;
@@ -4388,7 +4391,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.29  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.30  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -4412,18 +4415,6 @@ static UIViewController* few1n_topVC(void) {
 
     g_secBuildIdx = -1;   // accordion: bolum sayacini sifirla (her build basinda)
     CGFloat y = 12;
-
-    UILabel *guide = [[UILabel alloc] initWithFrame:CGRectMake(12, y, pw-24, 28)];
-    guide.text = @"📌 Menüleri açmak için başlıklara dokun";
-    guide.textColor = C_ACCENT;
-    guide.textAlignment = NSTextAlignmentCenter;
-    guide.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
-    guide.backgroundColor = [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:0.08];
-    guide.layer.cornerRadius = 8;
-    guide.clipsToBounds = YES;
-    [self.contentView addSubview:guide];
-    objc_setAssociatedObject(guide, "adv", @(34.0), OBJC_ASSOCIATION_RETAIN);
-    y += 34;
 
     y = [self header:@"\U0001F6AB  REKLAM BOZUCU" atY:y];
     y = [self toggle:@"\U0001F6AB  Reklam Engelle" sub:@"Tum reklamlari engeller (AdMob/AppLovin/CAS/Unity)" key:@"adblock" atY:y action:@selector(tapAdBlock)];
@@ -4641,6 +4632,8 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"\U0001F4A5  ODAYI KAPAT (Herkesi At & Odayi Sonlandir)" color:C_RED atY:y action:@selector(nukeRoom)];
     y = [self actionRow:@"💥  Odadaki Herkesi At (Mass Kick)" color:C_RED atY:y action:@selector(tapRoomKickAll)];
     y = [self actionRow:@"🎯  Belirli Oyuncuyu At (Sec ve Kick)" color:C_RED atY:y action:@selector(nativeKickPick)];
+    y = [self actionRow:@"🗳️  Normal Oylama Başlat (Oyuncu Seç)" color:C_CYAN atY:y action:@selector(normalVoteKickPick)];
+    y = [self actionRow:@"🛡️  VoteKick / Anti-VoteKick Durumu" color:C_CYAN atY:y action:@selector(voteKickDiagnostics)];
     y = [self actionRow:@"💣  HEDEFLİ BOMBA + CRASH (Sec)" color:C_RED atY:y action:@selector(targetBombCrashPick)];
     // v114.24: Yeni troll saldırı butonları
     y = [self actionRow:@"🚀  Gökyüzüne Fırlat (Oyuncu Seç)" color:C_RED atY:y action:@selector(targetSkyLaunch)];
@@ -4705,7 +4698,13 @@ static UIViewController* few1n_topVC(void) {
 
     self.contentView.frame = CGRectMake(0,0,pw,y);
     self.scrollView.contentSize = CGSizeMake(pw,y);
-    for (int i = 0; i < 24; i++) g_secOpen[i] = false;  // TUM BOLUMLER VARSAYILAN KAPALI (tiklayinca acilir)
+    if (!g_sectionsInitialized) {
+        for (int i = 0; i < 24; i++) g_secOpen[i] = false;
+        g_secOpen[2] = true; // 🏎️ ARAC varsayilan acik (Free Garage hemen gorunsun)
+        g_secOpen[3] = true; // 💬 CHAT varsayilan acik (Renkli Mesaj hemen gorunsun)
+        g_secOpen[6] = true; // 🔑 ODA varsayilan acik (Mass Kick & VoteKick hemen gorunsun)
+        g_sectionsInitialized = true;
+    }
     [self reflowMenu];     // ACCORDION: bolumleri katla/ac
     [w addSubview:self.panel];
     [self refreshUI];
@@ -5444,6 +5443,57 @@ static UIViewController* few1n_topVC(void) {
         return YES;
     } @catch (...) { return NO; }
 }
+
+// Normal VoteKick: Oyunun kendi oylama başlatma metodunu çağırır (1.4.4)
+- (void)normalVoteKickPick {
+    if (!pn_getInRoom || !pn_getInRoom()) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"VoteKick" message:@"Önce bir odaya gir." preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:a]; return;
+    }
+    if (!g_mVoteKickStart || !i_runtime_invoke || !ply_getNickName) {
+        [self voteKickDiagnostics]; return;
+    }
+    void* vk = few1n_findVoteKickInstance();
+    void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
+    BOOL all = NO;
+    if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); all = YES; }
+    if (!ptrOk(vk) || !ptrOk(pa)) { [self voteKickDiagnostics]; return; }
+    int count = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+    if (count < 1 || count > 64) { [self voteKickDiagnostics]; return; }
+    void** players = (void**)((uintptr_t)pa + 0x20);
+    void* me = (all && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ Normal VoteKick" message:@"Oyun içi normal oylama başlatılır. Sonuç oyuncuların oyuna ve sunucu kurallarına bağlıdır." preferredStyle:UIAlertControllerStyleActionSheet];
+    for (int i = 0; i < count && i < 32; i++) {
+        void* player = players[i];
+        if (!ptrOk(player) || (me && me == player)) continue;
+        void* nameObj = ply_getNickName(player);
+        NSString *name = ptrOk(nameObj) ? (readStr(nameObj) ?: @"Oyuncu") : @"Oyuncu";
+        NSString *display = stripRichTextTags(name) ?: name;
+        [a addAction:[UIAlertAction actionWithTitle:display style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            if (!ptrOk(player) || !ptrOk(vk) || !g_mVoteKickStart) return;
+            @try {
+                void* args[1] = { player };
+                void* exc = NULL;
+                i_runtime_invoke(g_mVoteKickStart, vk, args, &exc);
+                FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi");
+            } @catch (...) { FLog(@"Normal VoteKick çağrısı exception"); }
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:a];
+}
+
+- (void)voteKickDiagnostics {
+    NSString *msg = [NSString stringWithFormat:@"VoteKick sınıfı: %@\nNormal oylama metodu: %@\nOylama instance: %@\n\n1.4.4 VoteKick altyapısı hazır.",
+        g_voteKickClass ? @"Bulundu ✓" : @"Bulunamadı ✗",
+        g_mVoteKickStart ? @"Bulundu ✓" : @"Bulunamadı ✗",
+        few1n_findVoteKickInstance() ? @"Bulundu ✓" : @"Bulunamadı ✗"];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🛡️ VoteKick Durumu" message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:a];
+}
+
 // Odadaki oyuncularu LISTELE, secilen(ler)i at
 // v91: SIFIRDAN YAZILMIS KICK — Master ol → 3 kick metodunu sirayla dene → tuttugun kadar guclu
 - (void)nativeKickPick {
