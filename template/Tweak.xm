@@ -163,6 +163,7 @@ static int  g_colorIdx = 0;              // donen renk indeksi
 // ==== ACCORDION MENU (katlanir bolumler) ====
 static int  g_secBuildIdx = -1;          // build sirasinda mevcut bolum sayaci
 static bool g_secOpen[24] = {0};         // her bolum acik mi (basliga basinca degisir)
+static bool g_sectionsInitialized = false; // menu yeniden acildiginda secimleri koru
 // ==== HACKER/PRO MODE ====
 static int  nameTrickMode = 0;            // 0=kapali 1=admin 2=mod 3=dev 4=hacker 5=matrix 6=glitch 7=binary
 static bool isMatrixChatEnabled = false;  // chat mesajlarini matrix stiline cevir
@@ -4014,6 +4015,8 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)nativeKickAll;
 - (void)nativeKickByName;
 - (void)nativeKickPick;
+- (void)normalVoteKickPick;
+- (void)voteKickDiagnostics;
 - (void)targetBombCrashPick;
 - (void)showPlayerIDs;
 - (void)editAiApiKey;
@@ -4508,7 +4511,7 @@ static UIViewController* few1n_topVC(void) {
     y = [self toggle:@"\U0001F4E2  Chat Spam" sub:@"50ms araligla mesaj" key:@"chatspam" atY:y action:@selector(tapChatSpam)];
     y = [self actionRow:@"✏️  Spam Yazisini Duzenle" color:C_CYAN atY:y action:@selector(editSpam)];
     y = [self actionRow:@"\U0001F3A8  Spam/Chat Rengi Sec (ozel hex)" color:C_CYAN atY:y action:@selector(pickSpamColor)];
-    y = [self actionRow:@"\U0001F58D  Renkli Mesaj Gonder (istedigin renkte)" color:C_ON atY:y action:@selector(sendColoredChat)];
+    y = [self actionRow:@"\U0001F58D  Mesaj Gönder / Renkli Önizleme" color:C_ON atY:y action:@selector(sendColoredChat)];
     {
         UIView *ssrow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
         ssrow.backgroundColor = C_CARD; ssrow.layer.cornerRadius = 12;
@@ -4539,7 +4542,7 @@ static UIViewController* few1n_topVC(void) {
     }
     y = [self toggle:@"\U0001F308  ASCII Renk Dongusu" sub:@"Her kareyi farkli renkte gonder" key:@"asciicolor" atY:y action:@selector(tapAsciiColor)];
     y = [self actionRow:@"🧪  Exploit Test (Chat Filtresi Atlat)" color:C_RED atY:y action:@selector(exploitChatTest)];
-    y = [self actionRow:@"🌈  TUM Oda Chatini Renklendir (secili renk)" color:C_ON atY:y action:@selector(colorAllChat)];
+    y = [self actionRow:@"🌈  Oda Renk Destegi (bilgi)" color:C_ON atY:y action:@selector(colorAllChat)];
     // YENI: GIF -> ASCII (cihaz uzerinde cevirir, harici API yok)
     {
         UIView *grow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
@@ -4629,6 +4632,9 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"\U0001F4A5  ODAYI KAPAT (Herkesi At & Odayi Sonlandir)" color:C_RED atY:y action:@selector(nukeRoom)];
     y = [self actionRow:@"💥  Odadaki Herkesi At (Mass Kick)" color:C_RED atY:y action:@selector(tapRoomKickAll)];
     y = [self actionRow:@"🎯  Belirli Oyuncuyu At (Sec ve Kick)" color:C_RED atY:y action:@selector(nativeKickPick)];
+    y = [self actionRow:@"🗳️  Normal Oylama Başlat (Oyuncu Seç)" color:C_CYAN atY:y action:@selector(normalVoteKickPick)];
+    y = [self actionRow:@"🛡️  VoteKick / Anti-VoteKick Durumu" color:C_CYAN atY:y action:@selector(voteKickDiagnostics)];
+    y = [self actionRow:@"🛡️  Oylama Takibi Aç/Kapat" color:C_CYAN atY:y action:@selector(antiVoteKickInfo)];
     y = [self actionRow:@"💣  HEDEFLİ BOMBA + CRASH (Sec)" color:C_RED atY:y action:@selector(targetBombCrashPick)];
     // v114.24: Yeni troll saldırı butonları
     y = [self actionRow:@"🚀  Gökyüzüne Fırlat (Oyuncu Seç)" color:C_RED atY:y action:@selector(targetSkyLaunch)];
@@ -4693,7 +4699,11 @@ static UIViewController* few1n_topVC(void) {
 
     self.contentView.frame = CGRectMake(0,0,pw,y);
     self.scrollView.contentSize = CGSizeMake(pw,y);
-    for (int i = 0; i < 24; i++) g_secOpen[i] = false;  // TUM BOLUMLER VARSAYILAN KAPALI (tiklayinca acilir)
+    if (!g_sectionsInitialized) {
+        for (int i = 0; i < 24; i++) g_secOpen[i] = false;
+        g_secOpen[6] = true; // ODA ilk acilista acik
+        g_sectionsInitialized = true; // sonradan kullanici tercihlerini sifirlama
+    }
     [self reflowMenu];     // ACCORDION: bolumleri katla/ac
     [w addSubview:self.panel];
     [self refreshUI];
@@ -5434,6 +5444,73 @@ static UIViewController* few1n_topVC(void) {
 }
 // Odadaki oyuncularu LISTELE, secilen(ler)i at
 // v91: SIFIRDAN YAZILMIS KICK — Master ol → 3 kick metodunu sirayla dene → tuttugun kadar guclu
+// Normal VoteKick uses the game's own vote-start method; no forced success RPC.
+- (void)normalVoteKickPick {
+    if (!pn_getInRoom || !pn_getInRoom()) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"VoteKick" message:@"Önce bir odaya gir." preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:a]; return;
+    }
+    if (!g_mVoteKickStart || !i_runtime_invoke || !ply_getNickName) {
+        [self voteKickDiagnostics]; return;
+    }
+    void* vk = few1n_findVoteKickInstance();
+    void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
+    BOOL all = NO;
+    if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); all = YES; }
+    if (!ptrOk(vk) || !ptrOk(pa)) { [self voteKickDiagnostics]; return; }
+    int count = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+    if (count < 1 || count > 64) { [self voteKickDiagnostics]; return; }
+    void** players = (void**)((uintptr_t)pa + 0x20);
+    void* me = (all && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ Normal VoteKick" message:@"Oyun içi normal oylama başlatılır. Sonuç oyuncuların oyuna ve sunucu kurallarına bağlıdır." preferredStyle:UIAlertControllerStyleActionSheet];
+    for (int i = 0; i < count && i < 32; i++) {
+        void* player = players[i];
+        if (!ptrOk(player) || (me && me == player)) continue;
+        void* nameObj = ply_getNickName(player);
+        NSString *name = ptrOk(nameObj) ? (readStr(nameObj) ?: @"Oyuncu") : @"Oyuncu";
+        NSString *display = stripRichTextTags(name) ?: name;
+        [a addAction:[UIAlertAction actionWithTitle:display style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            if (!ptrOk(player) || !ptrOk(vk) || !g_mVoteKickStart) return;
+            @try {
+                void* args[1] = { player };
+                void* exc = NULL;
+                i_runtime_invoke(g_mVoteKickStart, vk, args, &exc);
+                FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi");
+            } @catch (...) { FLog(@"Normal VoteKick çağrısı exception"); }
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:a];
+}
+
+// Yerel oylama takip tercihi; sunucu kararlarini degistirmez.
+static BOOL g_voteWatchEnabled = NO;
+- (void)antiVoteKickInfo {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Oylama Takibi"
+        message:[NSString stringWithFormat:@"Takip: %@\nBu ayar oylama tanilama ekranini etkinlestirir; sunucu tarafindaki atma kararini engellemez.", g_voteWatchEnabled ? @"Açık" : @"Kapalı"]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:g_voteWatchEnabled ? @"Takibi Kapat" : @"Takibi Aç" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        g_voteWatchEnabled = !g_voteWatchEnabled;
+        [[NSUserDefaults standardUserDefaults] setBool:g_voteWatchEnabled forKey:@"FEW1NVoteWatch"];
+        if (g_voteWatchEnabled) [self voteKickDiagnostics];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:a];
+}
+
+- (void)voteKickDiagnostics {
+    g_voteWatchEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"FEW1NVoteWatch"];
+    NSString *msg = [NSString stringWithFormat:@"VoteKick sınıfı: %@\nNormal oylama metodu: %@\nOylama instance: %@\nOylama takibi: %@\nAnti-VoteKick sunucu koruması: Yok\n\nOylama sonucunu oyun sunucusu belirler.",
+        g_voteKickClass ? @"Bulundu" : @"Bulunamadı",
+        g_mVoteKickStart ? @"Bulundu" : @"Bulunamadı",
+        few1n_findVoteKickInstance() ? @"Bulundu" : @"Bulunamadı",
+        g_voteWatchEnabled ? @"Açık" : @"Kapalı"];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🛡️ VoteKick Durumu" message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:a];
+}
+
 - (void)nativeKickPick {
     if (!pn_getInRoom || !pn_getInRoom()) {
         UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🎯 Kick" message:@"Odada olmalisin." preferredStyle:UIAlertControllerStyleAlert];
@@ -6205,35 +6282,49 @@ static UIViewController* few1n_topVC(void) {
 }
 - (void)sendMatrixMsg { [self promptStyledSend:0]; }
 - (void)sendGlitchMsg { [self promptStyledSend:1]; }
-// Istedigin mesaji, sectigin renkte gonder (herkes gorur - exploit'in kullandigi richText)
+// Renkli onizleme yalnizca yerel UIKit ekraninda gorunur.
+// Yeni oyun surumunde sunucudan diger istemcilere renkli metin garantisi yoktur.
 - (void)sendColoredChat {
-    if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Renkli Mesaj Gonder"
-        message:@"Yazdigin mesaj SENIN rengin ile gider (herkes gorur)" preferredStyle:UIAlertControllerStyleAlert];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"mesajin..."; tf.clearButtonMode = UITextFieldViewModeAlways; }];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Gonder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-        NSString *t = ac.textFields.firstObject.text;
-        if (t.length == 0) return;
-        NSString *col = [NSString stringWithUTF8String:spamColorHex];
-        NSString *msg = [NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", col, t];
-        @try { void* mgr = chatGetInst(); void* s = mkStr(msg); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; } } @catch (...) { g_modSendingRichText = false; }
-        FLog([NSString stringWithFormat:@"Renkli mesaj gonderildi (#%@)", col]);
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Mesaj / Renkli Önizleme"
+        message:@"Önizleme yalnızca bu cihazda renklidir. Sohbete düz metin gönderilir."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Mesajın..."; tf.clearButtonMode = UITextFieldViewModeAlways; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kırmızı Önizle" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *clean = stripRichTextTags(ac.textFields.firstObject.text ?: @"");
+        if (!clean.length) return;
+        UIViewController *preview = [[UIViewController alloc] init];
+        preview.view.backgroundColor = [UIColor systemBackgroundColor];
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(24, 130, 300, 140)];
+        label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        label.numberOfLines = 0;
+        label.textAlignment = NSTextAlignmentCenter;
+        label.textColor = [UIColor systemRedColor];
+        label.text = clean;
+        [preview.view addSubview:label];
+        UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+        close.frame = CGRectMake(24, 300, 280, 50);
+        close.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        [close setTitle:@"Kapat" forState:UIControlStateNormal];
+        [close addAction:[UIAction actionWithHandler:^(__kindof UIAction *action) { [preview dismissViewControllerAnimated:YES completion:nil]; }] forControlEvents:UIControlEventTouchUpInside];
+        [preview.view addSubview:close];
+        [self present:preview];
     }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Düz Metin Gönder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *clean = stripRichTextTags(ac.textFields.firstObject.text ?: @"");
+        if (!clean.length || !chatGetInst || !chatSend) return;
+        @try { void *mgr = chatGetInst(); void *msg = mkStr(clean); if (mgr && msg) chatSend(mgr, msg); }
+        @catch (...) { FLog(@"Mesaj gönderim hatası"); }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
 }
-// TUM ODA CHATINI senin sectigin renge boya (kapatilmamis renk tag'i -> tum mesajlar boyanir)
+// Do not send a dangling <color> tag: it appears as literal markup on other clients.
 - (void)colorAllChat {
-    if (!chatGetInst || !chatSend) { FLog(@"Chat hazir degil - odaya gir"); return; }
-    NSString *col = [NSString stringWithUTF8String:spamColorHex];
-    @try {
-        void* mgr = chatGetInst();
-        // TEMIZ kapatilmamis renk etiketi -> sonraki TUM mesajlar bu renkte olur.
-        // Oyun renk etiketini render ediyor (filtre yok), o yuzden kod YAZISI gorunmez, sadece renk.
-        NSString *msg = [NSString stringWithFormat:@"<color=#%@>", col];
-        void* s = mkStr(msg); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
-    } @catch (...) {}
-    FLog([NSString stringWithFormat:@"Oda chati #%@ rengine boyandi (herkes gorur)", col]);
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Oda Sohbet Rengi"
+        message:@"Bu oyun surumunde tum oyuncularin sohbetini renklendirme desteklenmiyor. Kirik renk kodu gonderilmedi."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:ac];
 }
 - (void)sendChatTemplate {
     if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
