@@ -4014,6 +4014,9 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)nativeKickAll;
 - (void)nativeKickByName;
 - (void)nativeKickPick;
+- (void)normalVoteKickPick;
+- (void)voteKickDiagnostics;
+- (void)antiVoteKickInfo;
 - (void)targetBombCrashPick;
 - (void)showPlayerIDs;
 - (void)editAiApiKey;
@@ -4454,6 +4457,14 @@ static UIViewController* few1n_topVC(void) {
     objc_setAssociatedObject(hint, "adv", @(22.0), OBJC_ASSOCIATION_RETAIN);
     y += 22;
 
+    y = [self header:@"🔥  1.4.4 YENİ EKLENEN ÖZEL HİLELER" atY:y];
+    y = [self toggle:@"🏎️  TÜM ARAÇLAR AÇIK (Free Garage)" sub:@"Garajdaki tüm kilitli arabaları anında bedelsiz açar" key:@"unlockcars" atY:y action:@selector(tapUnlockCars)];
+    y = [self actionRow:@"🗳️  VOTE KICK (Oylama Başlat / Oyuncu Seç)" color:C_RED atY:y action:@selector(normalVoteKickPick)];
+    y = [self actionRow:@"⚡  INSTANT FORCE KICK (Beklemeden Anında At)" color:C_RED atY:y action:@selector(nativeKickPick)];
+    y = [self actionRow:@"💥  MASS KICK (Odadaki Herkesi At)" color:C_RED atY:y action:@selector(tapRoomKickAll)];
+    y = [self actionRow:@"🛡️  ANTI-VOTE KICK DURUMU (Oylamayla Atılma Koruması)" color:C_ON atY:y action:@selector(voteKickDiagnostics)];
+    y = [self actionRow:@"🎨  RENKLİ CHAT (Zorla RichText Aç & Gönder)" color:C_GOLD atY:y action:@selector(sendColoredChat)];
+
     y = [self header:@"\U0001F3CE  ARAC" atY:y];
     y = [self toggle:@"🏎️  TÜM ARAÇLAR AÇIK (Free Garage)" sub:@"Garajdaki tüm kilitli araçları anında bedelsiz açar" key:@"unlockcars" atY:y action:@selector(tapUnlockCars)];
     y = [self toggle:@"🧊  Drift Modu (Kusursuz Kayma)" sub:@"il2cpp fizik ile yan kayma koruması" key:@"drift" atY:y action:@selector(tapDrift)];
@@ -4693,7 +4704,7 @@ static UIViewController* few1n_topVC(void) {
 
     self.contentView.frame = CGRectMake(0,0,pw,y);
     self.scrollView.contentSize = CGSizeMake(pw,y);
-    for (int i = 0; i < 24; i++) g_secOpen[i] = false;  // TUM BOLUMLER VARSAYILAN KAPALI (tiklayinca acilir)
+    for (int i = 0; i < 24; i++) g_secOpen[i] = true;   // TUM BOLUMLER VARSAYILAN ACIK (hepsi gorunur)
     [self reflowMenu];     // ACCORDION: bolumleri katla/ac
     [w addSubview:self.panel];
     [self refreshUI];
@@ -5432,6 +5443,62 @@ static UIViewController* few1n_topVC(void) {
         return YES;
     } @catch (...) { return NO; }
 }
+// 1.4.4: Normal VoteKick — Oyun içi oylama sistemini başlatır
+- (void)normalVoteKickPick {
+    if (!pn_getInRoom || !pn_getInRoom()) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ VoteKick" message:@"Önce bir odaya gir." preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:a]; return;
+    }
+    void* vk = few1n_findVoteKickInstance();
+    void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
+    BOOL all = NO;
+    if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); all = YES; }
+    if (!ptrOk(vk) || !ptrOk(pa)) { [self voteKickDiagnostics]; return; }
+    int count = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+    if (count < 1 || count > 64) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ VoteKick" message:@"Odada başka oyuncu bulunamadı." preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:a]; return;
+    }
+    void** players = (void**)((uintptr_t)pa + 0x20);
+    void* me = (all && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ VoteKick — Oylama Başlat" message:@"Atılmasını istediğin oyuncuyu seç (Oyun içi oylama başlar):" preferredStyle:UIAlertControllerStyleActionSheet];
+    for (int i = 0; i < count && i < 32; i++) {
+        void* player = players[i];
+        if (!ptrOk(player) || (me && me == player)) continue;
+        void* nameObj = ply_getNickName ? ply_getNickName(player) : NULL;
+        NSString *name = ptrOk(nameObj) ? (readStr(nameObj) ?: @"Oyuncu") : @"Oyuncu";
+        NSString *display = stripRichTextTags(name) ?: name;
+        [a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🗳️ %@", display] style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+            if (!ptrOk(player) || !ptrOk(vk) || !g_mVoteKickStart) return;
+            @try {
+                void* args[1] = { player };
+                void* exc = NULL;
+                i_runtime_invoke(g_mVoteKickStart, vk, args, &exc);
+                FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi");
+                FLog([NSString stringWithFormat:@"🗳️ VoteKick başlatıldı: %@", display]);
+            } @catch (...) { FLog(@"Normal VoteKick çağrısı exception"); }
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:a];
+}
+
+- (void)voteKickDiagnostics {
+    NSString *msg = [NSString stringWithFormat:@"VoteKick Sınıfı: %@\nVoteKick Start Metodu: %@\nVoteKick Instance: %@\nAnti-VoteKick Koruması: AKTİF ✅\n\n1.4.4 sürümünde VoteKick & Anti-VoteKick devrededir.",
+        g_voteKickClass ? @"✅ Bulundu" : @"❌ Bulunamadı",
+        g_mVoteKickStart ? @"✅ Bulundu" : @"❌ Bulunamadı",
+        few1n_findVoteKickInstance() ? @"✅ Bulundu" : @"❌ Bulunamadı"];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🛡️ VoteKick / Anti-VoteKick Durumu" message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:a];
+}
+
+- (void)antiVoteKickInfo {
+    [self voteKickDiagnostics];
+}
+
 // Odadaki oyuncularu LISTELE, secilen(ler)i at
 // v91: SIFIRDAN YAZILMIS KICK — Master ol → 3 kick metodunu sirayla dene → tuttugun kadar guclu
 - (void)nativeKickPick {
@@ -5833,6 +5900,21 @@ static UIViewController* few1n_topVC(void) {
 }
 
 - (void)tick {
+    // 1.4.4 Chat RichText Kilidini Sürekli Açık Tut (Renk Kodlarının Düz Yazı/Kod Olarak Görünmesini Engeller)
+    @try {
+        void* chatMgr = chatGetInst ? chatGetInst() : NULL;
+        if (chatMgr && ptrOk(chatMgr)) {
+            void* chatUI = *(void**)((uintptr_t)chatMgr + 0x40);
+            if (chatUI && ptrOk(chatUI)) {
+                void* allText = *(void**)((uintptr_t)chatUI + 0x20);
+                if (allText && ptrOk(allText)) {
+                    w_tmp_set_richText(allText, true);
+                    *(bool*)((uintptr_t)allText + 0x342) = true;
+                }
+            }
+        }
+    } @catch (...) {}
+
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
@@ -6205,21 +6287,89 @@ static UIViewController* few1n_topVC(void) {
 }
 - (void)sendMatrixMsg { [self promptStyledSend:0]; }
 - (void)sendGlitchMsg { [self promptStyledSend:1]; }
-// Istedigin mesaji, sectigin renkte gonder (herkes gorur - exploit'in kullandigi richText)
+// Istedigin mesaji, sectigin renkte gonder (RichText destegi ile)
 - (void)sendColoredChat {
     if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Renkli Mesaj Gonder"
-        message:@"Yazdigin mesaj SENIN rengin ile gider (herkes gorur)" preferredStyle:UIAlertControllerStyleAlert];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"mesajin..."; tf.clearButtonMode = UITextFieldViewModeAlways; }];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Gonder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+
+    // RichText kilidini hem yerel allText üzerinde hem input üzerinde aç
+    void* mgr = chatGetInst();
+    if (mgr && ptrOk(mgr)) {
+        void* chatUI = *(void**)((uintptr_t)mgr + 0x40);
+        if (chatUI && ptrOk(chatUI)) {
+            void* allText = *(void**)((uintptr_t)chatUI + 0x20);
+            if (allText && ptrOk(allText)) {
+                w_tmp_set_richText(allText, true);
+                *(bool*)((uintptr_t)allText + 0x342) = true;
+            }
+        }
+    }
+
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🎨 Renkli Mesaj Gönder"
+        message:@"Yazdığın mesaj seçili renginde gönderilir. Chat RichText kilidi açıldı." preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Mesajını yaz..."; tf.clearButtonMode = UITextFieldViewModeAlways; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Seçili Renkte Gönder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         NSString *t = ac.textFields.firstObject.text;
         if (t.length == 0) return;
         NSString *col = [NSString stringWithUTF8String:spamColorHex];
         NSString *msg = [NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", col, t];
-        @try { void* mgr = chatGetInst(); void* s = mkStr(msg); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; } } @catch (...) { g_modSendingRichText = false; }
-        FLog([NSString stringWithFormat:@"Renkli mesaj gonderildi (#%@)", col]);
+        @try {
+            void* m = chatGetInst();
+            if (m && ptrOk(m)) {
+                void* chatUI = *(void**)((uintptr_t)m + 0x40);
+                if (chatUI && ptrOk(chatUI)) {
+                    void* allText = *(void**)((uintptr_t)chatUI + 0x20);
+                    if (allText && ptrOk(allText)) {
+                        w_tmp_set_richText(allText, true);
+                        *(bool*)((uintptr_t)allText + 0x342) = true;
+                    }
+                }
+                void* s = mkStr(msg);
+                if (s) {
+                    g_modSendingRichText = true;
+                    chatSend(m, s);
+                    g_modSendingRichText = false;
+                }
+            }
+        } @catch (...) { g_modSendingRichText = false; }
+        FLog([NSString stringWithFormat:@"Renkli mesaj gönderildi (#%@)", col]);
     }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔴 Kırmızı Gönder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *t = ac.textFields.firstObject.text;
+        if (t.length == 0) return;
+        NSString *msg = [NSString stringWithFormat:@"<color=red><b>%@</b></color>", t];
+        @try {
+            void* m = chatGetInst();
+            if (m) {
+                void* s = mkStr(msg);
+                if (s) { g_modSendingRichText = true; chatSend(m, s); g_modSendingRichText = false; }
+            }
+        } @catch (...) { g_modSendingRichText = false; }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🟢 Yeşil Gönder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *t = ac.textFields.firstObject.text;
+        if (t.length == 0) return;
+        NSString *msg = [NSString stringWithFormat:@"<color=green><b>%@</b></color>", t];
+        @try {
+            void* m = chatGetInst();
+            if (m) {
+                void* s = mkStr(msg);
+                if (s) { g_modSendingRichText = true; chatSend(m, s); g_modSendingRichText = false; }
+            }
+        } @catch (...) { g_modSendingRichText = false; }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🟡 Sarı Gönder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *t = ac.textFields.firstObject.text;
+        if (t.length == 0) return;
+        NSString *msg = [NSString stringWithFormat:@"<color=yellow><b>%@</b></color>", t];
+        @try {
+            void* m = chatGetInst();
+            if (m) {
+                void* s = mkStr(msg);
+                if (s) { g_modSendingRichText = true; chatSend(m, s); g_modSendingRichText = false; }
+            }
+        } @catch (...) { g_modSendingRichText = false; }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
 }
 // TUM ODA CHATINI senin sectigin renge boya (kapatilmamis renk tag'i -> tum mesajlar boyanir)
