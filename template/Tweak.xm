@@ -2109,7 +2109,7 @@ static void h_reportRPC(void* self, unsigned char reason, void* subject, void* i
 }
 
 // 1.4.4: Tüm Araçları Aç (Free Garage)
-static bool isUnlockAllCarsEnabled = true;
+static bool isUnlockAllCarsEnabled = false;
 static bool (*o_carManager_gmz)(void*, int) = NULL;
 static bool h_carManager_gmz(void* self, int carId) {
     if (isUnlockAllCarsEnabled) return true;
@@ -4390,7 +4390,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.31  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.32  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -11477,93 +11477,110 @@ static void few1n_joinTargetRoom(NSString *nm) {
 //   = false / = 0 sabiti + `[SESSION_ONLY]` yorumu -> OTURUMLUK: her tweak yuklenmesinde sifirlanir
 // Oturumluk toggle'lara UI'da "(oturumluk)" etiketi eklendi.
 static void restoreSettings(void) {
-    speedMode              = loadInt(@"speedMode", 1);
-    speedMult              = ((float)loadInt(@"speedMult10", 10)) / 10.0f;
-    if (speedMult < 0.1f || speedMult > 10.0f) speedMult = 1.0f;
-    isRoomLocked           = false;   // [SESSION_ONLY] odadan cikinca zaten anlamsiz
-    isRoomInvisible        = false;   // [SESSION_ONLY]
-    { NSString *rp = loadStr(@"roomPass", @""); if (rp.length) { strncpy(roomPasswordText, rp.UTF8String, sizeof(roomPasswordText)-1); roomPasswordText[sizeof(roomPasswordText)-1]='\0'; } }
-    isInfiniteNitroEnabled = false;   // [SESSION_ONLY] ozellik kaldirildi, kalici kapali
-    isUnlockAllCarsEnabled = loadBool(@"unlockcars", true);
-    isCarPanelEnabled      = loadBool(@"carpanel", false);
-    isEspEnabled           = false;   // [SESSION_ONLY] ESP overlay her aciliste kapali (guvenlik)
-    isSpeedHud             = false;   // [SESSION_ONLY]
-    isNoClip               = loadBool(@"noclip", false);
-    isAntiGrav             = loadBool(@"antigrav", false);
-    isCarSizeEnabled       = false;   // [SESSION_ONLY]
-    carSizeVal             = loadFloat(@"carSize", 1.0f);
-    isCarColorEnabled      = false;   // [SESSION_ONLY] materyal onbellegi bos aciliste
-    carColorRainbow        = loadBool(@"carrainbow", true);
-    g_carColor             = (Color4){ loadFloat(@"carR",1.0f), loadFloat(@"carG",0.0f), loadFloat(@"carB",0.0f), 1.0f };
-    isCarPaintActive       = loadBool(@"carPaintActive", false);
-    { NSString *cph = loadStr(@"carPaintHex", @"#FF0000"); if (cph.length) { strncpy(customCarPaintHex, cph.UTF8String, sizeof(customCarPaintHex)-1); customCarPaintHex[sizeof(customCarPaintHex)-1]='\0'; } }
-    asciiColorCycle        = loadBool(@"asciiColor", false);
-    lyricsColorCycle       = loadBool(@"lyricsColor", true);
-    lyricsLoop             = loadBool(@"lyricsLoop", false);
-    lyricsInterval         = loadFloat(@"lyricsInterval", 2.0f);
-    { NSString *lt = loadStr(@"lyricsText", @"");
-      if (lt.length) { g_lyrics = [[NSMutableArray alloc] init];
-        for (NSString *l in [lt componentsSeparatedByString:@"\n"]) [g_lyrics addObject:[l stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]]; } }
-    isAnnounceEnabled      = false;   // [SESSION_ONLY]
-    isGodmode              = false;   // [SESSION_ONLY] guvenlik icin her aciliste kapali
-    isSelektor             = false;   // [SESSION_ONLY]
-    isAlwaysLightsEnabled  = loadBool(@"alwayslights", false);
-    // [SESSION_ONLY] Gizli il2cpp ozellikleri her aciliste kapali (guvenlik)
+    // KULLANICI ISTEGI: TUM OZELLIKLER OTOMATIK KAPALI BASLASIN
+    speedMode              = 1;
+    speedMult              = 1.0f;
+    isRoomLocked           = false;
+    isRoomInvisible        = false;
+    isInfiniteNitroEnabled = false;
+    isUnlockAllCarsEnabled = false;
+    isCarPanelEnabled      = false;
+    isEspEnabled           = false;
+    isSpeedHud             = false;
+    isNoClip               = false;
+    isAntiGrav             = false;
+    isCarSizeEnabled       = false;
+    carSizeVal             = 1.0f;
+    isCarColorEnabled      = false;
+    carColorRainbow        = false;
+    g_carColor             = (Color4){ 1.0f, 0.0f, 0.0f, 1.0f };
+    isCarPaintActive       = false;
+    asciiColorCycle        = false;
+    lyricsColorCycle       = false;
+    lyricsLoop             = false;
+    lyricsInterval         = 2.0f;
+    isAnnounceEnabled      = false;
+    isGodmode              = false;
+    isSelektor             = false;
+    isAlwaysLightsEnabled  = false;
     isInfiniteNosEnabled    = false;
     isInfiniteFuelEnabled   = false;
     isMaxRpmEnabled         = false;
     isNoDamageV2Enabled     = false;
     isEngineImmortalEnabled = false;
     isNoTrafficEnabled      = false;
-    isEmissivePaintEnabled  = loadBool(@"emissive", false);
-    isExhaustFlameOnEnabled = loadBool(@"exhaustflame", false);
-    isVidyoNamesEnabled     = loadBool(@"vidyonames", false);
-    isAiChatModeEnabled     = loadBool(@"aichat", false);
-    // v114.4: AI renkleri kalici
-    NSString *nc = loadStr(@"aiNameCol", @"00E5FF");  strncpy(g_aiNameColorHex, nc.UTF8String, 7); g_aiNameColorHex[7]='\0';
-    NSString *rc = loadStr(@"aiReplyCol", @"FF00FF"); strncpy(g_aiReplyColorHex, rc.UTF8String, 7); g_aiReplyColorHex[7]='\0';
-    g_selFlashRate         = loadInt(@"selRate", 1);
-    announceInterval       = (float)loadInt(@"announceIv", 5);
-    { NSString *at = loadStr(@"announceText", @""); if (at.length) { strncpy(announceText, at.UTF8String, sizeof(announceText)-1); announceText[sizeof(announceText)-1]='\0'; } }
-    isAutoGreetEnabled     = loadBool(@"autogreet", false);
-    { NSString *gt = loadStr(@"greetText", @""); if (gt.length) { strncpy(g_greetText, gt.UTF8String, sizeof(g_greetText)-1); g_greetText[sizeof(g_greetText)-1]='\0'; } }
-    carAccelPower          = loadFloat(@"caraccel", 3.0f);
-    carSteerPower          = loadFloat(@"carsteer", 1.0f);
-    carTopSpeed            = loadFloat(@"cartop",   300.0f);
-    isColorChatEnabled     = false;   // [SESSION_ONLY] ozellik kaldirildi, kalici kapali
-    isSpamEnabled          = loadBool(@"chatspam", false);
-    isBypassPasswordEnabled= loadBool(@"bypass", true);
-    isFlyEnabled           = loadBool(@"fly", false);
-    flyAutoThrust          = loadBool(@"flyauto", false);
-    isFlyPadShown          = false;   // [SESSION_ONLY] D-pad ekrani kapamasin
-    isLowGravEnabled       = loadBool(@"lowgrav", false);
-    isAsciiAnimEnabled     = loadBool(@"asciianim", false);
-    g_gifColored           = loadBool(@"gifColored", false);
-    g_gifCols              = loadInt(@"gifCols", 24);
-    loadFavorites();
-    asciiAnimIndex         = loadInt(@"asciiIdx", 0);
-    isRoomSpamEnabled      = false;   // [SESSION_ONLY] spam kapali baslasin (guvenlik)
-    roomSpamMaxCount       = loadInt(@"roomMax", 0);
-    roomMaxPlayers         = loadInt(@"roomMaxP", 31);
-    roomSpamTTL            = loadInt(@"roomTTL", 300000);
-    roomSpamInterval       = loadInt(@"roomIv", 40) / 100.0f;
-    roomSpamContinuous     = loadBool(@"roomcont", true);
-    spamStyle              = loadInt(@"spamStyle", 0);
-    NSString* rn = loadStr(@"roomName", @"<b><color=#FF0000>FEW1N</color></b>");
-    strncpy(customRoomName, rn.UTF8String, sizeof(customRoomName)-1); customRoomName[sizeof(customRoomName)-1]='\0';
-    isCustomPlateEnabled   = loadBool(@"plateEnabled", false);
-    isMasterClaimDisabled  = loadBool(@"masterClaimOff", false);   // v70 modu tercihi
-    // v90: RCCP toggle'lar crash sebep oluyor — HEPSI ZORLA KAPALI (offset uyumsuzluğu memory corruption)
-    isBrakeGlowEnabled        = false; saveBool(@"brakeglow", false);
-    isBrakeGlowDobEnabled     = false; saveBool(@"brakeglowdob", false);
-    isBrakeGlowMinTempEnabled = false; saveBool(@"brakeglowmin", false);
-    // v90: Farlar/Yakit/NOS kaldirildi, Hasar Yok + Balata Glow KALDI (placeholder — v91'de il2cpp ile gercek fix)
-    isNoDamageEnabled      = loadBool(@"nodamage", false);
-    isAutoMoneyEnabled     = loadBool(@"automoney", false);
+    isEmissivePaintEnabled  = false;
+    isExhaustFlameOnEnabled = false;
+    isVidyoNamesEnabled     = false;
+    isAiChatModeEnabled     = false;
+    g_selFlashRate         = 1;
+    announceInterval       = 5.0f;
+    isAutoGreetEnabled     = false;
+    carAccelPower          = 3.0f;
+    carSteerPower          = 1.0f;
+    carTopSpeed            = 300.0f;
+    isColorChatEnabled     = false;
+    isSpamEnabled          = false;
+    isBypassPasswordEnabled= false;
+    isFlyEnabled           = false;
+    flyAutoThrust          = false;
+    isFlyPadShown          = false;
+    isLowGravEnabled       = false;
+    isAsciiAnimEnabled     = false;
+    g_gifColored           = false;
+    g_gifCols              = 24;
+    asciiAnimIndex         = 0;
+    isRoomSpamEnabled      = false;
+    roomSpamMaxCount       = 0;
+    roomMaxPlayers         = 31;
+    roomSpamTTL            = 300000;
+    roomSpamInterval       = 0.4f;
+    roomSpamContinuous     = false;
+    spamStyle              = 0;
+    isCustomPlateEnabled   = false;
+    isMasterClaimDisabled  = false;
+    isBrakeGlowEnabled        = false;
+    isBrakeGlowDobEnabled     = false;
+    isBrakeGlowMinTempEnabled = false;
+    isNoDamageEnabled      = false;
+    isAutoMoneyEnabled     = false;
     isNanCrashEnabled      = false;
     isRoomCrashActive      = false;
     panicCrash             = false;
-    isAdBlockEnabled       = loadBool(@"adblock", false);  // v96: VARSAYILAN KAPALI (bug yaratiyordu)
+    isAdBlockEnabled       = false;
+    customMoneyAmount      = 100000000;
+
+    // UserDefaults temizle (kalintilar acilista oto-aktif olmasin)
+    saveBool(@"unlockcars", false);
+    saveBool(@"carpanel", false);
+    saveBool(@"noclip", false);
+    saveBool(@"antigrav", false);
+    saveBool(@"carrainbow", false);
+    saveBool(@"carPaintActive", false);
+    saveBool(@"asciiColor", false);
+    saveBool(@"lyricsColor", false);
+    saveBool(@"lyricsLoop", false);
+    saveBool(@"alwayslights", false);
+    saveBool(@"emissive", false);
+    saveBool(@"exhaustflame", false);
+    saveBool(@"vidyonames", false);
+    saveBool(@"aichat", false);
+    saveBool(@"autogreet", false);
+    saveBool(@"chatspam", false);
+    saveBool(@"bypass", false);
+    saveBool(@"fly", false);
+    saveBool(@"flyauto", false);
+    saveBool(@"lowgrav", false);
+    saveBool(@"asciianim", false);
+    saveBool(@"gifColored", false);
+    saveBool(@"roomcont", false);
+    saveBool(@"plateEnabled", false);
+    saveBool(@"nodamage", false);
+    saveBool(@"automoney", false);
+    saveBool(@"adblock", false);
+    saveBool(@"brakeglow", false);
+    saveBool(@"brakeglowdob", false);
+    saveBool(@"brakeglowmin", false);
     customMoneyAmount      = loadInt(@"moneyAmount", 100000000);
     NSString* pt = loadStr(@"plateText", @"FEW1N");
     strncpy(customPlateText, pt.UTF8String, sizeof(customPlateText)-1); customPlateText[sizeof(customPlateText)-1]='\0';
