@@ -562,6 +562,7 @@ static bool  g_voteKickFullYes = false;
 static void few1n_ensureVoteKick(void);
 static bool few1n_makeVoteKickFullYes(void);
 static void few1n_tickVoteKickFullYes(void);
+static NSString* readStr(void* il2s);
 
 // Bir pointer okunabilir/makul mu? (cop pointer dereference crash'ini onler)
 static inline bool ptrOk(void* p) {
@@ -4201,7 +4202,7 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)nativeKickByName;
 - (void)nativeKickPick;
 - (void)normalVoteKickPick;
-- (void)toggleVoteKickFullYes:(UISwitch*)sw;
+- (void)tapVoteKickFullYes;
 - (void)forceVoteKickFullYes;
 - (void)voteKickDiagnostics;
 - (void)targetBombCrashPick;
@@ -4820,7 +4821,7 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"💥  Odadaki Herkesi At (Mass Kick)" color:C_RED atY:y action:@selector(tapRoomKickAll)];
     y = [self actionRow:@"🎯  Belirli Oyuncuyu At (Sec ve Kick)" color:C_RED atY:y action:@selector(nativeKickPick)];
     y = [self actionRow:@"🗳️  Normal Oylama Başlat (Oyuncu Seç)" color:C_CYAN atY:y action:@selector(normalVoteKickPick)];
-    y = [self switchRow:@"🗳️  Oylama Full Evet (Otomatik 99 Evet)" on:g_voteKickFullYes atY:y action:@selector(toggleVoteKickFullYes:)];
+    y = [self toggle:@"🗳️  Oylama Full Evet" sub:@"Aktif oylamayı 99 Evet yapar ve kilitler" key:@"votekickyes" atY:y action:@selector(tapVoteKickFullYes)];
     y = [self actionRow:@"⚡  Aktif Oylamayı 99 Evet Yap" color:C_CYAN atY:y action:@selector(forceVoteKickFullYes)];
     y = [self actionRow:@"🛡️  VoteKick / Anti-VoteKick Durumu" color:C_CYAN atY:y action:@selector(voteKickDiagnostics)];
     y = [self actionRow:@"💣  HEDEFLİ BOMBA + CRASH (Sec)" color:C_RED atY:y action:@selector(targetBombCrashPick)];
@@ -5154,6 +5155,7 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"vidyonames"     on:isVidyoNamesEnabled];
     [self setToggle:@"nametrack"      on:isNameTrackEnabled];
     [self setToggle:@"aichat"         on:isAiChatModeEnabled];
+    [self setToggle:@"votekickyes"    on:g_voteKickFullYes];
 
     // canli durum rozeti
     if (self.statusLabel && self.statusCard) {
@@ -5671,6 +5673,7 @@ static UIViewController* few1n_topVC(void) {
                 FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi");
                 // v114.38: Oylama başlar başlamaz Evet sayısını anında full yap ve kilitle
                 g_voteKickFullYes = true;
+                [self setToggle:@"votekickyes" on:g_voteKickFullYes];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     few1n_makeVoteKickFullYes();
                 });
@@ -5681,8 +5684,9 @@ static UIViewController* few1n_topVC(void) {
     [self present:a];
 }
 
-- (void)toggleVoteKickFullYes:(UISwitch*)sw {
-    g_voteKickFullYes = sw.isOn;
+- (void)tapVoteKickFullYes {
+    g_voteKickFullYes = !g_voteKickFullYes;
+    [self setToggle:@"votekickyes" on:g_voteKickFullYes];
     if (g_voteKickFullYes) {
         few1n_makeVoteKickFullYes();
     }
@@ -5690,6 +5694,7 @@ static UIViewController* few1n_topVC(void) {
 
 - (void)forceVoteKickFullYes {
     g_voteKickFullYes = true; // 1.4.4: Sürekli aktif tut (kilitle)
+    [self setToggle:@"votekickyes" on:g_voteKickFullYes];
     bool ok = few1n_makeVoteKickFullYes();
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ VoteKick Full Evet"
         message:ok ? @"Aktif oylama 99 EVET olarak ayarlandı ve onaylandı! ✓" : @"Şu anda aktif bir oylama bulunamadı veya oylama kapalı."
