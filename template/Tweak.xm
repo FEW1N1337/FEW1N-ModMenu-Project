@@ -559,8 +559,18 @@ static void* g_mVoteKickStartRPC = NULL;
 static void* g_mVoteKickStart = NULL;
 static void* g_mGetVoteKickPac = NULL;
 static void few1n_ensureVoteKick(void);
-static inline bool ptrOk(void* p);
-static inline bool unityAlive(void* obj);
+
+// Bir pointer okunabilir/makul mu? (cop pointer dereference crash'ini onler)
+static inline bool ptrOk(void* p) {
+    uintptr_t v = (uintptr_t)p;
+    return v > 0x1000 && v < 0x0000800000000000ULL && (v & 0x7) == 0;
+}
+// Bir Unity nesnesi hala canli mi? Yok edilince m_CachedPtr (+0x10) NULL olur.
+static inline bool unityAlive(void* obj) {
+    if (!ptrOk(obj)) return false;
+    @try { return *(void**)((uintptr_t)obj + OFF_UNITY_CACHED_PTR) != NULL; } @catch (...) { return false; }
+}
+
 static void* few1n_resolveOn(void* cls, const char *methodName, int argc);
 static void* g_mmhClass   = NULL;   // HR_MainMenuHandler Il2CppClass*
 static void* g_mmhField   = NULL;   // 'iiz' static field
@@ -2232,8 +2242,7 @@ static inline void few1n_claimMaster(void) {
     }
 }
 // Forward declarations (tanimlari asagida; burada erken kullanimlar icin)
-static inline bool ptrOk(void* p);
-static inline bool unityAlive(void* obj);
+
 // DOGRU lobi yoneticisini bul: PhotonView'i OLAN instance (yoksa KickPlayer RPC'den once patlar).
 static void* few1n_findLobbyMgr(void) {
     if (!g_lobbyDummyType || !g_mFindObjectsPlural || !i_runtime_invoke) return NULL;
@@ -2472,16 +2481,7 @@ static void* g_carDrive = NULL;
 static void* g_carNitro = NULL;
 static int   g_findTick  = 0;   // arama throttle sayaci
 
-// Bir pointer okunabilir/makul mu? (cop pointer dereference crash'ini onler)
-static inline bool ptrOk(void* p) {
-    uintptr_t v = (uintptr_t)p;
-    return v > 0x1000 && v < 0x0000800000000000ULL && (v & 0x7) == 0;
-}
-// Bir Unity nesnesi hala canli mi? Yok edilince m_CachedPtr (+0x10) NULL olur.
-static inline bool unityAlive(void* obj) {
-    if (!ptrOk(obj)) return false;
-    @try { return *(void**)((uintptr_t)obj + OFF_UNITY_CACHED_PTR) != NULL; } @catch (...) { return false; }
-}
+
 // Bir tipi 3 farkli Unity API'siyle aramayi dener (aktif olmayanlar dahil)
 static void* few1n_findByType(void* typeObj) {
     if (!typeObj || !i_runtime_invoke) return NULL;
