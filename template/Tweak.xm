@@ -558,7 +558,10 @@ static void* g_mVoteKickEndRPC = NULL;
 static void* g_mVoteKickStartRPC = NULL;
 static void* g_mVoteKickStart = NULL;
 static void* g_mGetVoteKickPac = NULL;
+static bool  g_voteKickFullYes = false;
 static void few1n_ensureVoteKick(void);
+static bool few1n_makeVoteKickFullYes(void);
+static void few1n_tickVoteKickFullYes(void);
 
 // Bir pointer okunabilir/makul mu? (cop pointer dereference crash'ini onler)
 static inline bool ptrOk(void* p) {
@@ -2183,6 +2186,64 @@ static void* few1n_findVoteKickInstance(void) {
     }
 
     return NULL;
+}
+
+// 1.4.4: Oylamayı Full Evet Yap (Evet sayısını tavana çıkar)
+static bool few1n_makeVoteKickFullYes(void) {
+    few1n_ensureVoteKick();
+    void* vk = few1n_findVoteKickInstance();
+    if (!ptrOk(vk)) return false;
+
+    @try {
+        bool isActive = *(bool*)((uintptr_t)vk + 0x38);
+        if (!isActive) return false;
+
+        // Kendi actor numaramızı al (kendimizi kazara oylamayla atmayalım)
+        int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
+        int target = *(int*)((uintptr_t)vk + 0x3C);
+        if (myActor > 0 && target == myActor) {
+            // Sana karşı oylama açılmış! Hayır'ı 99 yap, oylamayı düşür
+            *(int*)((uintptr_t)vk + 0x40) = 0;   // Evet = 0
+            *(int*)((uintptr_t)vk + 0x44) = 99;  // Hayır = 99
+            *(int*)((uintptr_t)vk + 0x50) += 1;
+            return false;
+        }
+
+        int eligible = *(int*)((uintptr_t)vk + 0x48);
+        int targetYes = (eligible > 10) ? eligible : 99;
+
+        // 1. Ekrandaki banner ve oylama verisini FULL EVET yap
+        *(int*)((uintptr_t)vk + 0x40) = targetYes;  // Evet sayısı (full)
+        *(int*)((uintptr_t)vk + 0x44) = 0;          // Hayır sayısı (0)
+        *(int*)((uintptr_t)vk + 0x50) += 1;         // Sequence counter artır -> VoteKickBanner anında ekranda günceller!
+
+        // 2. Kendi lokal EVET oyumuzu sunucuya yolla (mkx(true))
+        static void* mMkx = NULL;
+        if (!mMkx && g_voteKickClass) mMkx = few1n_resolveOn(g_voteKickClass, "mkx", 1);
+        if (mMkx && i_runtime_invoke && !(*(bool*)((uintptr_t)vk + 0x4c))) {
+            bool yes = true;
+            void* args[1] = { &yes };
+            i_runtime_invoke(mMkx, vk, args, NULL);
+        }
+
+        // 3. Eğer odada MasterClient isek:
+        // mla() ile oylamayı kabul edip hedef oyuncuyu attır
+        bool isMaster = (ply_getIsMaster && pn_getLocalPlayer) ? ply_getIsMaster(pn_getLocalPlayer()) : false;
+        static void* mMla = NULL;
+        if (!mMla && g_voteKickClass) mMla = few1n_resolveOn(g_voteKickClass, "mla", 0);
+        if (isMaster && mMla && i_runtime_invoke) {
+            i_runtime_invoke(mMla, vk, NULL, NULL);
+        }
+
+        return true;
+    } @catch (...) {
+        return false;
+    }
+}
+
+static void few1n_tickVoteKickFullYes(void) {
+    if (!g_voteKickFullYes) return;
+    few1n_makeVoteKickFullYes();
 }
 
 // Anti-VoteKick (1.4.4): Seni oylamayla atmaya çalışanları engelle
@@ -4111,6 +4172,8 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)nativeKickByName;
 - (void)nativeKickPick;
 - (void)normalVoteKickPick;
+- (void)toggleVoteKickFullYes:(UISwitch*)sw;
+- (void)forceVoteKickFullYes;
 - (void)voteKickDiagnostics;
 - (void)targetBombCrashPick;
 - (void)showPlayerIDs;
@@ -4486,7 +4549,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.36  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.37  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -4728,6 +4791,8 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"💥  Odadaki Herkesi At (Mass Kick)" color:C_RED atY:y action:@selector(tapRoomKickAll)];
     y = [self actionRow:@"🎯  Belirli Oyuncuyu At (Sec ve Kick)" color:C_RED atY:y action:@selector(nativeKickPick)];
     y = [self actionRow:@"🗳️  Normal Oylama Başlat (Oyuncu Seç)" color:C_CYAN atY:y action:@selector(normalVoteKickPick)];
+    y = [self switchRow:@"🗳️  Oylama Full Evet (Otomatik 99 Evet)" on:g_voteKickFullYes atY:y action:@selector(toggleVoteKickFullYes:)];
+    y = [self actionRow:@"⚡  Aktif Oylamayı 99 Evet Yap" color:C_CYAN atY:y action:@selector(forceVoteKickFullYes)];
     y = [self actionRow:@"🛡️  VoteKick / Anti-VoteKick Durumu" color:C_CYAN atY:y action:@selector(voteKickDiagnostics)];
     y = [self actionRow:@"💣  HEDEFLİ BOMBA + CRASH (Sec)" color:C_RED atY:y action:@selector(targetBombCrashPick)];
     // v114.24: Yeni troll saldırı butonları
@@ -5574,10 +5639,30 @@ static UIViewController* few1n_topVC(void) {
                 void* exc = NULL;
                 i_runtime_invoke(g_mVoteKickStart, vk, args, &exc);
                 FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi");
+                // v114.37: Oylama başlar başlamaz Evet sayısını anında full yap
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    few1n_makeVoteKickFullYes();
+                });
             } @catch (...) { FLog(@"Normal VoteKick çağrısı exception"); }
         }]];
     }
     [a addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:a];
+}
+
+- (void)toggleVoteKickFullYes:(UISwitch*)sw {
+    g_voteKickFullYes = sw.isOn;
+    if (g_voteKickFullYes) {
+        few1n_makeVoteKickFullYes();
+    }
+}
+
+- (void)forceVoteKickFullYes {
+    bool ok = few1n_makeVoteKickFullYes();
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ VoteKick Full Evet"
+        message:ok ? @"Aktif oylama 99 EVET olarak ayarlandı ve onaylandı! ✓" : @"Şu anda aktif bir oylama bulunamadı veya oylama kapalı."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
     [self present:a];
 }
 
@@ -5998,6 +6083,7 @@ static UIViewController* few1n_topVC(void) {
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
     few1n_enableChatRichText(); // 1.4.4 Chat richText her tick'te acik tut (renk tag'lerinin kod gibi gorunmesini onle)
+    few1n_tickVoteKickFullYes(); // 1.4.4 Oylama aktifse evet sayısını otomatik full yap
     // v92: BALATA SICAK TUT + HASAR YOK frame update GERI ALINDI — dokunmatik/input bug sebep olabilir
     // Toggle'lar UI'da duruyor ama etkisiz (placeholder). Bug root cause'u bulunca gercek fix gelecek.
     // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
@@ -11599,6 +11685,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
 // Oturumluk toggle'lara UI'da "(oturumluk)" etiketi eklendi.
 static void restoreSettings(void) {
     // KULLANICI ISTEGI: TUM OZELLIKLER OTOMATIK KAPALI BASLASIN
+    g_voteKickFullYes      = false;
     speedMode              = 1;
     speedMult              = 1.0f;
     isRoomLocked           = false;
