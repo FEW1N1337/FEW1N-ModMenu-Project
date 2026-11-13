@@ -60,6 +60,7 @@ workflows:
             -Wno-unused-variable \
             -Wno-unused-function \
             -Wno-format-invalid-specifier \
+            -Wno-pointer-bool-conversion \
             -Wno-unknown-warning-option
 
           FEW1NMod_FRAMEWORKS = UIKit Foundation \

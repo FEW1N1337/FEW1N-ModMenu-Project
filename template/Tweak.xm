@@ -1542,7 +1542,7 @@ static void  w_chatSend(void *self, void *message) {
 // 1.4.4 Chat RichText zorlama — allText.richText = true yaparak renk tag'lerinin ekranda kod olarak kalmasını önle
 static void few1n_enableChatRichText(void) {
     @try {
-        void* cm = w_chatGetInst ? w_chatGetInst() : (chatGetInst ? chatGetInst() : NULL);
+        void* cm = w_chatGetInst();
         if (!ptrOk(cm)) return;
         // ChatManager.chatUI @ 0x40
         void* cui = *(void**)((uintptr_t)cm + 0x40);
@@ -2108,7 +2108,6 @@ static void h_setTimeScale(float v) {
 // 1.4.4: VoteKick dinamik çözümleme (Chat.dll ve tüm image'lar)
 static void few1n_ensureVoteKick(void) {
     if (g_voteKickClass && g_mVoteKickStart && g_mVoteKickEndRPC && g_mVoteKickStartRPC) return;
-    if (!few1n_classAnyImage) return;
 
     if (!g_voteKickClass) {
         // VoteKick sınıfını Chat.dll ve tüm yüklü image'larda ara
@@ -2117,7 +2116,7 @@ static void few1n_ensureVoteKick(void) {
     }
 
     if (g_voteKickClass) {
-        if (!g_voteKickTypeObj && few1n_typeObjOf) {
+        if (!g_voteKickTypeObj) {
             g_voteKickTypeObj = few1n_typeObjOf(g_voteKickClass);
         }
         if (!g_mVoteKickEndRPC)   g_mVoteKickEndRPC   = few1n_resolveOn(g_voteKickClass, "VoteKickEndRPC", 4);
