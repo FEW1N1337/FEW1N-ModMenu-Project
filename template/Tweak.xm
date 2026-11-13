@@ -563,6 +563,8 @@ static void few1n_ensureVoteKick(void);
 static bool few1n_makeVoteKickFullYes(void);
 static void few1n_tickVoteKickFullYes(void);
 static NSString* readStr(void* il2s);
+static void few1n_claimMaster(void);
+static void few1n_kickPlayer(void* playerObj);
 
 // Bir pointer okunabilir/makul mu? (cop pointer dereference crash'ini onler)
 static inline bool ptrOk(void* p) {
@@ -2201,6 +2203,16 @@ static void* few1n_findVoteKickInstance(void) {
     return NULL;
 }
 
+// 1.4.4: VoteKick.Count Hook — Oyun motorunun oy sayımını 99 Evet yap
+static void (*o_voteKickCount)(void*, int*, int*) = NULL;
+static void h_voteKickCount(void* self, int* yes, int* no) {
+    if (o_voteKickCount) o_voteKickCount(self, yes, no);
+    if (g_voteKickFullYes) {
+        if (yes) *yes = 99;
+        if (no)  *no  = 0;
+    }
+}
+
 // 1.4.4: Oylamayı Full Evet Yap (Evet sayısını tavana çıkar)
 static bool few1n_makeVoteKickFullYes(void) {
     few1n_ensureVoteKick();
@@ -2221,6 +2233,9 @@ static bool few1n_makeVoteKickFullYes(void) {
             *(int*)((uintptr_t)vk + 0x50) += 1;
             return false;
         }
+
+        // MasterClient yetkisi iste (CAS uyumlu)
+        few1n_claimMaster();
 
         int eligible = *(int*)((uintptr_t)vk + 0x48);
         int targetYes = (eligible > 99) ? eligible : 99;
@@ -2327,13 +2342,16 @@ static inline void few1n_claimMaster(void) {
             void* me = pn_getLocalPlayer();
             void* room = pn_getCurrentRoom();
             if (me && room) {
-                // A) Once server'a SetMasterClient gonder (CAS icin gercek eski master ID'si lazim)
-                if (pn_setMasterClient) {
-                    @try { pn_setMasterClient(me); } @catch (...) {}
-                }
-                // B) Client-side memory patch: ActorNumber = offset 0x18, MasterClientId = offset 0x48
                 int myActor = *(int*)((uintptr_t)me + 0x18);
-                *(int*)((uintptr_t)room + 0x48) = myActor;
+                int currentMaster = *(int*)((uintptr_t)room + 0x48);
+                if (currentMaster != myActor) {
+                    // A) Once server'a SetMasterClient gonder (CAS icin gercek eski master ID'si lazim)
+                    if (pn_setMasterClient) {
+                        @try { pn_setMasterClient(me); } @catch (...) {}
+                    }
+                    // B) Client-side memory patch: ActorNumber = offset 0x18, MasterClientId = offset 0x48
+                    *(int*)((uintptr_t)room + 0x48) = myActor;
+                }
             }
         } @catch (...) {}
     }
@@ -4579,7 +4597,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.38  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.39  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -11984,6 +12002,7 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("TMPro",           "TMP_Text",       "set_text",        1, (void*)h_tmpSetText,      (void**)&o_tmpSetText,      "TMP_Text.set_text");
     safeHookByName("",                "ChatManager",    "Send",            1, (void*)h_chatSend,        (void**)&o_chatSend,        "ChatManager.Send");
     safeHookByName("Censorship",      "ra",             "opp",             1, (void*)h_censorship_opp,  (void**)&o_censorship_opp,  "Censorship.ra.opp");
+    safeHookByName("",                "VoteKick",       "Count",           2, (void*)h_voteKickCount,   (void**)&o_voteKickCount,   "VoteKick.Count (Full Evet Sayımı)");
 
     // CarPlayerInput.FixedUpdate ismi korunmuş (Unity engine method)
     safeHookByName("", "CarPlayerInput", "FixedUpdate", 0, (void*)h_playerInputFixed, (void**)&o_playerInputFixed, "CarPlayerInput.FixedUpdate *ANA*");
