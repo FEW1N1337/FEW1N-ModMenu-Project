@@ -1539,6 +1539,30 @@ static void  w_chatSend(void *self, void *message) {
     @try { void *args[1]={message}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
 
+// 1.4.4 Chat RichText zorlama — allText.richText = true yaparak renk tag'lerinin ekranda kod olarak kalmasını önle
+static void few1n_enableChatRichText(void) {
+    @try {
+        void* cm = w_chatGetInst ? w_chatGetInst() : (chatGetInst ? chatGetInst() : NULL);
+        if (!ptrOk(cm)) return;
+        // ChatManager.chatUI @ 0x40
+        void* cui = *(void**)((uintptr_t)cm + 0x40);
+        if (ptrOk(cui)) {
+            // ChatUI.allText @ 0x20
+            void* allText = *(void**)((uintptr_t)cui + 0x20);
+            if (ptrOk(allText)) {
+                w_tmp_set_richText(allText, true);
+                *(bool*)((uintptr_t)allText + 0x342) = true; // m_isRichText
+            }
+            // ChatUI.ozh @ 0x50
+            void* ozh = *(void**)((uintptr_t)cui + 0x50);
+            if (ptrOk(ozh)) {
+                w_tmp_set_richText(ozh, true);
+                *(bool*)((uintptr_t)ozh + 0x342) = true;
+            }
+        }
+    } @catch (...) {}
+}
+
 // ====== PlayerManager (para — sunucu-kilitli ama getters visual için) ======
 static void* w_playerManagerGetInst(void) {
     static void *m = NULL;
@@ -3706,7 +3730,8 @@ static void h_chatSend(void* self, void* msg) {
                 void* colored = mkStr(glitchWrapChat(orig));
                 if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
             } else if (isColorChatEnabled) {
-                void* colored = mkStr([NSString stringWithFormat:@"<color=cyan><b>[FEW1N]</b></color> %@", orig]);
+                few1n_enableChatRichText();
+                void* colored = mkStr([NSString stringWithFormat:@"<color=#00E5FF><b>[FEW1N]</b></color> <color=#%s>%@</color>", spamColorHex, orig]);
                 if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
             }
         }
@@ -4462,7 +4487,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.34  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.35  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -5973,6 +5998,7 @@ static UIViewController* few1n_topVC(void) {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
+    few1n_enableChatRichText(); // 1.4.4 Chat richText her tick'te acik tut (renk tag'lerinin kod gibi gorunmesini onle)
     // v92: BALATA SICAK TUT + HASAR YOK frame update GERI ALINDI — dokunmatik/input bug sebep olabilir
     // Toggle'lar UI'da duruyor ama etkisiz (placeholder). Bug root cause'u bulunca gercek fix gelecek.
     // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
@@ -6344,6 +6370,7 @@ static UIViewController* few1n_topVC(void) {
 - (void)sendGlitchMsg { [self promptStyledSend:1]; }
 // Istedigin mesaji, sectigin renkte gonder (herkes gorur - exploit'in kullandigi richText)
 - (void)sendColoredChat {
+    few1n_enableChatRichText();
     if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Renkli Mesaj Gonder"
         message:@"Yazdigin mesaj SENIN rengin ile gider (herkes gorur)" preferredStyle:UIAlertControllerStyleAlert];
@@ -6351,9 +6378,19 @@ static UIViewController* few1n_topVC(void) {
     [ac addAction:[UIAlertAction actionWithTitle:@"Gonder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         NSString *t = ac.textFields.firstObject.text;
         if (t.length == 0) return;
+        few1n_enableChatRichText();
         NSString *col = [NSString stringWithUTF8String:spamColorHex];
         NSString *msg = [NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", col, t];
-        @try { void* mgr = chatGetInst(); void* s = mkStr(msg); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; } } @catch (...) { g_modSendingRichText = false; }
+        @try {
+            void* mgr = chatGetInst();
+            void* s = mkStr(msg);
+            if (mgr && s) {
+                g_modSendingRichText = true;
+                chatSend(mgr, s);
+                g_modSendingRichText = false;
+            }
+        } @catch (...) { g_modSendingRichText = false; }
+        few1n_enableChatRichText();
         FLog([NSString stringWithFormat:@"Renkli mesaj gonderildi (#%@)", col]);
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
@@ -6361,6 +6398,7 @@ static UIViewController* few1n_topVC(void) {
 }
 // TUM ODA CHATINI senin sectigin renge boya (kapatilmamis renk tag'i -> tum mesajlar boyanir)
 - (void)colorAllChat {
+    few1n_enableChatRichText();
     if (!chatGetInst || !chatSend) { FLog(@"Chat hazir degil - odaya gir"); return; }
     NSString *col = [NSString stringWithUTF8String:spamColorHex];
     @try {
@@ -6370,6 +6408,7 @@ static UIViewController* few1n_topVC(void) {
         NSString *msg = [NSString stringWithFormat:@"<color=#%@>", col];
         void* s = mkStr(msg); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
     } @catch (...) {}
+    few1n_enableChatRichText();
     FLog([NSString stringWithFormat:@"Oda chati #%@ rengine boyandi (herkes gorur)", col]);
 }
 - (void)sendChatTemplate {
