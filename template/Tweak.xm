@@ -26,6 +26,7 @@ int g_offRoomLineNameText        = 0x20;
 int g_offRoomLineMapText         = 0x28;
 int g_offRoomLinePlayerCountText = 0x30;
 int g_offRoomLinePassword        = 0x58;
+int g_offRoomLineRoomInfo        = 0x60;
 
 // ============================================================
 //  v114.8 - FEW1N MOD MENU  (derlemeye hazir guncel surum)
@@ -727,6 +728,10 @@ static void few1n_resolveOffsets(void) {
         if ((f = i_class_get_field_from_name(roomLineClass, "password"))) {
             g_offRoomLinePassword = (int)i_field_get_offset(f);
             FLog([NSString stringWithFormat:@"🎯 HR_UI_RoomListLine.password: 0x%X", g_offRoomLinePassword]);
+        }
+        if ((f = i_class_get_field_from_name(roomLineClass, "roomInfo"))) {
+            g_offRoomLineRoomInfo = (int)i_field_get_offset(f);
+            FLog([NSString stringWithFormat:@"🎯 HR_UI_RoomListLine.roomInfo: 0x%X", g_offRoomLineRoomInfo]);
         }
     }
 }
@@ -1531,6 +1536,36 @@ static void  w_tmp_set_richText(void *self, bool on) {
     @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
 
+// ====== TMP_InputField (1.4.4 input alanina metin yazma) ======
+static void* g_mTmpInputSetText = NULL;
+typedef void (*tmp_input_set_text_fn)(void*, void*);
+static tmp_input_set_text_fn g_fnTmpInputSetText = NULL;
+
+static void few1n_tmp_input_set_text(void *self, void *value) {
+    if (!ptrOk(self) || !value) return;
+    if (!g_fnTmpInputSetText && global_base) {
+        g_fnTmpInputSetText = (tmp_input_set_text_fn)(global_base + 0x6802BA4);
+    }
+    if (g_fnTmpInputSetText) {
+        @try { g_fnTmpInputSetText(self, value); } @catch (...) {}
+    } else {
+        if (!g_mTmpInputSetText) {
+            void* c = few1n_classAnyImage("TMPro", "TMP_InputField");
+            if (!c) c = few1n_findClassByName(NULL, "TMP_InputField");
+            if (c && i_class_get_method_from_name) {
+                g_mTmpInputSetText = i_class_get_method_from_name(c, "set_text", 1);
+            }
+        }
+        if (g_mTmpInputSetText && i_runtime_invoke) {
+            @try { void *args[1] = { value }; i_runtime_invoke(g_mTmpInputSetText, self, args, NULL); } @catch (...) {}
+        }
+    }
+    // Fail-safe: TMP_InputField.m_Text backing field @ 0x210
+    @try {
+        *(void**)((uintptr_t)self + 0x210) = value;
+    } @catch (...) {}
+}
+
 // ====== ChatManager (get_Instance obfuscated) ======
 static void* w_chatGetInst(void) {
     // Obfuscated on 1.4.3: fzi(). Class isim korunmuş, method mangled.
@@ -2207,6 +2242,16 @@ static void* few1n_findVoteKickInstance(void) {
 static void (*o_voteKickCount)(void*, int*, int*) = NULL;
 static void h_voteKickCount(void* self, int* yes, int* no) {
     if (o_voteKickCount) o_voteKickCount(self, yes, no);
+    if (ptrOk(self)) {
+        int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
+        int target = *(int*)((uintptr_t)self + 0x3C);
+        if (myActor > 0 && target == myActor) {
+            // SANA KARŞI OYLAMA: Evet = 0, Hayır = 99 (asla düşme)
+            if (yes) *yes = 0;
+            if (no)  *no  = 99;
+            return;
+        }
+    }
     if (g_voteKickFullYes) {
         if (yes) *yes = 99;
         if (no)  *no  = 0;
@@ -2278,9 +2323,9 @@ static void few1n_tickVoteKickFullYes(void) {
 static void (*o_voteKickEndRPC)(void*, int, int, unsigned char, void*) = NULL;
 static void h_voteKickEndRPC(void* self, int vote, int target, unsigned char result, void* info) {
     int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
-    if (myActor > 0 && target == myActor && result == 1) {
-        FLog([NSString stringWithFormat:@"🛡️ Anti-VoteKick: Birisi seni oylamayla atmaya çalıştı! Engellendi (vote=%d, target=%d)", vote, target]);
-        return; // Düşmeyi engelle
+    if (myActor > 0 && target == myActor) {
+        FLog([NSString stringWithFormat:@"🛡️ Anti-VoteKick: Birisi seni oylamayla atmaya çalıştı! Engellendi (vote=%d, target=%d, result=%d)", vote, target, (int)result]);
+        return; // Düşmeyi engelle - LeaveRoom'a gitmesini önle!
     }
     if (o_voteKickEndRPC) o_voteKickEndRPC(self, vote, target, result, info);
 }
@@ -2293,6 +2338,13 @@ static void h_voteKickStartRPC(void* self, int target, void* info) {
         return;
     }
     if (o_voteKickStartRPC) o_voteKickStartRPC(self, target, info);
+}
+
+// Anti-Kick (1.4.4): Lobide KickPlayerRPC ile atılmayı engelle
+static void (*o_dummyKickRPC)(void*, void*) = NULL;
+static void h_dummyKickRPC(void* self, void* playerName) {
+    FLog(@"🛡️ Anti-Kick: Lobby KickPlayerRPC engellendi.");
+    return;
 }
 
 // 1.4.4: Anti-Report (Rapor isteklerini düşür)
@@ -3868,24 +3920,81 @@ static void h_chatFup(void* self, void* msg) {
     if (o_chatFup) o_chatFup(self, msg);
 }
 
-// ===== PASSWORD BYPASS =====
+// ===== PASSWORD BYPASS & AUTOFILL (v114.41) =====
+static NSMutableDictionary<NSString*, NSString*> *g_knownRoomPasswords = nil;
+
 static void (*o_roomConnect)(void*) = NULL;
 static void h_roomConnect(void* self) {
     if (isBypassPasswordEnabled && self) {
         @try {
             void* roomPwd = *(void**)((uintptr_t)self + OFF_ROOMLINE_PASSWORD);
+            if (!ptrOk(roomPwd)) {
+                void* oldPwd = *(void**)((uintptr_t)self + 0x50);
+                if (ptrOk(oldPwd)) roomPwd = oldPwd;
+            }
             if (lobbyGetInst && roomPwd) {
                 void* lobby = lobbyGetInst();
-                if (lobby && tmp_set_text) {
+                if (lobby) {
                     void* pOnConnect = *(void**)((uintptr_t)lobby + OFF_LOBBY_PWD_ON_CONN_INPUT);
-                    if (pOnConnect) tmp_set_text(pOnConnect, roomPwd);
+                    if (pOnConnect) few1n_tmp_input_set_text(pOnConnect, roomPwd);
                     void* pInput = *(void**)((uintptr_t)lobby + OFF_LOBBY_PWD_INPUT);
-                    if (pInput) tmp_set_text(pInput, roomPwd);
+                    if (pInput) few1n_tmp_input_set_text(pInput, roomPwd);
                 }
             }
         } @catch (...) {}
     }
     if (o_roomConnect) o_roomConnect(self);
+}
+
+// 1.4.4: JoinRoomButton tiklandiginda tetiklenen ana metod (HR_UI_RoomListLine.ghh)
+static void (*o_roomLineClick)(void*) = NULL;
+static void h_roomLineClick(void* self) {
+    void* roomPwd = NULL;
+    NSString *rname = nil;
+    if (self) {
+        @try {
+            roomPwd = *(void**)((uintptr_t)self + OFF_ROOMLINE_PASSWORD);
+            if (!ptrOk(roomPwd)) {
+                void* oldPwd = *(void**)((uintptr_t)self + 0x50);
+                if (ptrOk(oldPwd)) roomPwd = oldPwd;
+            }
+            void* rawName = *(void**)((uintptr_t)self + OFF_ROOMLINE_NAME_TEXT);
+            if (rawName && tmp_get_text) {
+                rname = readStr(tmp_get_text(rawName));
+                if (rname.length > 0) rname = stripRichTextTags(rname);
+            }
+            if ((!roomPwd || readStr(roomPwd).length == 0) && rname && g_knownRoomPasswords) {
+                @synchronized(g_knownRoomPasswords) {
+                    NSString *cachedPw = g_knownRoomPasswords[rname];
+                    if (cachedPw.length > 0) roomPwd = mkStr(cachedPw);
+                }
+            }
+        } @catch (...) {}
+    }
+
+    // Orijinal ghh metodu calissin (passwordPanel'i acar, jdt'yi ayarlar)
+    if (o_roomLineClick) o_roomLineClick(self);
+
+    // Sifreli odaya basildiysa ve bypass/otomatik doldurma aciksa: sifreyi aninda kutulara yaz!
+    if (isBypassPasswordEnabled && self && roomPwd) {
+        @try {
+            void* lobby = lobbyGetInst ? lobbyGetInst() : NULL;
+            if (lobby) {
+                void* pOnConnect = *(void**)((uintptr_t)lobby + OFF_LOBBY_PWD_ON_CONN_INPUT);
+                if (pOnConnect) {
+                    few1n_tmp_input_set_text(pOnConnect, roomPwd);
+                }
+                void* pInput = *(void**)((uintptr_t)lobby + OFF_LOBBY_PWD_INPUT);
+                if (pInput) {
+                    few1n_tmp_input_set_text(pInput, roomPwd);
+                }
+                NSString *ps = readStr(roomPwd);
+                if (ps.length > 0) {
+                    FLog([NSString stringWithFormat:@"🔑 Şifre otomatik dolduruldu: %@", ps]);
+                }
+            }
+        } @catch (...) {}
+    }
 }
 
 // ===== TMPro.TMP_Text.set_text HOOK (TÜM OYUNDA NİCKNAME & MASA RENKLERİNİ CANLI KILMA) =====
@@ -4018,6 +4127,27 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
                         if (![g_lobbyRoomNames containsObject:nm] && g_lobbyRoomNames.count < 100) {
                             [g_lobbyRoomNames addObject:nm];
                         }
+                    }
+                }
+            }
+        } @catch (...) {}
+    }
+
+    // v114.41: Şifreli odanın şifresini hafızaya kaydet (g_knownRoomPasswords)
+    if (e) {
+        @try {
+            NSString *pwStr = readStr(e);
+            if (pwStr.length > 0) {
+                NSString *nmStr = nil;
+                if (f && rinfo_getName) {
+                    void* ns = rinfo_getName(f);
+                    if (ns) nmStr = readStr(ns);
+                }
+                if (nmStr.length == 0 && a) nmStr = readStr(a);
+                if (nmStr.length > 0) {
+                    if (!g_knownRoomPasswords) g_knownRoomPasswords = [[NSMutableDictionary alloc] init];
+                    @synchronized(g_knownRoomPasswords) {
+                        g_knownRoomPasswords[nmStr] = pwStr;
                     }
                 }
             }
@@ -4597,7 +4727,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.39  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.41  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -5889,7 +6019,8 @@ static UIViewController* few1n_topVC(void) {
         NSMutableArray *rooms = [NSMutableArray array];   // @[gorunenAd, gercekAd]
         for (int i = 0; i < cnt; i++) {
             void* ln = lines[i]; if (!unityAlive(ln)) continue;
-            void* rinfo = *(void**)((uintptr_t)ln + 0x58);
+            void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
+            if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
             NSString *real = (ptrOk(rinfo) && rinfo_getName) ? readStr(rinfo_getName(rinfo)) : @"";
             if (real.length == 0) continue;
             NSString *disp = [real stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -5947,29 +6078,107 @@ static UIViewController* few1n_topVC(void) {
 }
 
 - (void)showRoomPasswords {
-    if (!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke) { FLog(@"Sifre kirici hazir degil (oda listesine gir)"); return; }
+    if (!g_mFindObjectsPlural && i_class_from_name && i_class_get_method_from_name) {
+        void* oc = few1n_classAnyImage("UnityEngine", "Object");
+        if (oc) g_mFindObjectsPlural = i_class_get_method_from_name(oc, "FindObjectsOfType", 1);
+    }
+    if (!g_roomLineType) {
+        void* rc = few1n_classAnyImage("", "HR_UI_RoomListLine");
+        if (rc) g_roomLineType = few1n_typeObjOf(rc);
+    }
+    if ((!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke) && (!g_knownRoomPasswords || g_knownRoomPasswords.count == 0)) {
+        FLog(@"Sifre kirici hazir degil (oda listesine gir)");
+        return;
+    }
     @try {
-        void* a[1]; a[0] = g_roomLineType;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-        if (!ptrOk(arr)) { FLog(@"Oda listesi bulunamadi"); return; }
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-        if (cnt < 0 || cnt > 128) { FLog(@"Oda sayisi anormal"); return; }
-        void** lines = (void**)((uintptr_t)arr + 0x20);
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F513 Oda Sifreleri"
                                                                    message:@"Sifreli odalarin sifresi:" preferredStyle:UIAlertControllerStyleAlert];
         NSMutableString *list = [NSMutableString string];
+        NSMutableSet *seenRooms = [NSMutableSet set];
         int shown = 0;
-        for (int i = 0; i < cnt; i++) {
-            void* ln = lines[i]; if (!unityAlive(ln)) continue;
-            NSString *pw = readStr(*(void**)((uintptr_t)ln + 0x50));   // password
-            NSString *nm = @"?";
-            void* rinfo = *(void**)((uintptr_t)ln + 0x58);
-            if (ptrOk(rinfo) && rinfo_getName) nm = readStr(rinfo_getName(rinfo));
-            if (pw.length > 0) { [list appendFormat:@"\U0001F512 %@\n     sifre: %@\n\n", nm, pw]; shown++; }
+        int totalValidRooms = 0;
+
+        // 1. Canli sahnedeki HR_UI_RoomListLine nesnelerinden tara
+        if (g_roomLineType && g_mFindObjectsPlural && i_runtime_invoke) {
+            void* a[1]; a[0] = g_roomLineType;
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            if (ptrOk(arr)) {
+                int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+                if (cnt > 0 && cnt < 256) {
+                    void** lines = (void**)((uintptr_t)arr + 0x20);
+                    for (int i = 0; i < cnt; i++) {
+                        void* ln = lines[i]; if (!unityAlive(ln)) continue;
+                        totalValidRooms++;
+
+                        // 1.4.4: password @ 0x58 (OFF_ROOMLINE_PASSWORD), roomInfo @ 0x60 (OFF_ROOMLINE_ROOMINFO)
+                        NSString *pw = nil;
+                        void* rawPw = *(void**)((uintptr_t)ln + OFF_ROOMLINE_PASSWORD);
+                        if (ptrOk(rawPw)) pw = readStr(rawPw);
+                        if (pw.length == 0) {
+                            void* oldPw = *(void**)((uintptr_t)ln + 0x50);
+                            if (ptrOk(oldPw)) {
+                                NSString *s = readStr(oldPw);
+                                if (s.length > 0 && ![s containsString:@" "]) pw = s;
+                            }
+                        }
+
+                        // Oda Ismi
+                        NSString *nm = nil;
+                        void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
+                        if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
+                        if (ptrOk(rinfo) && rinfo_getName) {
+                            NSString *rn = readStr(rinfo_getName(rinfo));
+                            if (rn.length > 0) nm = rn;
+                        }
+                        if (nm.length == 0) {
+                            void* nameText = *(void**)((uintptr_t)ln + OFF_ROOMLINE_NAME_TEXT);
+                            if (nameText && tmp_get_text) {
+                                NSString *tn = readStr(tmp_get_text(nameText));
+                                if (tn.length > 0) nm = stripRichTextTags(tn);
+                            }
+                        }
+                        if (nm.length == 0) {
+                            void* rawJfh = *(void**)((uintptr_t)ln + 0x50);
+                            if (ptrOk(rawJfh)) nm = readStr(rawJfh);
+                        }
+                        if (nm.length == 0) nm = [NSString stringWithFormat:@"Oda #%d", i + 1];
+
+                        if (pw.length > 0 && ![seenRooms containsObject:nm]) {
+                            [seenRooms addObject:nm];
+                            [list appendFormat:@"\U0001F512 %@\n     sifre: %@\n\n", nm, pw];
+                            shown++;
+                        }
+                    }
+                }
+            }
         }
-        ac.message = shown ? list : @"Sifreli oda yok (ya da liste bos).";
+
+        // 2. Setup (eqn) hook'undan toplanan hafizadaki sifreleri de ekle
+        if (g_knownRoomPasswords) {
+            @synchronized(g_knownRoomPasswords) {
+                for (NSString *rName in g_knownRoomPasswords) {
+                    if (![seenRooms containsObject:rName]) {
+                        NSString *p = g_knownRoomPasswords[rName];
+                        if (p.length > 0) {
+                            [seenRooms addObject:rName];
+                            [list appendFormat:@"\U0001F512 %@\n     sifre: %@\n\n", rName, p];
+                            shown++;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (shown > 0) {
+            ac.message = list;
+        } else if (totalValidRooms > 0) {
+            ac.message = [NSString stringWithFormat:@"%d oda bulundu ama hicbiri sifreli degil (hepsi sifresiz/acik).", totalValidRooms];
+        } else {
+            ac.message = @"Sifreli oda yok (ya da liste henuz yuklenmedi).";
+        }
         [ac addAction:[UIAlertAction actionWithTitle:@"Panoya Kopyala" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            [UIPasteboard generalPasteboard].string = list; FLog(@"Sifreler panoya kopyalandi");
+            [UIPasteboard generalPasteboard].string = shown ? list : @"";
+            FLog(@"Sifreler panoya kopyalandi");
         }]];
         [ac addAction:[UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:nil]];
         [self present:ac];
@@ -10908,7 +11117,8 @@ static void few1n_joinTargetRoom(NSString *nm) {
                                 void** lines = (void**)((uintptr_t)rlarr + 0x20);
                                 for (int i = 0; i < rcnt; i++) {
                                     void* ln = lines[i]; if (!unityAlive(ln)) continue;
-                                    void* rinfo = *(void**)((uintptr_t)ln + 0x58);
+                                    void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
+                                    if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
                                     if (ptrOk(rinfo) && rinfo_getName) {
                                         NSString *rnm = readStr(rinfo_getName(rinfo));
                                         if ([rnm isEqualToString:nm]) {
@@ -10961,7 +11171,8 @@ static void few1n_joinTargetRoom(NSString *nm) {
                     void** lines = (void**)((uintptr_t)arr + 0x20);
                     for (int i = 0; i < cnt; i++) {
                         void* ln = lines[i]; if (!unityAlive(ln)) continue;
-                        void* rinfo = *(void**)((uintptr_t)ln + 0x58);
+                        void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
+                        if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
                         if (ptrOk(rinfo) && rinfo_getName) {
                             NSString *nm = readStr(rinfo_getName(rinfo));
                             if (nm.length > 0 && ![liveNames containsObject:nm]) [liveNames addObject:nm];
@@ -11137,7 +11348,8 @@ static void few1n_joinTargetRoom(NSString *nm) {
                     void** lines = (void**)((uintptr_t)arr + 0x20);
                     for (int i = 0; i < cnt; i++) {
                         void* ln = lines[i]; if (!unityAlive(ln)) continue;
-                        void* rinfo = *(void**)((uintptr_t)ln + 0x58);
+                        void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
+                        if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
                         if (ptrOk(rinfo) && rinfo_getName) {
                             NSString *nm = readStr(rinfo_getName(rinfo));
                             if (nm.length > 0 && ![liveNames containsObject:nm]) [liveNames addObject:nm];
@@ -12018,8 +12230,18 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("", "CarDriveSystem",       "fgp", 4, (void*)h_driveMove,     (void**)&o_driveMove,     "CarDriveSystem.Move (obf fgp)");
     safeHookByName("", "PlateVariant",         "ghs", 1, (void*)h_plateChange,   (void**)&o_plateChange,   "PlateVariant.Change (obf ghs)");
     safeHookByName("", "ChatManager",          "fzk", 1, (void*)h_chatFup,       (void**)&o_chatFup,       "ChatManager.fup (obf fzk — gelen chat)");
+    safeHookByName("", "HR_UI_RoomListLine",   "ghh", 0, (void*)h_roomLineClick, (void**)&o_roomLineClick, "HR_UI_RoomListLine.ghh (room click)");
+    if (!o_roomLineClick && global_base) {
+        safeHook((void*)(global_base + 0x5669B2C), (void*)h_roomLineClick, (void**)&o_roomLineClick, "HR_UI_RoomListLine.ghh (direct RVA)");
+    }
     safeHookByName("", "HR_UI_RoomListLine",   "eqm", 0, (void*)h_roomConnect,   (void**)&o_roomConnect,   "HR_UI_RoomListLine.Connect (obf eqm)");
+    if (!o_roomConnect && global_base) {
+        safeHook((void*)(global_base + 0x5669A40), (void*)h_roomConnect, (void**)&o_roomConnect, "HR_UI_RoomListLine.eqm (direct RVA)");
+    }
     safeHookByName("", "HR_UI_RoomListLine",   "eqn", 6, (void*)h_roomLineSetup, (void**)&o_roomLineSetup, "HR_UI_RoomListLine.Setup (obf eqn)");
+    if (!o_roomLineSetup && global_base) {
+        safeHook((void*)(global_base + 0x565FBD8), (void*)h_roomLineSetup, (void**)&o_roomLineSetup, "HR_UI_RoomListLine.Setup (direct RVA)");
+    }
 
     // Nitro getterlari: RCCP_Nos.get/set_amount — obfuscated. Eski hardcoded offset (0x54CFE14/1C)
     // hâlâ 1.4.3'te bozuk olabilir. Skip — SONSUZ NOS özelliği zaten il2cpp field write ile de çalışıyor.
@@ -12027,9 +12249,11 @@ static void InstallEverything(uintptr_t b) {
 
     // v114.22 / 1.4.4: Anti-VoteKick, Anti-Report, Free Garage native hook yerine il2cpp runtime yolu kullanır.
     // safeHookByName çağrıları sideload ve Substrate olmayan ortamlarda crash riskini önlemek için pasife alındı.
-    // safeHookByName("", "VoteKick",    "VoteKickEndRPC",   4, (void*)h_voteKickEndRPC,   (void**)&o_voteKickEndRPC,   "VoteKick.VoteKickEndRPC (Anti-VoteKick)");
-    // safeHookByName("", "VoteKick",    "VoteKickStartRPC", 2, (void*)h_voteKickStartRPC, (void**)&o_voteKickStartRPC, "VoteKick.VoteKickStartRPC (Anti-VoteKick)");
-    // safeHookByName("", "ChatManager", "ReportRPC",        3, (void*)h_reportRPC,        (void**)&o_reportRPC,        "ChatManager.ReportRPC (Anti-Report)");
+    // 1.4.4: Anti-VoteKick, Anti-Report, Anti-Kick (Tam Dokunulmazlık)
+    safeHookByName("", "VoteKick",                  "VoteKickEndRPC",   4, (void*)h_voteKickEndRPC,   (void**)&o_voteKickEndRPC,   "VoteKick.VoteKickEndRPC (Anti-VoteKick)");
+    safeHookByName("", "VoteKick",                  "VoteKickStartRPC", 2, (void*)h_voteKickStartRPC, (void**)&o_voteKickStartRPC, "VoteKick.VoteKickStartRPC (Anti-VoteKick)");
+    safeHookByName("", "ChatManager",               "ReportRPC",        3, (void*)h_reportRPC,        (void**)&o_reportRPC,        "ChatManager.ReportRPC (Anti-Report)");
+    safeHookByName("", "HR_PhotonLobbyManagerDummy", "KickPlayerRPC",   1, (void*)h_dummyKickRPC,     (void**)&o_dummyKickRPC,     "LobbyDummy.KickPlayerRPC (Anti-Kick)");
     // safeHookByName("", "CarManager",  "gmz",              1, (void*)h_carManager_gmz,   (void**)&o_carManager_gmz,   "CarManager.gmz (Tüm Araçları Aç)");
     // safeHookByName("", "CarManager",  "gna",              1, (void*)h_carManager_gna,   (void**)&o_carManager_gna,   "CarManager.gna (Tüm Araçları Aç isim)");
 

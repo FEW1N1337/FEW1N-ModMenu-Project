@@ -35,6 +35,7 @@ extern int g_offRoomLineNameText;        // 1.4.4: 0x20 (ismi "RoomNameText")
 extern int g_offRoomLineMapText;         // 1.4.4: 0x28 (ismi "MapNameText")
 extern int g_offRoomLinePlayerCountText; // 1.4.4: 0x30 (ismi "PlayerCountText")
 extern int g_offRoomLinePassword;        // 1.4.4: 0x58 (ismi "password")
+extern int g_offRoomLineRoomInfo;        // 1.4.4: 0x60 (ismi "roomInfo")
 
 #ifdef __cplusplus
 }
@@ -52,3 +53,4 @@ extern int g_offRoomLinePassword;        // 1.4.4: 0x58 (ismi "password")
 #define OFF_ROOMLINE_MAP_TEXT           g_offRoomLineMapText
 #define OFF_ROOMLINE_PLAYERCOUNT_TEXT   g_offRoomLinePlayerCountText
 #define OFF_ROOMLINE_PASSWORD           g_offRoomLinePassword
+#define OFF_ROOMLINE_ROOMINFO           g_offRoomLineRoomInfo
