@@ -557,6 +557,8 @@ static void* g_voteKickClass = NULL;
 static void* g_mVoteKickEndRPC = NULL;
 static void* g_mVoteKickStartRPC = NULL;
 static void* g_mVoteKickStart = NULL;
+static void* g_mGetVoteKickPac = NULL;
+static void few1n_ensureVoteKick(void);
 static inline bool ptrOk(void* p);
 static inline bool unityAlive(void* obj);
 static void* few1n_resolveOn(void* cls, const char *methodName, int argc);
@@ -1143,12 +1145,13 @@ static void few1n_initIl2cpp(void) {
                       g_voteKickTypeObj, g_mVoteKickEndRPC, g_mVoteKickStartRPC, g_mVoteKickStart]);
             }
         }
-        // ONEMLI: araba tipleri de bulunana kadar DURMA (ayri assembly'de olabilir)
+        // ONEMLI: araba tipleri ve VoteKick bulunana kadar DURMA (ayri assembly'de olabilir)
         if (g_mSetTS && g_mRbSetVel && g_mSetRichText && g_roomOptionsClass &&
-            g_carDriveTypeObj && g_carInputTypeObj && g_mCamGetMain) break;
+            g_carDriveTypeObj && g_carInputTypeObj && g_mCamGetMain && g_voteKickClass) break;
     }
     // v114.22: Dynamic offset resolution (calisma aninda field isimlerinden)
     few1n_resolveOffsets();
+    few1n_ensureVoteKick();
     g_il2cppReady = (g_mSetTS != NULL);
     FLog([NSString stringWithFormat:@"il2cpp bitti: carTip=%@ inputTip=%@ (taranan sinif=%ld)",
           g_carDriveTypeObj ? @"VAR" : @"YOK", g_carInputTypeObj ? @"VAR" : @"YOK", g_classScanned]);
@@ -2068,14 +2071,84 @@ static void h_setTimeScale(float v) {
 }
 
 // ===== ANTI-KICK & OYUNCU ATMA =====
-// 1.4.4: VoteKick & Anti-VoteKick (degiskenler dosya basinda forward declare edildi)
+// 1.4.4: VoteKick dinamik çözümleme (Chat.dll ve tüm image'lar)
+static void few1n_ensureVoteKick(void) {
+    if (g_voteKickClass && g_mVoteKickStart && g_mVoteKickEndRPC && g_mVoteKickStartRPC) return;
+    if (!few1n_classAnyImage) return;
+
+    if (!g_voteKickClass) {
+        // VoteKick sınıfını Chat.dll ve tüm yüklü image'larda ara
+        g_voteKickClass = few1n_classAnyImage("", "VoteKick");
+        if (!g_voteKickClass) g_voteKickClass = few1n_classAnyImage(NULL, "VoteKick");
+    }
+
+    if (g_voteKickClass) {
+        if (!g_voteKickTypeObj && few1n_typeObjOf) {
+            g_voteKickTypeObj = few1n_typeObjOf(g_voteKickClass);
+        }
+        if (!g_mVoteKickEndRPC)   g_mVoteKickEndRPC   = few1n_resolveOn(g_voteKickClass, "VoteKickEndRPC", 4);
+        if (!g_mVoteKickStartRPC) g_mVoteKickStartRPC = few1n_resolveOn(g_voteKickClass, "VoteKickStartRPC", 2);
+        
+        // 1.4.4 metot isimleri: mkw(Player) normal oylama baslatma, kyb() singleton
+        if (!g_mVoteKickStart)    g_mVoteKickStart    = few1n_resolveOn(g_voteKickClass, "mkw", 1);
+        if (!g_mVoteKickStart)    g_mVoteKickStart    = few1n_resolveOn(g_voteKickClass, "VoteKickStart", 1);
+        
+        if (!g_mGetVoteKickPac && i_class_get_method_from_name) {
+            g_mGetVoteKickPac = i_class_get_method_from_name(g_voteKickClass, "kyb", 0);
+            if (!g_mGetVoteKickPac) g_mGetVoteKickPac = i_class_get_method_from_name(g_voteKickClass, "get_pac", 0);
+        }
+
+        FLog([NSString stringWithFormat:@"🗳️ VoteKick RESOLVED: cls=%p type=%p startRPC=%p endRPC=%p mkw=%p getPac=%p",
+              g_voteKickClass, g_voteKickTypeObj, g_mVoteKickStartRPC, g_mVoteKickEndRPC, g_mVoteKickStart, g_mGetVoteKickPac]);
+    } else {
+        FLog(@"⚠️ VoteKick sınıfı henüz bulunamadı");
+    }
+}
+
 static void* few1n_findVoteKickInstance(void) {
-    if (!g_voteKickTypeObj || !g_mFindObjectOfType || !i_runtime_invoke) return NULL;
-    @try {
-        void* args[1] = { g_voteKickTypeObj };
-        void* inst = i_runtime_invoke(g_mFindObjectOfType, NULL, args, NULL);
-        if (unityAlive(inst)) return inst;
-    } @catch (...) {}
+    few1n_ensureVoteKick();
+    if (!g_voteKickClass) return NULL;
+
+    // 1. Singleton metot kyb() / get_pac()
+    if (g_mGetVoteKickPac && i_runtime_invoke) {
+        @try {
+            void* exc = NULL;
+            void* inst = i_runtime_invoke(g_mGetVoteKickPac, NULL, NULL, &exc);
+            if (!exc && ptrOk(inst) && unityAlive(inst)) return inst;
+        } @catch (...) {}
+    }
+
+    // 2. Static backing field <pac>k__BackingField
+    if (i_class_get_field_from_name && i_field_static_get_value) {
+        @try {
+            void* f = i_class_get_field_from_name(g_voteKickClass, "<pac>k__BackingField");
+            if (!f) f = i_class_get_field_from_name(g_voteKickClass, "pac");
+            if (f) {
+                void* inst = NULL;
+                i_field_static_get_value(f, &inst);
+                if (ptrOk(inst) && unityAlive(inst)) return inst;
+            }
+        } @catch (...) {}
+    }
+
+    // 3. Unity Object.FindObjectOfType
+    if (g_voteKickTypeObj && g_mFindObjectOfType && i_runtime_invoke) {
+        @try {
+            void* args[1] = { g_voteKickTypeObj };
+            void* inst = i_runtime_invoke(g_mFindObjectOfType, NULL, args, NULL);
+            if (ptrOk(inst) && unityAlive(inst)) return inst;
+        } @catch (...) {}
+    }
+
+    // 4. Unity Object.FindAnyObjectByType
+    if (g_voteKickTypeObj && g_mFindAnyByType && i_runtime_invoke) {
+        @try {
+            void* args[1] = { g_voteKickTypeObj };
+            void* inst = i_runtime_invoke(g_mFindAnyByType, NULL, args, NULL);
+            if (ptrOk(inst) && unityAlive(inst)) return inst;
+        } @catch (...) {}
+    }
+
     return NULL;
 }
 
@@ -4389,7 +4462,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.33  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.34  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -5437,28 +5510,37 @@ static UIViewController* few1n_topVC(void) {
 
 // Normal VoteKick: Oyunun kendi oylama başlatma metodunu çağırır (1.4.4)
 - (void)normalVoteKickPick {
+    few1n_ensureVoteKick();
     if (!pn_getInRoom || !pn_getInRoom()) {
         UIAlertController *a = [UIAlertController alertControllerWithTitle:@"VoteKick" message:@"Önce bir odaya gir." preferredStyle:UIAlertControllerStyleAlert];
         [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
         [self present:a]; return;
     }
-    if (!g_mVoteKickStart || !i_runtime_invoke || !ply_getNickName) {
+    void* vk = few1n_findVoteKickInstance();
+    if (!g_voteKickClass || !g_mVoteKickStart || !ptrOk(vk)) {
         [self voteKickDiagnostics]; return;
     }
-    void* vk = few1n_findVoteKickInstance();
     void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
     BOOL all = NO;
     if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); all = YES; }
-    if (!ptrOk(vk) || !ptrOk(pa)) { [self voteKickDiagnostics]; return; }
+    if (!ptrOk(pa)) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"VoteKick" message:@"Oyuncu listesi alınamadı." preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:a]; return;
+    }
     int count = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
-    if (count < 1 || count > 64) { [self voteKickDiagnostics]; return; }
+    if (count < 1 || count > 64) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"VoteKick" message:@"Odada oylanacak başka oyuncu bulunamadı." preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:a]; return;
+    }
     void** players = (void**)((uintptr_t)pa + 0x20);
     void* me = (all && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ Normal VoteKick" message:@"Oyun içi normal oylama başlatılır. Sonuç oyuncuların oyuna ve sunucu kurallarına bağlıdır." preferredStyle:UIAlertControllerStyleActionSheet];
     for (int i = 0; i < count && i < 32; i++) {
         void* player = players[i];
         if (!ptrOk(player) || (me && me == player)) continue;
-        void* nameObj = ply_getNickName(player);
+        void* nameObj = (ply_getNickName) ? ply_getNickName(player) : NULL;
         NSString *name = ptrOk(nameObj) ? (readStr(nameObj) ?: @"Oyuncu") : @"Oyuncu";
         NSString *display = stripRichTextTags(name) ?: name;
         [a addAction:[UIAlertAction actionWithTitle:display style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -5476,10 +5558,12 @@ static UIViewController* few1n_topVC(void) {
 }
 
 - (void)voteKickDiagnostics {
+    few1n_ensureVoteKick();
+    void* inst = few1n_findVoteKickInstance();
     NSString *msg = [NSString stringWithFormat:@"VoteKick sınıfı: %@\nNormal oylama metodu: %@\nOylama instance: %@\n\n1.4.4 VoteKick altyapısı hazır.",
         g_voteKickClass ? @"Bulundu ✓" : @"Bulunamadı ✗",
         g_mVoteKickStart ? @"Bulundu ✓" : @"Bulunamadı ✗",
-        few1n_findVoteKickInstance() ? @"Bulundu ✓" : @"Bulunamadı ✗"];
+        inst ? @"Bulundu ✓" : @"Bulunamadı ✗"];
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🛡️ VoteKick Durumu" message:msg preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
     [self present:a];
