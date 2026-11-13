@@ -168,7 +168,7 @@ jobs:
 
           if [ ! -f Makefile ]; then
             cat > Makefile <<'EOF'
-          TARGET := iphone:clang:latest:15.0
+          TARGET := iphone:clang:latest:14.0
           ARCHS = arm64
           THEOS_PACKAGE_SCHEME = rootless
 
@@ -189,8 +189,6 @@ jobs:
 
           FEW1NMod_FRAMEWORKS = UIKit Foundation \
             QuartzCore CoreGraphics ImageIO PhotosUI
-
-          FEW1NMod_LIBRARIES = substrate
 
           include $(THEOS_MAKE_PATH)/tweak.mk
           EOF

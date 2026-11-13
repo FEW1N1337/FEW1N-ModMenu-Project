@@ -4,7 +4,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 #import <PhotosUI/PhotosUI.h>
-#include <substrate.h>
+// #include <substrate.h> (runtime dlsym dynamic resolution)
 #include <mach-o/dyld.h>
 #include <string.h>
 #include <dlfcn.h>
@@ -1886,7 +1886,6 @@ static void safeHook(void* target, void* replacement, void** original, const cha
         } else { FLog(@"Hedef okunamiyor - adres gecersiz"); }
     }
     if (g_msHook) g_msHook(target, replacement, original);   // dlsym ile bulunan gercek motor
-    else MSHookFunction(target, replacement, original);      // bagli sembol (stub olabilir)
     // GERCEK dogrulama: MSHookFunction basarili olursa *original orijinal koda isaret eder.
     // Sideload'da (Substrate yok) MSHookFunction sessizce hicbir sey yapmaz -> *original NULL kalir.
     if (original && *original == NULL) {
@@ -4390,7 +4389,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.32  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.33  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
