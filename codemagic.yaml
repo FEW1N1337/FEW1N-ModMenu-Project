@@ -1,0 +1,102 @@
+workflows:
+  ios-theos:
+    name: Build FEW1N Mod Menu
+    max_build_duration: 30
+    instance_type: mac_mini_m1
+    environment:
+      vars:
+        THEOS: /Users/builder/theos
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+          source: true
+    scripts:
+      - name: Install dependencies
+        script: |
+          set -e
+          brew list ldid >/dev/null 2>&1 || brew install ldid
+          brew list dpkg >/dev/null 2>&1 || brew install dpkg
+          brew list xz >/dev/null 2>&1 || brew install xz
+
+      - name: Setup Theos & SDK
+        script: |
+          set -e
+          if [ ! -f "$THEOS/makefiles/common.mk" ]; then
+            git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          fi
+          mkdir -p "$THEOS/sdks"
+          if ! find "$THEOS/sdks" -maxdepth 1 -name '*.sdk' -print -quit | grep -q .; then
+            git clone --depth 1 https://github.com/theos/sdks.git /tmp/theos-sdks
+            find /tmp/theos-sdks -maxdepth 1 -name '*.sdk' -exec cp -R {} "$THEOS/sdks/" \;
+          fi
+
+      - name: Build Tweak
+        script: |
+          set -euo pipefail
+          VERSION=$(tr -d '[:space:]' < VERSION.txt)
+          cp template/Tweak.xm Tweak.xm
+          if [ -f template/Offsets.h ]; then cp template/Offsets.h Offsets.h; fi
+          cp template/control control
+          sed -i.bak "s/__VERSION__/${VERSION}/g" control && rm -f control.bak
+
+          cat > Makefile << 'EOF'
+          TARGET := iphone:clang:latest:14.0
+          ARCHS = arm64
+          THEOS_PACKAGE_SCHEME = rootless
+
+          INSTALL_TARGET_PROCESSES = DreamRoadMultiplayer
+
+          include $(THEOS)/makefiles/common.mk
+
+          TWEAK_NAME = FEW1NMod
+
+          FEW1NMod_FILES = Tweak.xm
+
+          FEW1NMod_CFLAGS = -fobjc-arc -std=c++14 \
+            -Wno-deprecated-declarations \
+            -Wno-unused-variable \
+            -Wno-unused-function \
+            -Wno-format-invalid-specifier \
+            -Wno-unknown-warning-option
+
+          FEW1NMod_FRAMEWORKS = UIKit Foundation \
+            QuartzCore CoreGraphics ImageIO PhotosUI
+
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          EOF
+
+          if [ ! -f FEW1NMod.plist ]; then
+            cat > FEW1NMod.plist << 'EOF'
+          {
+            Filter = {
+              Bundles = (
+                "com.TenebryFox.DreamRoadMultiplayer"
+              );
+            };
+          }
+          EOF
+          fi
+
+          make clean
+          make package FINALPACKAGE=1
+
+      - name: Extract Dylib & Upload to Catbox
+        script: |
+          set -euo pipefail
+          mkdir -p output extracted
+          DEB=$(find packages -name '*.deb' -print -quit)
+          dpkg-deb -x "$DEB" extracted
+          DYLIB=$(find extracted -name '*.dylib' -print -quit)
+          cp "$DYLIB" output/FEW1NMod.dylib
+          echo "Dylib extracted successfully."
+          URL=$(curl -s -F "reqtype=fileupload" -F "fileToUpload=@output/FEW1NMod.dylib" https://catbox.moe/user/api.php || true)
+          echo "========================================================"
+          echo "CATBOX DIRECT DOWNLOAD: $URL"
+          echo "========================================================"
+
+    artifacts:
+      - output/*.dylib
+      - packages/*.deb
