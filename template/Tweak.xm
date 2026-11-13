@@ -1555,6 +1555,18 @@ static void few1n_enableChatRichText(void) {
             if (ptrOk(allText)) {
                 w_tmp_set_richText(allText, true);
                 *(bool*)((uintptr_t)allText + 0x342) = true; // m_isRichText
+
+                // 1.4.4 FIX: Censorship.ra.opp'un eklediği <noparse><</noparse> etiketlerini temizle
+                void* textObj = w_tmp_get_text(allText);
+                if (ptrOk(textObj)) {
+                    NSString *cur = readStr(textObj);
+                    if (cur.length > 0 && ([cur containsString:@"<noparse>"] || [cur containsString:@"</noparse>"])) {
+                        NSString *unparsed = [cur stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+                        unparsed = [unparsed stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+                        void* newIl = mkStr(unparsed);
+                        if (newIl) w_tmp_set_text(allText, newIl);
+                    }
+                }
             }
             // ChatUI.ozh @ 0x50
             void* ozh = *(void**)((uintptr_t)cui + 0x50);
@@ -2210,10 +2222,10 @@ static bool few1n_makeVoteKickFullYes(void) {
         }
 
         int eligible = *(int*)((uintptr_t)vk + 0x48);
-        int targetYes = (eligible > 10) ? eligible : 99;
+        int targetYes = (eligible > 99) ? eligible : 99;
 
-        // 1. Ekrandaki banner ve oylama verisini FULL EVET yap
-        *(int*)((uintptr_t)vk + 0x40) = targetYes;  // Evet sayısı (full)
+        // 1. Ekrandaki banner ve oylama verisini FULL EVET yap (99+)
+        *(int*)((uintptr_t)vk + 0x40) = targetYes;  // Evet sayısı (full 99+)
         *(int*)((uintptr_t)vk + 0x44) = 0;          // Hayır sayısı (0)
         *(int*)((uintptr_t)vk + 0x50) += 1;         // Sequence counter artır -> VoteKickBanner anında ekranda günceller!
 
@@ -3656,6 +3668,11 @@ static void few1n_replyToRoomAiPrompt(NSString *prompt) {
     });
 }
 
+static void* (*o_censorship_opp)(void*) = NULL;
+static void* h_censorship_opp(void* a) {
+    return a; // 1.4.4: <noparse> filtresini bypass et
+}
+
 static bool g_modSendingRichText = false; // v114.24: mod'un kendi renkli mesajlarini strip etme
 static void h_chatSend(void* self, void* msg) {
     fChat++;
@@ -3776,7 +3793,8 @@ static void h_chatSend(void* self, void* msg) {
             }
             // Eger gonderilen mesajda/nickte ham HTML/TMPro renk etiketleri varsa (<color=...>, <#FF0000>, <mark> vb.) temizle
             // v114.24: Mod'un kendi renkli mesajlarini (spam, matrix, glitch, colored send) strip ETME!
-            if (!g_modSendingRichText) {
+            // v114.38: Kullanıcı kasıtlı olarak renk tag'i yazıyorsa (<color, <#) veya Renkli Chat açıksa strip ETME!
+            if (!g_modSendingRichText && !isColorChatEnabled && ![orig containsString:@"<color"] && ![orig containsString:@"<#"]) {
                 NSString *cleaned = stripRichTextTags(orig);
                 if (cleaned.length > 0 && ![cleaned isEqualToString:orig]) {
                     orig = cleaned;
@@ -3860,6 +3878,17 @@ static void h_tmpSetText(void* self, void* textStr) {
             if (str && [str containsString:@"FEW1N NUKE"]) {
                 // Kendi cihazımız nuke metnini render etmez -> Yerel çökme engellenir!
                 return;
+            }
+            // 1.4.4 FIX: Chat veya metinlerdeki <noparse> filtrelerini kaldır ve richText'i zorla aç
+            if (str && ([str containsString:@"<noparse>"] || [str containsString:@"</noparse>"])) {
+                NSString *clean = [str stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+                clean = [clean stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+                void* newStr = mkStr(clean);
+                if (newStr) {
+                    if (self && g_mSetRichText) setRichTextIl(self, true);
+                    if (o_tmpSetText) o_tmpSetText(self, newStr);
+                    return;
+                }
             }
             // v102: VIDYO ISIM MODU - kisa nickname'leri buyuk ve kirmizi yap
             if (isVidyoNamesEnabled && str && str.length >= 2 && str.length <= 20
@@ -4549,7 +4578,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.37  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.38  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -5155,6 +5184,7 @@ static UIViewController* few1n_topVC(void) {
 
 - (void)frameTick {
     enforceScale();          // her ekran frame'inde timeScale'i zorla
+    if (g_voteKickFullYes) few1n_makeVoteKickFullYes(); // 1.4.4: 60fps oylama evet kilitleme
     // ===== OTOMATIK KARSILAMA: odaya YENI girince (false->true kenari) mesaj at =====
     // Optimizasyon: sadece ozellik ACIKKEN poll et (kapaliyken her frame cagri yok)
     if (isAutoGreetEnabled && pn_getInRoom) {
@@ -5639,7 +5669,8 @@ static UIViewController* few1n_topVC(void) {
                 void* exc = NULL;
                 i_runtime_invoke(g_mVoteKickStart, vk, args, &exc);
                 FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi");
-                // v114.37: Oylama başlar başlamaz Evet sayısını anında full yap
+                // v114.38: Oylama başlar başlamaz Evet sayısını anında full yap ve kilitle
+                g_voteKickFullYes = true;
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     few1n_makeVoteKickFullYes();
                 });
@@ -5658,6 +5689,7 @@ static UIViewController* few1n_topVC(void) {
 }
 
 - (void)forceVoteKickFullYes {
+    g_voteKickFullYes = true; // 1.4.4: Sürekli aktif tut (kilitle)
     bool ok = few1n_makeVoteKickFullYes();
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ VoteKick Full Evet"
         message:ok ? @"Aktif oylama 99 EVET olarak ayarlandı ve onaylandı! ✓" : @"Şu anda aktif bir oylama bulunamadı veya oylama kapalı."
@@ -11946,6 +11978,7 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("Photon.Pun",      "PhotonNetwork",  "CloseConnection", 1, (void*)h_closeConnection, (void**)&o_closeConnection, "PhotonNetwork.CloseConnection");
     safeHookByName("TMPro",           "TMP_Text",       "set_text",        1, (void*)h_tmpSetText,      (void**)&o_tmpSetText,      "TMP_Text.set_text");
     safeHookByName("",                "ChatManager",    "Send",            1, (void*)h_chatSend,        (void**)&o_chatSend,        "ChatManager.Send");
+    safeHookByName("Censorship",      "ra",             "opp",             1, (void*)h_censorship_opp,  (void**)&o_censorship_opp,  "Censorship.ra.opp");
 
     // CarPlayerInput.FixedUpdate ismi korunmuş (Unity engine method)
     safeHookByName("", "CarPlayerInput", "FixedUpdate", 0, (void*)h_playerInputFixed, (void**)&o_playerInputFixed, "CarPlayerInput.FixedUpdate *ANA*");
