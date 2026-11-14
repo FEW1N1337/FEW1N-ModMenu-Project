@@ -8115,23 +8115,6 @@ static UIViewController* few1n_topVC(void) {
     [self present:ac];
 }
 
-- (void)tapVoteKickFullYes {
-    g_voteKickFullYes = !g_voteKickFullYes;
-    saveBool(@"votekickyes", g_voteKickFullYes);
-    FLog([NSString stringWithFormat:@"🗳️ Oylamayi Full Evet Yap: %@", g_voteKickFullYes ? @"ACIK (99 EVET)" : @"KAPALI"]);
-    if (g_voteKickFullYes) few1n_makeVoteKickFullYes();
-    [self refreshUI];
-}
-
-- (void)forceVoteKickFullYes {
-    bool ok = few1n_makeVoteKickFullYes();
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:ok ? @"🗳️ Oylama 99 Evet Yapıldı!" : @"⚠️ Aktif Oylama Yok"
-        message:ok ? @"Mevcut oylama 99 EVET / 0 HAYIR olarak ayarlandı ve VoteKickEndRPC(1) gönderildi." : @"Şu an odada aktif bir VoteKick oylaması bulunamadı veya odada değilsin."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-    [self present:ac];
-}
-
 - (void)normalVoteKickPick {
     few1n_ensureVoteKick();
     if (!pn_getInRoom || !pn_getInRoom()) {
