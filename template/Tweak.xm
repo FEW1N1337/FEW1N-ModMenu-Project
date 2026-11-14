@@ -1916,6 +1916,9 @@ static void  w_chatSend(void *self, void *message) {
     @try { void *args[1]={message}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
 
+static inline bool ptrOk(void* p);
+static inline bool unityAlive(void* obj);
+static NSString* readStr(void* il2s);
 // 1.4.4 Chat RichText zorlama — allText.richText = true ve <noparse> temizleme
 static void few1n_enableChatRichText(void) {
     @try {
@@ -2695,7 +2698,7 @@ static void few1n_forceLocalMasterForVoteKick(void) {
         void* room = pn_getRoom();
         void* me = pn_getLocalPlayer();
         if (ptrOk(room) && ptrOk(me)) {
-            int myActor = *(int*)((uintptr_t)me + OFFR_PLAYER_ACTOR);
+            int myActor = *(int*)((uintptr_t)me + OFFR_PLAYER_ACTORNUM);
             if (myActor > 0) *(int*)((uintptr_t)room + OFFR_ROOM_MASTERID) = myActor;
         }
     } @catch (...) {}
