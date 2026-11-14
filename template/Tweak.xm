@@ -3291,9 +3291,9 @@ static void few1n_kickPlayer(void* playerObj) {
         }
 
         // ===== SONUC + DURUST TESHIS =====
-        FLog([NSString stringWithFormat:@"💥 '%@' atma sonucu: master-kick=%@ | rpc-kick=%@",
-              targetNick ?: @"?", masterKicked ? @"✓" : @"✗", rpcKicked ? @"✓" : @"✗"]);
-        if (!masterKicked && !rpcKicked) {
+        FLog([NSString stringWithFormat:@"💥 '%@' atma sonucu: master-kick=%@ | rpc-kick=%@ | vk-kick=%@",
+              targetNick ?: @"?", masterKicked ? @"✓" : @"✗", rpcKicked ? @"✓" : @"✗", vkSent ? @"✓" : @"✗"]);
+        if (!masterKicked && !rpcKicked && !vkSent) {
             if (amMaster)
                 FLog(@"⚠️ Master'sin ama düşmedi — EnableCloseConnection resetlenmiş olabilir; tekrar dene.");
             else
