@@ -2238,6 +2238,38 @@ static void* few1n_findVoteKickInstance(void) {
     return NULL;
 }
 
+// 1.4.4: Il2Cpp Dictionary / HashSet temizleme yardımcısı (_count @ +0x20)
+static void few1n_clearCollection(void* coll) {
+    if (!ptrOk(coll) || !i_runtime_invoke) return;
+    @try {
+        int cnt = *(int*)((uintptr_t)coll + 0x20);
+        if (cnt <= 0) return;
+        void* cls = *(void**)coll;
+        if (!ptrOk(cls)) return;
+        void* mClear = few1n_resolveOn(cls, "Clear", 0);
+        if (mClear) {
+            i_runtime_invoke(mClear, coll, NULL, NULL);
+        }
+    } @catch (...) {}
+}
+
+// 1.4.4: Odaya girer girmez beklemeden oylama başlatabilmek için tüm VoteKick süre kilitlerini (60sn oda giriş & 180sn oylama arası) sıfırla
+static void few1n_resetVoteKickCooldowns(void* vk) {
+    if (!ptrOk(vk)) return;
+    @try {
+        // pam (+0x5C): Odaya giriş zamanı (60sn bekleme kilidi -> -99999 ile anında açılır)
+        *(float*)((uintptr_t)vk + 0x5C) = -99999.0f;
+        // pao (+0x60): Son oylama başlatma zamanı (180sn bekleme kilidi -> -99999 ile anında açılır)
+        *(float*)((uintptr_t)vk + 0x60) = -99999.0f;
+        // paq (+0x68): Hedef oyuncunun 180sn tekrar oylanmama sözlüğü (mky kontrolü)
+        few1n_clearCollection(*(void**)((uintptr_t)vk + 0x68));
+        // paw (+0x90): MasterClient tarafı 180sn oylama başlatan oyuncu bekleme sözlüğü
+        few1n_clearCollection(*(void**)((uintptr_t)vk + 0x90));
+        // pax (+0x98): MasterClient tarafı 60sn odaya yeni giren oyuncu bekleme sözlüğü (OnPlayerEnteredRoom)
+        few1n_clearCollection(*(void**)((uintptr_t)vk + 0x98));
+    } @catch (...) {}
+}
+
 // 1.4.4: VoteKick.Count Hook — Oyun motorunun oy sayımını 99 Evet yap
 static void (*o_voteKickCount)(void*, int*, int*) = NULL;
 static void h_voteKickCount(void* self, int* yes, int* no) {
@@ -2258,13 +2290,15 @@ static void h_voteKickCount(void* self, int* yes, int* no) {
     }
 }
 
-// 1.4.4: Oylamayı Full Evet Yap (Evet sayısını tavana çıkar)
+// 1.4.4: Oylamayı Full Evet Yap (Evet sayısını tavana çıkar + pau/pav sözlüklerine 99 Evet bas)
 static bool few1n_makeVoteKickFullYes(void) {
     few1n_ensureVoteKick();
     void* vk = few1n_findVoteKickInstance();
     if (!ptrOk(vk)) return false;
 
     @try {
+        few1n_resetVoteKickCooldowns(vk);
+
         bool isActive = *(bool*)((uintptr_t)vk + 0x38);
         if (!isActive) return false;
 
@@ -2289,6 +2323,30 @@ static bool few1n_makeVoteKickFullYes(void) {
         *(int*)((uintptr_t)vk + 0x40) = targetYes;  // Evet sayısı (full 99+)
         *(int*)((uintptr_t)vk + 0x44) = 0;          // Hayır sayısı (0)
         *(int*)((uintptr_t)vk + 0x50) += 1;         // Sequence counter artır -> VoteKickBanner anında ekranda günceller!
+
+        // 1.b: pau (HashSet<int> @ +0x80) ve pav (Dictionary<int, bool> @ +0x88) içine 99 gerçek Evet oyu enjekte et
+        // (Substrate olmayan sideload ortamlarında bile VoteKick.Count doğal olarak 99 Evet sayar!)
+        void* pau = *(void**)((uintptr_t)vk + 0x80);
+        void* pav = *(void**)((uintptr_t)vk + 0x88);
+        if (ptrOk(pau) && ptrOk(pav) && i_runtime_invoke) {
+            int curPauCnt = *(int*)((uintptr_t)pau + 0x20);
+            if (curPauCnt < 99) {
+                void* pauCls = *(void**)pau;
+                void* pavCls = *(void**)pav;
+                void* mAdd = ptrOk(pauCls) ? few1n_resolveOn(pauCls, "Add", 1) : NULL;
+                void* mSetItem = ptrOk(pavCls) ? few1n_resolveOn(pavCls, "set_Item", 2) : NULL;
+                if (mAdd && mSetItem) {
+                    for (int fk = 10001; fk < 10001 + 99; fk++) {
+                        int voterId = fk;
+                        bool voteVal = true;
+                        void* a1[1] = { &voterId };
+                        void* a2[2] = { &voterId, &voteVal };
+                        i_runtime_invoke(mAdd, pau, a1, NULL);
+                        i_runtime_invoke(mSetItem, pav, a2, NULL);
+                    }
+                }
+            }
+        }
 
         // 2. Kendi lokal EVET oyumuzu sunucuya yolla (mkx(true))
         static void* mMkx = NULL;
@@ -2315,8 +2373,122 @@ static bool few1n_makeVoteKickFullYes(void) {
 }
 
 static void few1n_tickVoteKickFullYes(void) {
+    // Her ~15 frame'de bir odaya yeni girildiğinde VoteKick 60sn/180sn bekleme kilitlerini sıfırla
+    static int s_vkCooldownTick = 0;
+    if (++s_vkCooldownTick >= 15) {
+        s_vkCooldownTick = 0;
+        if (pn_getInRoom && pn_getInRoom()) {
+            void* vk = few1n_findVoteKickInstance();
+            if (ptrOk(vk)) few1n_resetVoteKickCooldowns(vk);
+        }
+    }
     if (!g_voteKickFullYes) return;
     few1n_makeVoteKickFullYes();
+}
+
+// 1.4.4: Odaya girer girmez (veya 2 kişilik odada) beklemeden doğrudan VoteKick başlatma garantisi
+static void few1n_forceStartVoteKickDirect(void* vk, void* targetPlayer) {
+    if (!ptrOk(vk) || !ptrOk(targetPlayer) || !i_runtime_invoke) return;
+    @try {
+        few1n_claimMaster();
+        few1n_resetVoteKickCooldowns(vk);
+        int targetActor = ply_getActorNumber ? ply_getActorNumber(targetPlayer) : *(int*)((uintptr_t)targetPlayer + 0x18);
+        if (targetActor <= 0) return;
+        int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : 1;
+
+        *(bool*)((uintptr_t)vk + 0x70) = true; // par = server vote active
+        int voteId = *(int*)((uintptr_t)vk + 0x74) + 1;
+        *(int*)((uintptr_t)vk + 0x74) = voteId; // pas = voteId
+        *(int*)((uintptr_t)vk + 0x78) = targetActor; // pat = targetActor
+
+        void* pau = *(void**)((uintptr_t)vk + 0x80);
+        void* pav = *(void**)((uintptr_t)vk + 0x88);
+        if (ptrOk(pau) && ptrOk(pav)) {
+            few1n_clearCollection(pau);
+            few1n_clearCollection(pav);
+            void* pauCls = *(void**)pau;
+            void* pavCls = *(void**)pav;
+            void* mAdd = ptrOk(pauCls) ? few1n_resolveOn(pauCls, "Add", 1) : NULL;
+            void* mSetItem = ptrOk(pavCls) ? few1n_resolveOn(pavCls, "set_Item", 2) : NULL;
+            if (mAdd && mSetItem && myActor > 0) {
+                bool voteVal = true;
+                void* a1[1] = { &myActor };
+                void* a2[2] = { &myActor, &voteVal };
+                i_runtime_invoke(mAdd, pau, a1, NULL);
+                i_runtime_invoke(mSetItem, pav, a2, NULL);
+            }
+        }
+
+        // PhotonNetwork.get_ServerTimestamp() + 30000 ms ile mkz(end) çağır -> tüm odaya VoteKickStateRPC yayar
+        static void* mGetTs = NULL;
+        if (!mGetTs) mGetTs = few1n_resolveOn(few1n_photonNetworkClass(), "get_ServerTimestamp", 0);
+        int endTs = 30000;
+        if (mGetTs) {
+            void* box = i_runtime_invoke(mGetTs, NULL, NULL, NULL);
+            if (box) endTs = *(int*)((uintptr_t)box + 0x10) + 30000;
+        }
+        static void* mMkz = NULL;
+        if (!mMkz && g_voteKickClass) mMkz = few1n_resolveOn(g_voteKickClass, "mkz", 1);
+        if (mMkz) {
+            void* args[1] = { &endTs };
+            i_runtime_invoke(mMkz, vk, args, NULL);
+        }
+    } @catch (...) {}
+}
+
+// 1.4.4: VoteKick.mkv (CanVoteKick — RVA 0x32874A0) Hook:
+// Odaya girince 60sn bekleme, oylamalar arası 180sn bekleme ve en az 3 oyuncu şartını tamamen kaldırır!
+static bool (*o_voteKickMkv)(void*, void*) = NULL;
+static bool h_voteKickMkv(void* self, void* targetPlayer) {
+    if (ptrOk(self)) {
+        few1n_resetVoteKickCooldowns(self);
+        bool isActive = *(bool*)((uintptr_t)self + 0x38);
+        if (!isActive && ptrOk(targetPlayer)) {
+            bool isLocal = *(bool*)((uintptr_t)targetPlayer + 0x1C);
+            if (!isLocal) return true;
+        }
+    }
+    return o_voteKickMkv ? o_voteKickMkv(self, targetPlayer) : true;
+}
+
+// 1.4.4: VoteKick.mky (Hedef oyuncu 180sn bekleme kontrolü — RVA 0x328B110) Hook:
+static bool (*o_voteKickMky)(void*, int, float) = NULL;
+static bool h_voteKickMky(void* self, int actor, float time) {
+    return false; // Hedef oyuncu hiçbir zaman korumada sayılmaz
+}
+
+// 1.4.4: VoteKick.OnPlayerEnteredRoom (RVA 0x328C144) Hook:
+// Odaya yeni giren oyuncular için 60 saniyelik pax[actor] bekleme kaydını engeller
+static void (*o_voteKickOnPlayerEntered)(void*, void*) = NULL;
+static void h_voteKickOnPlayerEntered(void* self, void* newPlayer) {
+    if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
+    return;
+}
+
+// 1.4.4: VoteKick.mkw (StartVoteKick — RVA 0x32895D4) Hook:
+// Oyun içi normal VoteKick butonuna basıldığında da süre beklemeden anında başlatır
+static void (*o_voteKickMkw)(void*, void*) = NULL;
+static void h_voteKickMkw(void* self, void* targetPlayer) {
+    if (ptrOk(self)) {
+        few1n_claimMaster();
+        few1n_resetVoteKickCooldowns(self);
+    }
+    if (o_voteKickMkw) o_voteKickMkw(self, targetPlayer);
+    if (ptrOk(self)) {
+        few1n_resetVoteKickCooldowns(self);
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        void* vk = few1n_findVoteKickInstance();
+        if (ptrOk(vk)) {
+            // Eğer eski MasterClient 60sn kilidi yüzünden paketi yok saydıysa veya odada 2 kişi varsa doğrudan Master olarak başlat!
+            if (!(*(bool*)((uintptr_t)vk + 0x38)) && ptrOk(targetPlayer)) {
+                few1n_forceStartVoteKickDirect(vk, targetPlayer);
+            }
+            if (g_voteKickFullYes) {
+                few1n_makeVoteKickFullYes();
+            }
+        }
+    });
 }
 
 // Anti-VoteKick (1.4.4): Seni oylamayla atmaya çalışanları engelle
@@ -2327,6 +2499,7 @@ static void h_voteKickEndRPC(void* self, int vote, int target, unsigned char res
         FLog([NSString stringWithFormat:@"🛡️ Anti-VoteKick: Birisi seni oylamayla atmaya çalıştı! Engellendi (vote=%d, target=%d, result=%d)", vote, target, (int)result]);
         return; // Düşmeyi engelle - LeaveRoom'a gitmesini önle!
     }
+    if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
     if (o_voteKickEndRPC) o_voteKickEndRPC(self, vote, target, result, info);
 }
 
@@ -2337,6 +2510,7 @@ static void h_voteKickStartRPC(void* self, int target, void* info) {
         FLog(@"🛡️ Anti-VoteKick: Sana karşı oylama başlatıldı, sessize alındı.");
         return;
     }
+    if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
     if (o_voteKickStartRPC) o_voteKickStartRPC(self, target, info);
 }
 
@@ -4727,7 +4901,7 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.41  •  Base 0x%lX", (unsigned long)global_base];
+    ver.text = [NSString stringWithFormat:@"v114.42  •  Base 0x%lX", (unsigned long)global_base];
     ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
@@ -5334,7 +5508,7 @@ static UIViewController* few1n_topVC(void) {
 
 - (void)frameTick {
     enforceScale();          // her ekran frame'inde timeScale'i zorla
-    if (g_voteKickFullYes) few1n_makeVoteKickFullYes(); // 1.4.4: 60fps oylama evet kilitleme
+    few1n_tickVoteKickFullYes(); // 1.4.4: 60fps oylama evet kilitleme + odaya girince 60sn/180sn oylama bekleme kilitlerini sıfırlama
     // ===== OTOMATIK KARSILAMA: odaya YENI girince (false->true kenari) mesaj at =====
     // Optimizasyon: sadece ozellik ACIKKEN poll et (kapaliyken her frame cagri yok)
     if (isAutoGreetEnabled && pn_getInRoom) {
@@ -5815,15 +5989,24 @@ static UIViewController* few1n_topVC(void) {
         [a addAction:[UIAlertAction actionWithTitle:display style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             if (!ptrOk(player) || !ptrOk(vk) || !g_mVoteKickStart) return;
             @try {
+                // v114.42: Odaya girer girmez beklemeden oylama başlatmak için Master al ve 60sn/180sn kilitleri sıfırla
+                few1n_claimMaster();
+                few1n_resetVoteKickCooldowns(vk);
                 void* args[1] = { player };
                 void* exc = NULL;
                 i_runtime_invoke(g_mVoteKickStart, vk, args, &exc);
-                FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi");
+                FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi (0sn bekleme)");
                 // v114.38: Oylama başlar başlamaz Evet sayısını anında full yap ve kilitle
                 g_voteKickFullYes = true;
                 [self setToggle:@"votekickyes" on:g_voteKickFullYes];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    few1n_makeVoteKickFullYes();
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    void* curVk = few1n_findVoteKickInstance();
+                    if (ptrOk(curVk)) {
+                        if (!(*(bool*)((uintptr_t)curVk + 0x38)) && ptrOk(player)) {
+                            few1n_forceStartVoteKickDirect(curVk, player);
+                        }
+                        few1n_makeVoteKickFullYes();
+                    }
                 });
             } @catch (...) { FLog(@"Normal VoteKick çağrısı exception"); }
         }]];
@@ -12249,11 +12432,15 @@ static void InstallEverything(uintptr_t b) {
 
     // v114.22 / 1.4.4: Anti-VoteKick, Anti-Report, Free Garage native hook yerine il2cpp runtime yolu kullanır.
     // safeHookByName çağrıları sideload ve Substrate olmayan ortamlarda crash riskini önlemek için pasife alındı.
-    // 1.4.4: Anti-VoteKick, Anti-Report, Anti-Kick (Tam Dokunulmazlık)
-    safeHookByName("", "VoteKick",                  "VoteKickEndRPC",   4, (void*)h_voteKickEndRPC,   (void**)&o_voteKickEndRPC,   "VoteKick.VoteKickEndRPC (Anti-VoteKick)");
-    safeHookByName("", "VoteKick",                  "VoteKickStartRPC", 2, (void*)h_voteKickStartRPC, (void**)&o_voteKickStartRPC, "VoteKick.VoteKickStartRPC (Anti-VoteKick)");
-    safeHookByName("", "ChatManager",               "ReportRPC",        3, (void*)h_reportRPC,        (void**)&o_reportRPC,        "ChatManager.ReportRPC (Anti-Report)");
-    safeHookByName("", "HR_PhotonLobbyManagerDummy", "KickPlayerRPC",   1, (void*)h_dummyKickRPC,     (void**)&o_dummyKickRPC,     "LobbyDummy.KickPlayerRPC (Anti-Kick)");
+    // 1.4.4: Anti-VoteKick, Anti-Report, Anti-Kick (Tam Dokunulmazlık) + Anında Oylama Başlatma (0sn Cooldown)
+    safeHookByName("", "VoteKick",                  "VoteKickEndRPC",      4, (void*)h_voteKickEndRPC,         (void**)&o_voteKickEndRPC,         "VoteKick.VoteKickEndRPC (Anti-VoteKick)");
+    safeHookByName("", "VoteKick",                  "VoteKickStartRPC",    2, (void*)h_voteKickStartRPC,       (void**)&o_voteKickStartRPC,       "VoteKick.VoteKickStartRPC (Anti-VoteKick)");
+    safeHookByName("", "VoteKick",                  "mkv",                 1, (void*)h_voteKickMkv,            (void**)&o_voteKickMkv,            "VoteKick.mkv (0sn Cooldown CanVoteKick)");
+    safeHookByName("", "VoteKick",                  "mky",                 2, (void*)h_voteKickMky,            (void**)&o_voteKickMky,            "VoteKick.mky (Hedef Cooldown Bypass)");
+    safeHookByName("", "VoteKick",                  "OnPlayerEnteredRoom", 1, (void*)h_voteKickOnPlayerEntered,(void**)&o_voteKickOnPlayerEntered,"VoteKick.OnPlayerEnteredRoom (60sn Kilit Yok)");
+    safeHookByName("", "VoteKick",                  "mkw",                 1, (void*)h_voteKickMkw,            (void**)&o_voteKickMkw,            "VoteKick.mkw (Anında Oylama Başlat)");
+    safeHookByName("", "ChatManager",               "ReportRPC",           3, (void*)h_reportRPC,              (void**)&o_reportRPC,              "ChatManager.ReportRPC (Anti-Report)");
+    safeHookByName("", "HR_PhotonLobbyManagerDummy", "KickPlayerRPC",      1, (void*)h_dummyKickRPC,           (void**)&o_dummyKickRPC,           "LobbyDummy.KickPlayerRPC (Anti-Kick)");
     // safeHookByName("", "CarManager",  "gmz",              1, (void*)h_carManager_gmz,   (void**)&o_carManager_gmz,   "CarManager.gmz (Tüm Araçları Aç)");
     // safeHookByName("", "CarManager",  "gna",              1, (void*)h_carManager_gna,   (void**)&o_carManager_gna,   "CarManager.gna (Tüm Araçları Aç isim)");
 
