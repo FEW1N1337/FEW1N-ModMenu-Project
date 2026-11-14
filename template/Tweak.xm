@@ -4,29 +4,23 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 #import <PhotosUI/PhotosUI.h>
-// #include <substrate.h> (runtime dlsym dynamic resolution)
+#include <substrate.h>
 #include <mach-o/dyld.h>
 #include <string.h>
+#include <stdlib.h>   // free() — il2cpp_type_get_name malloc'lu string dondurur
 #include <dlfcn.h>
 #include <math.h>
 #import <objc/runtime.h>
 #import "Offsets.h"
 
-// ============================================================
-//  Dinamik Ofset Degiskenleri (Offsets.h extern tanimlari)
-//  1.4.4 varsayilan fallback degerleri ile baslar, calisma aninda
-//  few1n_resolveOffsets() tarafindan il2cpp metadata ile guncellenir.
-// ============================================================
-int g_offPlayerHandlerPhotonView = 0xD8;
-int g_offPlayerHandlerCanCrash   = 0x38;
-int g_offPlayerHandlerDamage     = 0x3C;
-int g_offLobbyPwdInput           = 0x68;
-int g_offLobbyPwdOnConnInput     = 0x78;
-int g_offRoomLineNameText        = 0x20;
-int g_offRoomLineMapText         = 0x28;
-int g_offRoomLinePlayerCountText = 0x30;
-int g_offRoomLinePassword        = 0x58;
-int g_offRoomLineRoomInfo        = 0x60;
+// Surum tek kaynak: repo kokundeki VERSION.txt. CI -DFEW1N_VERSION=114.22
+// seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
+// stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
+#ifndef FEW1N_VERSION
+#define FEW1N_VERSION dev
+#endif
+#define FEW1N_STR2(x) #x
+#define FEW1N_STR(x)  FEW1N_STR2(x)
 
 // ============================================================
 //  v114.8 - FEW1N MOD MENU  (derlemeye hazir guncel surum)
@@ -53,15 +47,12 @@ int g_offRoomLineRoomInfo        = 0x60;
 // CarNitro.get_nitroAmount() [obf: fda]    -> 0x54CFE14
 // CarNitro.set_nitroAmount(float)[obf: fdb]-> 0x54CFE1C
 // CarDriveSystem.Move(f,f,f,f) [obf: fca]  -> 0x54CCAA0
-// PlateVariant.Change(PlateHolder)[obf:gal]-> 0x54EA1FC   (c@0x0, t@0x8)
+// PlateVariant.Change(PlateHolder)[obf:ghs] -> metadata ile isimden cozulur
 // HR_UI_RoomListLine.Connect() [obf: elv]  -> 0x54B32F4   (password @ self+0x50)
 // HR_PhotonLobbyManager.get_Instance()[eke]-> 0x54A8098   (passwordInput@+0x50, passwordOnConnectInput@+0x60)
 // TMP_InputField.set_text(string)          -> 0x65F4CC8
-// PlayerManager.get_Instance() [obf: ggn]  -> 0x5A2DE20
-// PlayerManager.get_Money()    [obf: ggx]  -> 0x5A4346C
-// PlayerManager.AddMoney(int)  [obf: ghm]  -> 0x5A43A2C
-// PlayerManager.SyncWithServer()[obf: ghj] -> 0x5A2DF80
-// PlayerManager.UpdateNicknameInternal(str)[ghn] -> 0x5A3DDD4
+// PlayerManager zinciri IL2CPP metadata ile isimden cozulur (sabit RVA yok):
+// gns() instance, goc() bakiye, gor(int) para ekle, goo() senkron, gos(string) isim.
 // ============================================================
 
 struct PlateHolder { void* c; void* t; };   // c@0x0, t@0x8
@@ -151,6 +142,12 @@ static char  announceText[512] = "FEW1N MOD MENU aktif!\nHerkese selam!\nIyi oyu
 static bool  isAutoGreetEnabled = false;
 static char  g_greetText[256] = "Selam millet! FEW1N burada 🔥";
 static bool  g_wasInRoom = false;          // oda giris/cikis kenar tespiti
+// v114.46: Anti-Kick — kicklenirsen odaya otomatik geri gir + master ol
+static bool  isAntiKickEnabled = false;
+static char  g_lastRoomName[128] = "";     // en son bulundugum odanin ismi (geri girmek icin)
+static double g_mapRejoinDelaySec = 1.3;   // v114.78: harita gir-cik MANUEL gecikmesi
+static int    g_rejoinMode = 1;            // v114.88: 0=Kapali, 1=Otomatik(hazir-bekle), 2=Manuel(sabit sure)
+static char   g_plateDiag[192] = "";       // v114.91: baskasinin plakasi teshis (hangi adima kadar gitti)
 // ==== SARKI SOZU -> CHAT (altyazi gibi) ====
 static bool isLyricsEnabled = false;
 static int  g_lyricsIdx = 0;             // hangi satir
@@ -236,6 +233,7 @@ static void* g_rccpDetachTypeObj = NULL;
 // v114.4: HR_PhotonLobbyManagerDummy - chain sonu oda listesi ekrani icin
 static void* g_hrLobbyMgrDummyType = NULL;
 static void* g_mGoSetActive = NULL;      // UnityEngine.GameObject.SetActive(bool)
+static void* g_mGoActiveInHierarchy = NULL;  // UnityEngine.GameObject.get_activeInHierarchy() -> bool (hooksuz sifre panel tespiti)
 static int g_offRoomListPanel = 0;
 static int g_offRoomListContent = 0;
 static int g_offDetachStrength = 0, g_offDetachIsDetachable = 0;
@@ -440,7 +438,6 @@ static void* (*i_class_from_name)(const void*, const char*, const char*) = NULL;
 static void* (*i_class_get_method_from_name)(void*, const char*, int) = NULL;
 static void* (*i_runtime_invoke)(void*, void*, void**, void**) = NULL;
 static void* (*i_thread_attach)(void*) = NULL;
-static void* (*i_domain_get_ptr)(void) = NULL;
 static void* g_mSetTS = NULL;   // set_timeScale MethodInfo*
 static void* g_mGetTS = NULL;   // get_timeScale MethodInfo*
 static void* g_mRbGetVel = NULL; // Rigidbody.get_linearVelocity MethodInfo*
@@ -459,6 +456,7 @@ static void* g_mRoomSetCustomProperties = NULL;         // Room.SetCustomPropert
 static void* g_mRoomSetPropertiesListedInLobby = NULL;  // Room.SetPropertiesListedInLobby(string[])
 static void* g_stringClass = NULL;                      // System.String — string[] arg'i icin
 static void* (*i_array_new)(void*, unsigned long) = NULL;  // il2cpp_array_new
+static void* (*i_value_box)(void*, void*) = NULL;          // il2cpp_value_box (deger tipini kutula — object[] RPC arg icin)
 static bool  g_il2cppReady = false;
 // v85: Photon Hashtable helper — sifre ve custom oda property'leri icin
 static void* g_hashtableClass = NULL;
@@ -472,6 +470,11 @@ static bool  isEspEnabled = false;
 // ==== PLAKA (il2cpp ile zorla - hook olu) ====
 static void* g_mTmpSetText = NULL;     // TMP_Text.set_text(string)
 static void* g_plateTypeObj = NULL;    // typeof(PlateVariant)
+static void* g_plateClass = NULL;      // PlateVariant Il2CppClass*
+static int   g_offPlateParts = 0;       // PlateVariant.parts (runtime field API)
+static int   g_offPlateDisableSplit = 0; // PlateVariant.disableSplit (runtime field API)
+static void* g_plateUiTypeObj = NULL;   // typeof(PlateUIElement)
+static void* g_mPlateSpinRandom = NULL; // PlateUIElement.SpinRandom()
 // ==== SIFRE KIRICI (RoomListLine.password client'ta) ====
 static void* g_roomLineType = NULL;    // typeof(HR_UI_RoomListLine)
 // ==== RIGIDBODY YEDEK YOLU (CarDriveSystem bulunamazsa kameraya en yakin arac) ====
@@ -493,10 +496,6 @@ static void (*cps_TeleportCar_RPC)(void* cps, Vec3 pos, Quaternion rot, void* me
 static void (*rbps_TeleportCar_RPC)(void* rbps, Vec3 pos, Quaternion rot, void* method) = NULL;
 static void (*hrph_TeleportPlayerRPC)(void* hrph, Vec3 pos, void* method) = NULL;
 static void (*ssrcc_RpcTeleport)(void* ssrcc, Vec3 pos, Vec3 rot, Vec3 scale, float time, void* method) = NULL;
-// ==== v114.24: TRAFFIC ROCKET + RACE FINISH RPC ====
-static void* g_trafficPoolingTypeObj = NULL;   // typeof(HR_TrafficPooling)
-static void* g_mSimpleSpawnRPC = NULL;         // HR_TrafficPooling.SimpleSpawnRPC
-static void* g_mNetworkPlayerWonRPC = NULL;    // HR_PhotonHandler.NetworkPlayerWonRPC
 // ==== GODMODE (HR_PlayerHandler.canCrash=false -> hic kaza yapma) ====
 static void* g_playerHandlerType = NULL;   // typeof(HR_PlayerHandler)
 static void* g_myPlayerHandler = NULL;     // benim handler (PhotonView@0xB8.IsMine)
@@ -543,42 +542,10 @@ static void* (*i_class_get_field_from_name)(void*, const char*) = NULL;
 static void  (*i_field_static_get_value)(void*, void*) = NULL;
 static void  (*i_field_static_set_value)(void*, void*) = NULL;   // static alan YAZ (EnableCloseConnection icin)
 static size_t (*i_field_get_offset)(void*) = NULL;
-static void* (*i_class_get_fields)(void*, void**) = NULL;   // il2cpp_class_get_fields (iter)
-static const char* (*i_field_get_name)(void*) = NULL;       // il2cpp_field_get_name
-static void* (*i_field_get_type)(void*) = NULL;             // il2cpp_field_get_type
-static const char* (*i_type_get_name)(void*) = NULL;        // il2cpp_type_get_name
 static void* g_fEnableCloseConn = NULL;                          // PhotonNetwork.EnableCloseConnection static field (kick acar) - init'te kullanildigi icin erken tanimli
 static void* g_lobbyDummyType = NULL;   // HR_PhotonLobbyManagerDummy tipi (init'te bulunur -> erken tanimli)
 static void* g_mDummyKick = NULL;       // HR_PhotonLobbyManagerDummy.KickPlayer() -> photonView.RPC("KickPlayerRPC", All, +0x108 ipg)
 static void* (*mbp_getPhotonView)(void*) = NULL;  // MonoBehaviourPun.get_photonView 0x594DB48 (dogru lobi instance'i secmek icin)
-
-// 1.4.4: VoteKick bildirimleri (erken tanimli)
-static void* g_voteKickTypeObj = NULL;
-static void* g_voteKickClass = NULL;
-static void* g_mVoteKickEndRPC = NULL;
-static void* g_mVoteKickStartRPC = NULL;
-static void* g_mVoteKickStart = NULL;
-static void* g_mGetVoteKickPac = NULL;
-static bool  g_voteKickFullYes = false;
-static void few1n_ensureVoteKick(void);
-static bool few1n_makeVoteKickFullYes(void);
-static void few1n_tickVoteKickFullYes(void);
-static NSString* readStr(void* il2s);
-static void few1n_claimMaster(void);
-static void few1n_kickPlayer(void* playerObj);
-
-// Bir pointer okunabilir/makul mu? (cop pointer dereference crash'ini onler)
-static inline bool ptrOk(void* p) {
-    uintptr_t v = (uintptr_t)p;
-    return v > 0x1000 && v < 0x0000800000000000ULL && (v & 0x7) == 0;
-}
-// Bir Unity nesnesi hala canli mi? Yok edilince m_CachedPtr (+0x10) NULL olur.
-static inline bool unityAlive(void* obj) {
-    if (!ptrOk(obj)) return false;
-    @try { return *(void**)((uintptr_t)obj + OFF_UNITY_CACHED_PTR) != NULL; } @catch (...) { return false; }
-}
-
-static void* few1n_resolveOn(void* cls, const char *methodName, int argc);
 static void* g_mmhClass   = NULL;   // HR_MainMenuHandler Il2CppClass*
 static void* g_mmhField   = NULL;   // 'iiz' static field
 static void* g_mSelectCar = NULL;
@@ -593,6 +560,20 @@ static void* (*i_type_get_object)(void*) = NULL;
 static size_t (*i_image_get_class_count)(const void*) = NULL;
 static const void* (*i_image_get_class)(const void*, size_t) = NULL;
 static const char* (*i_class_get_name)(void*) = NULL;
+// v114.24: REFLECTION — alan/metotlari ISIM yerine TIP IMZASI ile bulmak icin.
+// Oyun her surumde yeniden obfuscate ediliyor (ixy/iza/jyr/ese/gns...), isim
+// tabanli arama o zaman komple oluyor. Tip imzasi obfuscate EDILMEZ:
+// "RCCP_CarController" alani her surumde "RCCP_CarController" tipindedir.
+static void* (*i_class_get_fields)(void*, void**) = NULL;
+static void* (*i_field_get_type)(void*) = NULL;
+static const char* (*i_field_get_name)(void*) = NULL;
+static void* (*i_class_get_methods)(void*, void**) = NULL;
+static const char* (*i_method_get_name)(void*) = NULL;
+static uint32_t (*i_method_get_param_count)(void*) = NULL;
+static void* (*i_method_get_return_type)(void*) = NULL;
+static void* (*i_method_get_param)(void*, uint32_t) = NULL;
+static char* (*i_type_get_name)(void*) = NULL;   // malloc'lu — free() gerekir
+static int32_t (*i_class_value_size)(void*, uint32_t*) = NULL;  // value-type array stride
 // Bir image'da verilen isimdeki sinifi TARAYARAK bul (obfuscation'a dayanikli)
 static long g_classScanned = 0;   // teshis: kac sinif tarandi
 static void* few1n_findClassByName(const void* img, const char* wantName) {
@@ -656,85 +637,8 @@ static void* g_mFindAnyByType    = NULL;   // FindAnyObjectByType(Type)
 static void* g_carDriveTypeObj   = NULL;   // typeof(CarDriveSystem)
 static void* g_carInputTypeObj   = NULL;   // typeof(CarPlayerInput)
 
-// v114.22: Calisma aninda field isimlerine gore dinamik ofset cozumleme
-// Oyun guncellense bile field isimleri ayni kaldigi surece ofsetler otomatik bulunur.
-// Obfuscated PhotonView ise tipi uzerinden ("PhotonView") taranarak cozulur.
-static void few1n_resolveOffsets(void) {
-    if (!i_class_get_field_from_name || !i_field_get_offset) return;
-    
-    // 1. HR_PlayerHandler: canCrash, damage, ve PhotonView
-    void* phClass = few1n_classAnyImage("", "HR_PlayerHandler");
-    if (phClass) {
-        void* fCanCrash = i_class_get_field_from_name(phClass, "canCrash");
-        if (fCanCrash) {
-            g_offPlayerHandlerCanCrash = (int)i_field_get_offset(fCanCrash);
-            FLog([NSString stringWithFormat:@"🎯 HR_PlayerHandler.canCrash: 0x%X", g_offPlayerHandlerCanCrash]);
-        }
-        void* fDamage = i_class_get_field_from_name(phClass, "damage");
-        if (fDamage) {
-            g_offPlayerHandlerDamage = (int)i_field_get_offset(fDamage);
-            FLog([NSString stringWithFormat:@"🎯 HR_PlayerHandler.damage: 0x%X", g_offPlayerHandlerDamage]);
-        }
-        // PhotonView: tip adina gore ("PhotonView") dinamik tarama — obfuscated isim degisse bile bulur
-        if (i_class_get_fields && i_field_get_type && i_type_get_name) {
-            void* iter = NULL;
-            void* field = NULL;
-            while ((field = i_class_get_fields(phClass, &iter))) {
-                void* ftype = i_field_get_type(field);
-                if (ftype) {
-                    const char* tname = i_type_get_name(ftype);
-                    if (tname && strstr(tname, "PhotonView") != NULL) {
-                        g_offPlayerHandlerPhotonView = (int)i_field_get_offset(field);
-                        const char* fname = i_field_get_name ? i_field_get_name(field) : "?";
-                        FLog([NSString stringWithFormat:@"🎯 HR_PlayerHandler.PhotonView dinamik bulundu: 0x%X (field=%s)", g_offPlayerHandlerPhotonView, fname]);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. HR_PhotonLobbyManager: passwordInput, passwordOnConnectInput
-    void* lobbyClass = few1n_classAnyImage("", "HR_PhotonLobbyManager");
-    if (lobbyClass) {
-        void* fPwd = i_class_get_field_from_name(lobbyClass, "passwordInput");
-        if (fPwd) {
-            g_offLobbyPwdInput = (int)i_field_get_offset(fPwd);
-            FLog([NSString stringWithFormat:@"🎯 HR_PhotonLobbyManager.passwordInput: 0x%X", g_offLobbyPwdInput]);
-        }
-        void* fPwdConn = i_class_get_field_from_name(lobbyClass, "passwordOnConnectInput");
-        if (fPwdConn) {
-            g_offLobbyPwdOnConnInput = (int)i_field_get_offset(fPwdConn);
-            FLog([NSString stringWithFormat:@"🎯 HR_PhotonLobbyManager.passwordOnConnectInput: 0x%X", g_offLobbyPwdOnConnInput]);
-        }
-    }
-
-    // 3. HR_UI_RoomListLine: RoomNameText, MapNameText, PlayerCountText, password
-    void* roomLineClass = few1n_classAnyImage("", "HR_UI_RoomListLine");
-    if (roomLineClass) {
-        void* f;
-        if ((f = i_class_get_field_from_name(roomLineClass, "RoomNameText"))) {
-            g_offRoomLineNameText = (int)i_field_get_offset(f);
-            FLog([NSString stringWithFormat:@"🎯 HR_UI_RoomListLine.RoomNameText: 0x%X", g_offRoomLineNameText]);
-        }
-        if ((f = i_class_get_field_from_name(roomLineClass, "MapNameText"))) {
-            g_offRoomLineMapText = (int)i_field_get_offset(f);
-            FLog([NSString stringWithFormat:@"🎯 HR_UI_RoomListLine.MapNameText: 0x%X", g_offRoomLineMapText]);
-        }
-        if ((f = i_class_get_field_from_name(roomLineClass, "PlayerCountText"))) {
-            g_offRoomLinePlayerCountText = (int)i_field_get_offset(f);
-            FLog([NSString stringWithFormat:@"🎯 HR_UI_RoomListLine.PlayerCountText: 0x%X", g_offRoomLinePlayerCountText]);
-        }
-        if ((f = i_class_get_field_from_name(roomLineClass, "password"))) {
-            g_offRoomLinePassword = (int)i_field_get_offset(f);
-            FLog([NSString stringWithFormat:@"🎯 HR_UI_RoomListLine.password: 0x%X", g_offRoomLinePassword]);
-        }
-        if ((f = i_class_get_field_from_name(roomLineClass, "roomInfo"))) {
-            g_offRoomLineRoomInfo = (int)i_field_get_offset(f);
-            FLog([NSString stringWithFormat:@"🎯 HR_UI_RoomListLine.roomInfo: 0x%X", g_offRoomLineRoomInfo]);
-        }
-    }
-}
+// v114.23: class layout'lari il2cpp metadata'sindan cozer (asagida tanimli).
+static void few1n_resolveFieldOffsets(void);
 
 static void few1n_initIl2cpp(void) {
     i_domain_get                = (void*(*)(void))dlsym(RTLD_DEFAULT, "il2cpp_domain_get");
@@ -746,25 +650,38 @@ static void few1n_initIl2cpp(void) {
     i_thread_attach             = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_thread_attach");
     i_object_new                = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_object_new");
     i_array_new                 = (void*(*)(void*,unsigned long))dlsym(RTLD_DEFAULT, "il2cpp_array_new");
-    // v114.19: safeHookByName icin gerekli
+    i_value_box                 = (void*(*)(void*,void*))dlsym(RTLD_DEFAULT, "il2cpp_value_box");
+    // v114.19: safeHookByName icin gerekli. NOT: bu sembol cogu Unity build'inde
+    // export EDILMEZ (bu oyunda da yok) — few1n_methodCodeAddr fallback olarak
+    // MethodInfo.methodPointer @+0x00 alanini okur, hook'lar yine calisir.
     i_method_get_pointer        = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_method_get_pointer");
     i_class_get_field_from_name = (void*(*)(void*,const char*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_field_from_name");
     i_field_static_get_value    = (void(*)(void*,void*))dlsym(RTLD_DEFAULT, "il2cpp_field_static_get_value");
     i_field_static_set_value    = (void(*)(void*,void*))dlsym(RTLD_DEFAULT, "il2cpp_field_static_set_value");
     i_field_get_offset          = (size_t(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_field_get_offset");
-    i_class_get_fields          = (void*(*)(void*,void**))dlsym(RTLD_DEFAULT, "il2cpp_class_get_fields");
-    i_field_get_name            = (const char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_field_get_name");
-    i_field_get_type            = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_field_get_type");
-    i_type_get_name             = (const char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_type_get_name");
     i_class_get_type            = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_type");
     i_type_get_object           = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_type_get_object");
     i_image_get_class_count     = (size_t(*)(const void*))dlsym(RTLD_DEFAULT, "il2cpp_image_get_class_count");
     i_image_get_class           = (const void*(*)(const void*,size_t))dlsym(RTLD_DEFAULT, "il2cpp_image_get_class");
     i_class_get_name            = (const char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_class_get_name");
+    // v114.24: tip-imzasi ile arama (obfuscation seed degisince isim aramasi olur)
+    i_class_get_fields          = (void*(*)(void*,void**))dlsym(RTLD_DEFAULT, "il2cpp_class_get_fields");
+    i_field_get_type            = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_field_get_type");
+    i_field_get_name            = (const char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_field_get_name");
+    i_class_get_methods         = (void*(*)(void*,void**))dlsym(RTLD_DEFAULT, "il2cpp_class_get_methods");
+    i_method_get_name           = (const char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_method_get_name");
+    i_method_get_param_count    = (uint32_t(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_method_get_param_count");
+    i_method_get_return_type    = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_method_get_return_type");
+    i_method_get_param          = (void*(*)(void*,uint32_t))dlsym(RTLD_DEFAULT, "il2cpp_method_get_param");
+    i_type_get_name             = (char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_type_get_name");
+    i_class_value_size          = (int32_t(*)(void*,uint32_t*))dlsym(RTLD_DEFAULT, "il2cpp_class_value_size");
     if (!i_domain_get || !i_domain_get_assemblies || !i_assembly_get_image ||
         !i_class_from_name || !i_class_get_method_from_name || !i_runtime_invoke) {
         FLog(@"il2cpp API bulunamadi!"); return;
     }
+    FLog([NSString stringWithFormat:@"hook adres yolu: %@",
+          i_method_get_pointer ? @"il2cpp_method_get_pointer (export)"
+                               : @"MethodInfo.methodPointer @+0 (fallback — export yok)"]);
     void* domain = i_domain_get();
     if (i_thread_attach && domain) i_thread_attach(domain);   // bu thread'i il2cpp'e bagla
     unsigned long n = 0;
@@ -884,7 +801,17 @@ static void few1n_initIl2cpp(void) {
         if (!g_plateTypeObj) {
             void* pc = i_class_from_name(img, "", "PlateVariant");
             if (!pc) pc = few1n_findClassByName(img, "PlateVariant");
-            if (pc) { g_plateTypeObj = few1n_typeObjOf(pc); FLog([NSString stringWithFormat:@"PlateVariant tipi=%p", g_plateTypeObj]); }
+            if (pc) {
+                g_plateClass = pc;
+                g_plateTypeObj = few1n_typeObjOf(pc);
+                if (i_class_get_field_from_name && i_field_get_offset) {
+                    void* f = i_class_get_field_from_name(pc, "parts");
+                    if (f) g_offPlateParts = (int)i_field_get_offset(f);
+                    f = i_class_get_field_from_name(pc, "disableSplit");
+                    if (f) g_offPlateDisableSplit = (int)i_field_get_offset(f);
+                }
+                FLog([NSString stringWithFormat:@"PlateVariant: tip=%p parts@%d split@%d", g_plateTypeObj, g_offPlateParts, g_offPlateDisableSplit]);
+            }
         }
         if (!g_roomLineType) {
             void* rc = i_class_from_name(img, "", "HR_UI_RoomListLine");
@@ -1064,9 +991,13 @@ static void few1n_initIl2cpp(void) {
             }
         }
         // UnityEngine.GameObject.SetActive(bool) resolve - chain sonu panel switch icin
-        if (!g_mGoSetActive) {
+        if (!g_mGoSetActive || !g_mGoActiveInHierarchy) {
             void* gc = i_class_from_name(img, "UnityEngine", "GameObject");
-            if (gc && i_class_get_method_from_name) g_mGoSetActive = i_class_get_method_from_name(gc, "SetActive", 1);
+            if (gc && i_class_get_method_from_name) {
+                if (!g_mGoSetActive)        g_mGoSetActive        = i_class_get_method_from_name(gc, "SetActive", 1);
+                // get_activeInHierarchy() -> bool : hooksuz sifre panel aktiflik tespiti
+                if (!g_mGoActiveInHierarchy) g_mGoActiveInHierarchy = i_class_get_method_from_name(gc, "get_activeInHierarchy", 0);
+            }
         }
         if (g_rccpExhaustTypeObj && !g_offExhaustFlameCutoff) {
             void* c = i_class_from_name(img, "", "RCCP_Exhaust");
@@ -1085,24 +1016,6 @@ static void few1n_initIl2cpp(void) {
             void* hrph = i_class_from_name(img, "", "HR_PhotonHandler");
             if (!hrph) hrph = few1n_findClassByName(img, "HR_PhotonHandler");
             if (hrph) { g_hrPhotonHandlerTypeObj = few1n_typeObjOf(hrph); FLog([NSString stringWithFormat:@"HR_PhotonHandler tipi=%p", g_hrPhotonHandlerTypeObj]); }
-            // v114.24: NetworkPlayerWonRPC method resolve
-            if (hrph && !g_mNetworkPlayerWonRPC && i_class_get_method_from_name) {
-                g_mNetworkPlayerWonRPC = i_class_get_method_from_name(hrph, "NetworkPlayerWonRPC", 1);
-                if (g_mNetworkPlayerWonRPC) FLog([NSString stringWithFormat:@"NetworkPlayerWonRPC metod=%p", g_mNetworkPlayerWonRPC]);
-            }
-        }
-        // v114.24: HR_TrafficPooling class + SimpleSpawnRPC
-        if (!g_trafficPoolingTypeObj) {
-            void* tp = i_class_from_name(img, "", "HR_TrafficPooling");
-            if (!tp) tp = few1n_findClassByName(img, "HR_TrafficPooling");
-            if (tp) {
-                g_trafficPoolingTypeObj = few1n_typeObjOf(tp);
-                FLog([NSString stringWithFormat:@"HR_TrafficPooling tipi=%p", g_trafficPoolingTypeObj]);
-                if (!g_mSimpleSpawnRPC && i_class_get_method_from_name) {
-                    g_mSimpleSpawnRPC = i_class_get_method_from_name(tp, "SimpleSpawnRPC", 7);
-                    if (g_mSimpleSpawnRPC) FLog([NSString stringWithFormat:@"SimpleSpawnRPC metod=%p", g_mSimpleSpawnRPC]);
-                }
-            }
         }
         if (!g_roomOptionsClass) {
             void* roc = i_class_from_name(img, "Photon.Realtime", "RoomOptions");
@@ -1140,7 +1053,13 @@ static void few1n_initIl2cpp(void) {
                     break;
                 }
             }
-            if (!g_wheelGlowTypeObj) FLog(@"🔥 Balata: HICBIR WheelGlow class'i bulunamadi bu build'de");
+            // v114.22: bu blok her image icin calisiyor (162 assembly) — bulunamadi
+            // mesajini her turda basmak log'u bogyordu. Tek sefer bas.
+            static bool wgWarned = false;
+            if (!g_wheelGlowTypeObj && !wgWarned) {
+                wgWarned = true;
+                FLog(@"🔥 Balata: HICBIR WheelGlow class'i bulunamadi bu build'de");
+            }
         }
         // Photon.Hashtable — sifre + custom property icin
         if (!g_hashtableClass) {
@@ -1152,28 +1071,14 @@ static void few1n_initIl2cpp(void) {
                 FLog([NSString stringWithFormat:@"Photon.Hashtable bulundu: cls=%p ctor=%p setItem=%p", ht, g_mHashtableCtor, g_mHashtableSetItem]);
             }
         }
-        // v114.22: 1.4.4 VoteKick sınıfını ve metotlarını çöz
-        if (!g_voteKickTypeObj) {
-            void* vkc = i_class_from_name(img, "", "VoteKick");
-            if (!vkc) vkc = few1n_findClassByName(img, "VoteKick");
-            if (vkc) {
-                g_voteKickClass = vkc;
-                g_voteKickTypeObj = few1n_typeObjOf(vkc);
-                g_mVoteKickEndRPC = few1n_resolveOn(vkc, "VoteKickEndRPC", 4);
-                g_mVoteKickStartRPC = few1n_resolveOn(vkc, "VoteKickStartRPC", 2);
-                g_mVoteKickStart = few1n_resolveOn(vkc, "mkw", 1);
-                FLog([NSString stringWithFormat:@"🗳️ VoteKick: type=%p endRPC=%p startRPC=%p mkw=%p",
-                      g_voteKickTypeObj, g_mVoteKickEndRPC, g_mVoteKickStartRPC, g_mVoteKickStart]);
-            }
-        }
-        // ONEMLI: araba tipleri ve VoteKick bulunana kadar DURMA (ayri assembly'de olabilir)
+        // ONEMLI: araba tipleri de bulunana kadar DURMA (ayri assembly'de olabilir)
         if (g_mSetTS && g_mRbSetVel && g_mSetRichText && g_roomOptionsClass &&
-            g_carDriveTypeObj && g_carInputTypeObj && g_mCamGetMain && g_voteKickClass) break;
+            g_carDriveTypeObj && g_carInputTypeObj && g_mCamGetMain) break;
     }
-    // v114.22: Dynamic offset resolution (calisma aninda field isimlerinden)
-    few1n_resolveOffsets();
-    few1n_ensureVoteKick();
     g_il2cppReady = (g_mSetTS != NULL);
+    // v114.23: sabit offset yerine class layout'unu metadata'dan cek. Oyun
+    // guncellenip sinifa alan eklendiginde offsetler kendiliginden duzelir.
+    few1n_resolveFieldOffsets();
     FLog([NSString stringWithFormat:@"il2cpp bitti: carTip=%@ inputTip=%@ (taranan sinif=%ld)",
           g_carDriveTypeObj ? @"VAR" : @"YOK", g_carInputTypeObj ? @"VAR" : @"YOK", g_classScanned]);
     if (!g_il2cppReady) FLog(@"UnityEngine.Time bulunamadi");
@@ -1368,11 +1273,432 @@ static void* few1n_mapSelClass(void) {
     if (!cls && i_class_from_name) cls = few1n_classAnyImage("", "MapSelection");
     return cls;
 }
+static void* few1n_photonMgrClass(void) {
+    static void* cls = NULL;
+    if (!cls && i_class_from_name) cls = few1n_classAnyImage("", "PhotonManager");
+    return cls;
+}
 
 // Generic method resolver
 static void* few1n_resolveOn(void* cls, const char *methodName, int argc) {
     if (!cls || !i_class_get_method_from_name) return NULL;
     return i_class_get_method_from_name(cls, methodName, argc);
+}
+
+// ===== v114.23: RUNTIME FIELD OFFSET COZUMU =====
+//
+// Oyun her guncellendiginde class layout'u kayiyor (1.4.3'te HR_UI_RoomListLine'a
+// LockImage eklendi -> tum TMP_Text'ler +8 kaydi ve mod cokuyordu). Sabit offset
+// yazmak yerine il2cpp metadata'sindan ISIMLE okuyoruz — sinifa alan eklense bile
+// dogru offset gelir.
+//
+// Cozulemezse Offsets.h'deki bilinen deger fallback olarak kullanilir (davranis
+// en kotu ihtimalle eskisi kadar iyi, daha kotu degil).
+static int few1n_fieldOffOn(void* cls, const char* field, int fallback) {
+    if (!cls || !field || !i_class_get_field_from_name || !i_field_get_offset) return fallback;
+    void* f = NULL;
+    @try { f = i_class_get_field_from_name(cls, field); } @catch (...) { return fallback; }
+    if (!f) return fallback;
+    size_t off = 0;
+    @try { off = i_field_get_offset(f); } @catch (...) { return fallback; }
+    // Makul aralik disi (0 = static/cozulemedi) ise fallback'e don.
+    if (off < 0x10 || off > 0x4000) return fallback;
+    return (int)off;
+}
+static int few1n_fieldOff(const char* ns, const char* cls, const char* field, int fallback) {
+    return few1n_fieldOffOn(few1n_classAnyImage(ns ?: "", cls), field, fallback);
+}
+
+// ===== v114.24: TIP IMZASI ILE ARAMA (obfuscation-immune) =====
+//
+// Alan/metot ISIMLERI her oyun surumunde yeniden uretiliyor (ixy, iza, jyr,
+// kam, ese, gns ...). Isim tabanli arama o gun komple oluyor ve mod cokuyor.
+// Ama TIPLER obfuscate edilmiyor: HR_PlayerHandler'in RCCP_CarController
+// alani her surumde "RCCP_CarController" tipindedir. Onu arayacagiz.
+//
+// Sira: (1) bilinen isim -> (2) tip imzasi -> (3) sabit fallback.
+
+// "UnityEngine.Rigidbody" ile "Rigidbody" eslessin diye son bileseni karsilastir.
+static bool few1n_typeIs(const char* full, const char* want) {
+    if (!full || !want) return false;
+    if (strcmp(full, want) == 0) return true;
+    const char* dot = strrchr(full, '.');
+    return dot && strcmp(dot + 1, want) == 0;
+}
+
+// cls icindeki `ordinal`. sirada gelen `typeName` tipli alanin offset'i.
+static int few1n_fieldOffByType(void* cls, const char* typeName, int ordinal, int fallback) {
+    if (!cls || !typeName) return fallback;
+    if (!i_class_get_fields || !i_field_get_type || !i_type_get_name || !i_field_get_offset) return fallback;
+    void* iter = NULL; int seen = 0;
+    @try {
+        void* f;
+        while ((f = i_class_get_fields(cls, &iter)) != NULL) {
+            void* t = i_field_get_type(f); if (!t) continue;
+            char* tn = i_type_get_name(t);  if (!tn) continue;
+            bool hit = few1n_typeIs(tn, typeName);
+            free(tn);
+            if (!hit) continue;
+            if (seen++ != ordinal) continue;
+            size_t off = i_field_get_offset(f);
+            if (off < 0x10 || off > 0x4000) return fallback;   // static/gecersiz
+            return (int)off;
+        }
+    } @catch (...) {}
+    return fallback;
+}
+
+// Generic tipler ("System.Collections.Generic.List`1<System.String>") icin: few1n_typeIs
+// son-nokta karsilastirmasi ic-generic yuzunden tutmaz. strstr ile alt-dize eslestir.
+// Ornek: ChatManager'da TEK List alani var -> "List`1" ile guvenle bulunur (isim drift'ine bagimsiz).
+static int few1n_fieldOffByTypeContains(void* cls, const char* sub, int ordinal, int fallback) {
+    if (!cls || !sub) return fallback;
+    if (!i_class_get_fields || !i_field_get_type || !i_type_get_name || !i_field_get_offset) return fallback;
+    void* iter = NULL; int seen = 0;
+    @try {
+        void* f;
+        while ((f = i_class_get_fields(cls, &iter)) != NULL) {
+            void* t = i_field_get_type(f); if (!t) continue;
+            char* tn = i_type_get_name(t);  if (!tn) continue;
+            bool hit = (strstr(tn, sub) != NULL);
+            free(tn);
+            if (!hit) continue;
+            if (seen++ != ordinal) continue;
+            size_t off = i_field_get_offset(f);
+            if (off < 0x10 || off > 0x4000) return fallback;
+            return (int)off;
+        }
+    } @catch (...) {}
+    return fallback;
+}
+
+// Once isim, olmazsa tip imzasi, o da olmazsa sabit.
+static int few1n_fieldSmart(void* cls, const char* name,
+                            const char* typeName, int ordinal, int fallback) {
+    int v = few1n_fieldOffOn(cls, name, -1);
+    if (v > 0) return v;
+    v = few1n_fieldOffByType(cls, typeName, ordinal, -1);
+    if (v > 0) return v;
+    return fallback;
+}
+
+// cls icindeki `ordinal`. sirada gelen, imzasi tutan metodu dondurur.
+// retType NULL ise donus tipi kontrol edilmez; params[i] NULL ise o parametre
+// kontrol edilmez (joker).
+static void* few1n_methodBySig(void* cls, const char* retType,
+                               const char** params, int nparams, int ordinal) {
+    if (!cls) return NULL;
+    if (!i_class_get_methods || !i_method_get_param_count || !i_type_get_name) return NULL;
+    void* iter = NULL; int seen = 0;
+    @try {
+        void* m;
+        while ((m = i_class_get_methods(cls, &iter)) != NULL) {
+            if ((int)i_method_get_param_count(m) != nparams) continue;
+            if (retType) {
+                if (!i_method_get_return_type) continue;
+                void* rt = i_method_get_return_type(m); if (!rt) continue;
+                char* rn = i_type_get_name(rt);          if (!rn) continue;
+                bool ok = few1n_typeIs(rn, retType);
+                free(rn);
+                if (!ok) continue;
+            }
+            bool allok = true;
+            if (params && nparams > 0) {
+                if (!i_method_get_param) continue;
+                for (int i = 0; i < nparams; i++) {
+                    if (!params[i]) continue;               // joker
+                    void* pt = i_method_get_param(m, (uint32_t)i);
+                    if (!pt) { allok = false; break; }
+                    char* pn = i_type_get_name(pt);
+                    if (!pn) { allok = false; break; }
+                    bool ok = few1n_typeIs(pn, params[i]);
+                    free(pn);
+                    if (!ok) { allok = false; break; }
+                }
+            }
+            if (!allok) continue;
+            if (seen++ != ordinal) continue;
+            return m;
+        }
+    } @catch (...) {}
+    return NULL;
+}
+
+// Once aday isimler, olmazsa tip imzasi. Wrapper'larin ortak giris noktasi.
+static void* few1n_methodSmart(void* cls, const char* const* nameCands, int argc,
+                               const char* retType, const char** params, int ordinal,
+                               const char* label) {
+    if (!cls) return NULL;
+    if (nameCands && i_class_get_method_from_name) {
+        for (int i = 0; nameCands[i]; i++) {
+            void* m = i_class_get_method_from_name(cls, nameCands[i], argc);
+            if (m) return m;
+        }
+    }
+    void* m = few1n_methodBySig(cls, retType, params, argc, ordinal);
+    if (m) {
+        const char* nm = (i_method_get_name ? i_method_get_name(m) : NULL);
+        FLog([NSString stringWithFormat:@"🔎 %s: isim tutmadi, tip imzasiyla bulundu -> %s",
+              label ?: "?", nm ?: "?"]);
+    }
+    return m;
+}
+
+// Singleton getter'lari icin kisayol: static, 0 parametre, kendi tipini donduren
+// metot. gns/gtp/fzi/eov hepsi bu kalibi kullaniyor — obfuscation'dan bagimsiz.
+static void* few1n_singletonGetter(void* cls, const char* const* nameCands,
+                                   const char* ownTypeName, const char* label) {
+    return few1n_methodSmart(cls, nameCands, 0, ownTypeName, NULL, 0, label);
+}
+
+// HOOK'lar icin TEKILLIK ZORUNLU varyant.
+//
+// Wrapper'da imza birden fazla metoda uyarsa ordinal ile birini secmek kabul
+// edilebilir (en fazla yanlis deger okuruz). Hook'ta ayni sey felaket: yanlis
+// fonksiyonun uzerine yazariz ve oyun coker — v114.19 oncesi tam olarak boyle
+// oluyordu. Bu yuzden birden fazla eslesme varsa hic hook kurmuyoruz.
+// v114.26: `exclude` ile KARDES ELEME.
+//
+// Bazi sinifta imza tek basina yetmiyor ama kardesleri isimleriyle eleyebiliyoruz.
+// Ornek: ChatManager'da void(String) UC metoda uyuyor — Send, SendRPC, fzk.
+// Ama Send public API, SendRPC ise [PunRPC]: Photon onu calisma aninda ISIMLE
+// cozdugu icin obfuscate EDILEMEZ. Ikisini eleyince geriye tek basina obfuscated
+// olan kaliyor — ve bu, isim degisse bile dogru sonucu verir.
+// exclude NULL olabilir. .ctor/.cctor her zaman elenir.
+static void* few1n_methodBySigUnique(void* cls, const char* retType,
+                                     const char** params, int nparams,
+                                     const char* const* exclude,
+                                     const char* label) {
+    void* found = NULL; int hits = 0;
+    for (int ord = 0; ord < 64; ord++) {
+        void* m = few1n_methodBySig(cls, retType, params, nparams, ord);
+        if (!m) break;
+        const char* nm = (i_method_get_name ? i_method_get_name(m) : NULL);
+        if (nm) {
+            if (strcmp(nm, ".ctor") == 0 || strcmp(nm, ".cctor") == 0) continue;
+            bool skip = false;
+            if (exclude) for (int i = 0; exclude[i] && !skip; i++)
+                if (strcmp(nm, exclude[i]) == 0) skip = true;
+            if (skip) continue;
+        }
+        if (++hits > 1) {
+            FLog([NSString stringWithFormat:
+                  @"⚠️ %s: eleme sonrasi hala %d metot uyuyor — hook kurulmadi (yanlis hedef riski)",
+                  label ?: "?", hits]);
+            return NULL;
+        }
+        found = m;
+    }
+    return found;
+}
+
+// Bir kez cozulur, sonra sabit. -1 = henuz cozulmedi.
+// Varsayilanlar Offsets.h / 1.4.3 dump degerleri (fallback).
+static int OFFR_PH_PHOTONVIEW   = OFF_PLAYERHANDLER_PHOTONVIEW;   // HR_PlayerHandler.iza
+static int OFFR_PH_CANCRASH     = OFF_PLAYERHANDLER_CANCRASH;     // .canCrash
+static int OFFR_PH_DAMAGE       = OFF_PLAYERHANDLER_DAMAGE;       // .damage
+static int OFFR_PH_VEHICLENAME  = OFF_PLAYERHANDLER_VEHICLENAME;  // .VehicleName
+static int OFFR_PH_RCCP         = OFF_PLAYERHANDLER_RCCP;         // .ixy (RCCP_CarController)
+static int OFFR_PH_RIGIDBODY    = OFF_PLAYERHANDLER_RIGIDBODY;    // .ixz (Rigidbody)
+
+static int OFFR_RL_NAMETEXT     = OFF_ROOMLINE_NAME_TEXT;         // HR_UI_RoomListLine.RoomNameText
+static int OFFR_RL_MAPTEXT      = OFF_ROOMLINE_MAP_TEXT;          // .MapNameText
+static int OFFR_RL_PLAYERCOUNT  = OFF_ROOMLINE_PLAYERCOUNT_TEXT;  // .PlayerCountText
+static int OFFR_RL_PASSWORD     = OFF_ROOMLINE_PASSWORD;          // .password (1.4.4: 0x58 kzw)
+static int OFFR_RL_ROOMINFO     = 0x60;                           // .roomInfo (1.4.4: 0x60 kzx)
+
+static int OFFR_LOBBY_MAPSEL    = 0x28;   // HR_PhotonLobbyManager.mapSelection
+static int OFFR_LOBBY_ROOMNAME  = 0x48;   // .roomNameInput
+static int OFFR_LOBBY_PWD       = OFF_LOBBY_PWD_INPUT;
+static int OFFR_LOBBY_PWD_CONN  = OFF_LOBBY_PWD_ON_CONN_INPUT;
+static int OFFR_LOBBY_PWDPANEL  = 0xB0;   // HR_PhotonLobbyManager.passwordPanel (GameObject, 1.4.4: 0xB0) — hooksuz sifre dolduru tetigi
+static int OFFR_LOBBY_PENDROOM  = 0xF0;   // HR_PhotonLobbyManager.ldv/jdt (internal RoomInfo, 1.4.4: 0xF0 — baglanilacak bekleyen oda)
+static int OFFR_DUMMY_KICKNAME  = 0x108;  // HR_PhotonLobbyManagerDummy.jdz (kick hedef ismi)
+
+static int OFFR_CHAT_MSGLIST    = 0x40;   // ChatManager.kss (List<string> — tum chat mesajlari, hooksuz gelen-chat)
+
+static int OFFR_CDS_INPUT       = 0x20;   // CarDriveSystem.jyr (CarPlayerInput)
+static int OFFR_CDS_RIGIDBODY   = 0x48;   // .<jyt>k__BackingField (Rigidbody)
+static int OFFR_CDS_OVR_ACCEL   = 0x61;   // .overrideAcceleration
+static int OFFR_CDS_OVR_STEER   = 0x62;   // .overrideSteering
+static int OFFR_CDS_STEERPOWER  = 0x64;   // .overrideSteeringPower
+static int OFFR_CDS_ACCELPOWER  = 0x6C;   // .overrideAccelerationPower
+static int OFFR_CDS_TOPSPEED    = 0x98;   // .topSpeed
+static int OFFR_CDS_CURSPEED    = 0x9C;   // .currentSpeed
+
+static int OFFR_CPI_DRIVE       = 0x20;   // CarPlayerInput.kaq (CarDriveSystem)
+static int OFFR_CPI_NITRO       = 0x28;   // .kar (CarNitro)
+static int OFFR_NITRO_DRIVE     = 0x28;   // CarNitro.kam (CarDriveSystem)
+static int OFFR_NITRO_AMOUNT    = 0x34;   // CarNitro.<kap>k__BackingField
+
+static int OFFR_RCCP_ENGINERPM  = 0x114;  // RCCP_CarController.engineRPM
+static int OFFR_RCCP_MAXRPM     = 0x11C;  // .maxEngineRPM
+static int OFFR_RCCP_THROTTLE   = 0x168;  // .throttleInput_V
+static int OFFR_RCCP_BRAKE      = 0x16C;  // .brakeInput_V
+static int OFFR_RCCP_STEER      = 0x170;  // .steerInput_V
+static int OFFR_RCCP_LOWBEAM    = 0x19C;  // .lowBeamLights
+static int OFFR_RCCP_HIGHBEAM   = 0x19D;  // .highBeamLights
+static int OFFR_RCCP_INDICATORS = 0x1A0;  // .indicatorsAllLights
+
+static int OFFR_LIGHTS_LOWBEAM  = 0x40;   // RCCP_Lights.lowBeamHeadlights
+static int OFFR_LIGHTS_HIGHBEAM = 0x41;   // .highBeamHeadlights
+
+static int OFFR_RCCPMAIN_RB     = 0x48;   // RCCP_MainComponent.hnm (Rigidbody)
+static int OFFR_SSRCC_RB        = 0xF8;   // SmoothSyncRCC.rb
+static int OFFR_BOMB_OWNER      = 0x20;   // HR_Bomb.iqo (HR_PlayerHandler)
+
+static int OFFR_ROOM_NAME       = 0x40;   // RoomInfo.name
+static int OFFR_ROOM_MASTERID   = 0x48;   // RoomInfo.masterClientId
+static int OFFR_ROOM_MAXPLAYERS = 0x20;   // RoomInfo.maxPlayers
+static int OFFR_PLAYER_ACTORNUM = 0x18;   // Player.actorNumber
+
+static int OFFR_ROPT_ISVISIBLE  = 0x10;   // RoomOptions.isVisible
+static int OFFR_ROPT_ISOPEN     = 0x11;   // .isOpen
+static int OFFR_ROPT_MAXPLAYERS = 0x14;   // .MaxPlayers
+static int OFFR_ROPT_EMPTYTTL   = 0x1C;   // .EmptyRoomTtl
+
+static int OFFR_MAPLIST_MAPS    = 0x18;   // MapList.maps[]
+static int OFFR_MAP_STRIDE      = 0x20;   // MapList.Map struct boyu (array eleman adimi)
+
+// v114.25 FIX: eskiden tek bir g_offsetsResolved bayragi vardi ve ILK cagride
+// kosulsuz true oluyordu. Ama bu fonksiyon oyun daha menudeyken calisiyor;
+// CarDriveSystem / CarNitro / RCCP_* siniflari ancak yarisa girilince yukleniyor.
+// Sonuc: o an bulunamayan siniflarin offsetleri sabit fallback'te KALICI takili
+// kaliyordu — yani tam da engellemeye calistigimiz drift. Artik her sinifin kendi
+// bayragi var; bulunana kadar her init turunda tekrar deneniyor.
+static bool g_offAllLogged = false;
+static void few1n_resolveFieldOffsets(void) {
+    // Offset API'si sart. Isim aramasi olmasa bile tip-imzasi yolu tek basina yeter.
+    if (!i_field_get_offset) return;
+    if (!i_class_get_field_from_name && !i_class_get_fields) return;
+    static bool dPH=false, dRL=false, dLobby=false, dDummy=false, dCDS=false,
+                dCPI=false, dNitro=false, dRCCP=false, dLights=false, dMain=false,
+                dSS=false, dBomb=false, dRoomInfo=false, dPlayer=false, dOpts=false,
+                dMapList=false, dChat=false;
+    void* c;
+
+    if (!dPH && (c = few1n_classAnyImage("", "HR_PlayerHandler"))) {
+        dPH = true;
+        OFFR_PH_PHOTONVIEW  = few1n_fieldSmart(c, "iza",         "PhotonView",         0, OFFR_PH_PHOTONVIEW);
+        OFFR_PH_CANCRASH    = few1n_fieldOffOn(c, "canCrash",    OFFR_PH_CANCRASH);
+        OFFR_PH_DAMAGE      = few1n_fieldOffOn(c, "damage",      OFFR_PH_DAMAGE);
+        OFFR_PH_VEHICLENAME = few1n_fieldOffOn(c, "VehicleName", OFFR_PH_VEHICLENAME);
+        OFFR_PH_RCCP        = few1n_fieldSmart(c, "ixy",         "RCCP_CarController", 0, OFFR_PH_RCCP);
+        OFFR_PH_RIGIDBODY   = few1n_fieldSmart(c, "ixz",         "Rigidbody",          0, OFFR_PH_RIGIDBODY);
+    }
+    if (!dRL && (c = few1n_classAnyImage("", "HR_UI_RoomListLine"))) {
+        dRL = true;
+        OFFR_RL_NAMETEXT    = few1n_fieldOffOn(c, "RoomNameText",    OFFR_RL_NAMETEXT);
+        OFFR_RL_MAPTEXT     = few1n_fieldOffOn(c, "MapNameText",     OFFR_RL_MAPTEXT);
+        OFFR_RL_PLAYERCOUNT = few1n_fieldOffOn(c, "PlayerCountText", OFFR_RL_PLAYERCOUNT);
+        OFFR_RL_PASSWORD    = few1n_fieldOffOn(c, "password",        OFFR_RL_PASSWORD);
+        OFFR_RL_ROOMINFO    = few1n_fieldSmart(c, "roomInfo", "RoomInfo", 0, OFFR_RL_ROOMINFO);
+    }
+    if (!dLobby && (c = few1n_classAnyImage("", "HR_PhotonLobbyManager"))) {
+        dLobby = true;
+        OFFR_LOBBY_MAPSEL   = few1n_fieldOffOn(c, "mapSelection",          OFFR_LOBBY_MAPSEL);
+        OFFR_LOBBY_ROOMNAME = few1n_fieldOffOn(c, "roomNameInput",         OFFR_LOBBY_ROOMNAME);
+        OFFR_LOBBY_PWD      = few1n_fieldOffOn(c, "passwordInput",         OFFR_LOBBY_PWD);
+        OFFR_LOBBY_PWD_CONN = few1n_fieldOffOn(c, "passwordOnConnectInput",OFFR_LOBBY_PWD_CONN);
+        OFFR_LOBBY_PWDPANEL = few1n_fieldOffOn(c, "passwordPanel",         OFFR_LOBBY_PWDPANEL);
+        OFFR_LOBBY_PENDROOM = few1n_fieldSmart(c, "jdt", "RoomInfo", 0,    OFFR_LOBBY_PENDROOM);
+    }
+    if (!dDummy && (c = few1n_classAnyImage("", "HR_PhotonLobbyManagerDummy"))) {
+        dDummy = true;
+        OFFR_DUMMY_KICKNAME = few1n_fieldSmart(c, "jdz", "String", 1, OFFR_DUMMY_KICKNAME);
+    }
+    if (!dCDS && (c = few1n_classAnyImage("", "CarDriveSystem"))) {
+        dCDS = true;
+        OFFR_CDS_INPUT      = few1n_fieldSmart(c, "jyr",                  "CarPlayerInput", 0, OFFR_CDS_INPUT);
+        OFFR_CDS_RIGIDBODY  = few1n_fieldSmart(c, "<jyt>k__BackingField", "Rigidbody",      0, OFFR_CDS_RIGIDBODY);
+        OFFR_CDS_OVR_ACCEL  = few1n_fieldOffOn(c, "overrideAcceleration",     OFFR_CDS_OVR_ACCEL);
+        OFFR_CDS_OVR_STEER  = few1n_fieldOffOn(c, "overrideSteering",         OFFR_CDS_OVR_STEER);
+        OFFR_CDS_STEERPOWER = few1n_fieldOffOn(c, "overrideSteeringPower",    OFFR_CDS_STEERPOWER);
+        OFFR_CDS_ACCELPOWER = few1n_fieldOffOn(c, "overrideAccelerationPower",OFFR_CDS_ACCELPOWER);
+        OFFR_CDS_TOPSPEED   = few1n_fieldOffOn(c, "topSpeed",                 OFFR_CDS_TOPSPEED);
+        OFFR_CDS_CURSPEED   = few1n_fieldOffOn(c, "currentSpeed",             OFFR_CDS_CURSPEED);
+    }
+    if (!dCPI && (c = few1n_classAnyImage("", "CarPlayerInput"))) {
+        dCPI = true;
+        OFFR_CPI_DRIVE      = few1n_fieldSmart(c, "kaq", "CarDriveSystem", 0, OFFR_CPI_DRIVE);
+        OFFR_CPI_NITRO      = few1n_fieldSmart(c, "kar", "CarNitro",       0, OFFR_CPI_NITRO);
+    }
+    if (!dNitro && (c = few1n_classAnyImage("", "CarNitro"))) {
+        dNitro = true;
+        OFFR_NITRO_DRIVE    = few1n_fieldSmart(c, "kam",                  "CarDriveSystem", 0, OFFR_NITRO_DRIVE);
+        OFFR_NITRO_AMOUNT   = few1n_fieldSmart(c, "<kap>k__BackingField", "Single",         0, OFFR_NITRO_AMOUNT);
+    }
+    if (!dRCCP && (c = few1n_classAnyImage("", "RCCP_CarController"))) {
+        dRCCP = true;
+        OFFR_RCCP_ENGINERPM = few1n_fieldOffOn(c, "engineRPM",           OFFR_RCCP_ENGINERPM);
+        OFFR_RCCP_MAXRPM    = few1n_fieldOffOn(c, "maxEngineRPM",        OFFR_RCCP_MAXRPM);
+        OFFR_RCCP_THROTTLE  = few1n_fieldOffOn(c, "throttleInput_V",     OFFR_RCCP_THROTTLE);
+        OFFR_RCCP_BRAKE     = few1n_fieldOffOn(c, "brakeInput_V",        OFFR_RCCP_BRAKE);
+        OFFR_RCCP_STEER     = few1n_fieldOffOn(c, "steerInput_V",        OFFR_RCCP_STEER);
+        OFFR_RCCP_LOWBEAM   = few1n_fieldOffOn(c, "lowBeamLights",       OFFR_RCCP_LOWBEAM);
+        OFFR_RCCP_HIGHBEAM  = few1n_fieldOffOn(c, "highBeamLights",      OFFR_RCCP_HIGHBEAM);
+        OFFR_RCCP_INDICATORS= few1n_fieldOffOn(c, "indicatorsAllLights", OFFR_RCCP_INDICATORS);
+    }
+    if (!dLights && (c = few1n_classAnyImage("", "RCCP_Lights"))) {
+        dLights = true;
+        OFFR_LIGHTS_LOWBEAM  = few1n_fieldOffOn(c, "lowBeamHeadlights",  OFFR_LIGHTS_LOWBEAM);
+        OFFR_LIGHTS_HIGHBEAM = few1n_fieldOffOn(c, "highBeamHeadlights", OFFR_LIGHTS_HIGHBEAM);
+    }
+    if (!dMain && (c = few1n_classAnyImage("", "RCCP_MainComponent"))) {
+        dMain = true;
+        OFFR_RCCPMAIN_RB    = few1n_fieldSmart(c, "hnm", "Rigidbody", 0, OFFR_RCCPMAIN_RB);
+    }
+    if (!dSS && (c = few1n_classAnyImage("", "SmoothSyncRCC"))) {
+        dSS = true;
+        OFFR_SSRCC_RB       = few1n_fieldOffOn(c, "rb",  OFFR_SSRCC_RB);
+    }
+    if (!dBomb && (c = few1n_classAnyImage("", "HR_Bomb"))) {
+        dBomb = true;
+        OFFR_BOMB_OWNER     = few1n_fieldSmart(c, "iqo", "HR_PlayerHandler", 0, OFFR_BOMB_OWNER);
+    }
+    if (!dRoomInfo && (c = few1n_classAnyImage("Photon.Realtime", "RoomInfo"))) {
+        dRoomInfo = true;
+        OFFR_ROOM_NAME       = few1n_fieldOffOn(c, "name",           OFFR_ROOM_NAME);
+        OFFR_ROOM_MASTERID   = few1n_fieldOffOn(c, "masterClientId", OFFR_ROOM_MASTERID);
+        OFFR_ROOM_MAXPLAYERS = few1n_fieldOffOn(c, "maxPlayers",     OFFR_ROOM_MAXPLAYERS);
+    }
+    if (!dPlayer && (c = few1n_classAnyImage("Photon.Realtime", "Player"))) {
+        dPlayer = true;
+        OFFR_PLAYER_ACTORNUM = few1n_fieldOffOn(c, "actorNumber", OFFR_PLAYER_ACTORNUM);
+    }
+    if (!dOpts && (c = few1n_classAnyImage("Photon.Realtime", "RoomOptions"))) {
+        dOpts = true;
+        OFFR_ROPT_ISVISIBLE  = few1n_fieldOffOn(c, "isVisible",    OFFR_ROPT_ISVISIBLE);
+        OFFR_ROPT_ISOPEN     = few1n_fieldOffOn(c, "isOpen",       OFFR_ROPT_ISOPEN);
+        OFFR_ROPT_MAXPLAYERS = few1n_fieldOffOn(c, "MaxPlayers",   OFFR_ROPT_MAXPLAYERS);
+        OFFR_ROPT_EMPTYTTL   = few1n_fieldOffOn(c, "EmptyRoomTtl", OFFR_ROPT_EMPTYTTL);
+    }
+    if (!dMapList && (c = few1n_classAnyImage("", "MapList"))) {
+        dMapList = true;
+        OFFR_MAPLIST_MAPS   = few1n_fieldOffOn(c, "maps", OFFR_MAPLIST_MAPS);
+        // v114.34 BUG FIX: MapList.Map stride'ini runtime'dan almaya calismak
+        // yanlisti — nested class il2cpp adi "Map", ve baska "Map" siniflari
+        // (Dictionary internal'i vs) once cozulup 0x10 donduruyordu. Sonuc: harita
+        // isimleri cop okunup harita degistirme kiriliyordu. MapList.Map layout'u
+        // (referenceName@0, mode@8, sprite@0x10, visualName@0x18) sabit -> 0x20.
+        OFFR_MAP_STRIDE = 0x20;
+    }
+    if (!dChat && (c = few1n_classAnyImage("", "ChatManager"))) {
+        dChat = true;
+        // kss = List<string> (tum chat mesajlari). Isim drift eder; ChatManager'da
+        // TEK List alani var -> once isim, olmazsa "List`1" tipiyle guvenle bulunur.
+        int v = few1n_fieldOffOn(c, "kss", -1);
+        OFFR_CHAT_MSGLIST = (v > 0) ? v : few1n_fieldOffByTypeContains(c, "List`1", 0, OFFR_CHAT_MSGLIST);
+    }
+
+    // Hepsi cozulunce bir kez ozet bas (her init turunda spam etme).
+    if (!g_offAllLogged && dPH && dRL && dLobby && dCDS && dRCCP && dOpts) {
+        g_offAllLogged = true;
+        FLog([NSString stringWithFormat:
+            @"📐 Field offsetleri runtime'dan cozuldu: PH.pv@0x%X RL.name@0x%X CDS.top@0x%X RCCP.rpm@0x%X ROpt.max@0x%X mapStride=0x%X",
+            OFFR_PH_PHOTONVIEW, OFFR_RL_NAMETEXT, OFFR_CDS_TOPSPEED,
+            OFFR_RCCP_ENGINERPM, OFFR_ROPT_MAXPLAYERS, OFFR_MAP_STRIDE]);
+    }
 }
 
 // ====== PhotonNetwork static methods ======
@@ -1443,6 +1769,30 @@ static void w_pn_setAutomaticallySyncScene(bool on) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "set_AutomaticallySyncScene", 1);
     if (!m || !i_runtime_invoke) return;
     @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, NULL, args, NULL); } @catch (...) {}
+}
+// v116.3: PhotonNetwork.IsMessageQueueRunning — LoadLevel bunu false yapip sahne yuklenene
+// kadar network mesaj kuyrugunu durdurur; sahne yuklemesi tamamlanmazsa (addressable/stall)
+// oyuncu 'Baglaniyor' ekraninda SONSUZA KADAR takilir. Zorla true = kuyrugu geri ac.
+static void w_pn_setMessageQueueRunning(bool on) {
+    static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "set_IsMessageQueueRunning", 1);
+    if (!m || !i_runtime_invoke) return;
+    @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, NULL, args, NULL); } @catch (...) {}
+}
+static bool w_pn_getMessageQueueRunning(void) {
+    static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "get_IsMessageQueueRunning", 0);
+    if (!m || !i_runtime_invoke) return true;   // bilinmiyorsa engelleme
+    @try { return few1n_unboxBool(i_runtime_invoke(m, NULL, NULL, NULL)); } @catch (...) { return true; }
+}
+// v116.5: PhotonNetwork.NewSceneLoaded() — sahne yuklemesi BITTIGINDE PUN'un cagirdigi TAMAMLAMA
+// adimi: loadingLevelAndPausedNetwork=false + IsMessageQueueRunning=true yapar. Bu oyunda
+// SceneManager.sceneLoaded'e bagli tetikleme duzgun calismiyor, o yuzden LoadLevel sonrasi
+// oda 'Baglaniyor'da kaliyor ve ancak biri girince aciliyor. Bunu ELLE cagirinca, oyuncu
+// girince olan seyin AYNISI olur -> master kimseyi beklemeden odaya oturur. NewSceneLoaded
+// icinde 'if(loadingLevelAndPausedNetwork)' guard'i var -> tekrar cagirmak zararsiz (idempotent).
+static void w_pn_newSceneLoaded(void) {
+    static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "NewSceneLoaded", 0);
+    if (!m || !i_runtime_invoke) return;
+    @try { i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) {}
 }
 static void w_pn_raiseEvent(unsigned char code, void *eventContent, bool sendReliable, void *options) {
     // Legacy signature (byte, object, bool, RaiseEventOptions). Newer PUN2 uses
@@ -1525,6 +1875,21 @@ static void  w_tmp_set_text(void *self, void *value) {
     if (!m || !i_runtime_invoke || !self) return;
     @try { void *args[1]={value}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
+// v114.60 CRASH FIX: TMP_InputField.set_text — sifre kutulari (passwordInput /
+// passwordOnConnectInput) TMP_InputField'dir, TMP_Text DEGIL. TMP_Text.set_text'i
+// bir TMP_InputField'e cagirmak tip karisikligi -> il2cpp objeyi TMP_Text sanip
+// yanlis offsetlere yaziyor -> native crash (sifreli odaya girince). TMPro Unity
+// paketidir, obfuscate degil -> "set_text" gercek isim.
+static void  w_tmp_input_set_text(void *self, void *value) {
+    static void *m = NULL;
+    if (!m) {
+        void *c = few1n_classAnyImage("TMPro", "TMP_InputField");
+        if (!c) c = few1n_classAnyImage("", "TMP_InputField");
+        m = few1n_resolveOn(c, "set_text", 1);
+    }
+    if (!m || !i_runtime_invoke || !self) return;
+    @try { void *args[1]={value}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+}
 static void* w_tmp_get_text(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_tmpTextClass(), "get_text", 0);
     if (!m || !i_runtime_invoke || !self) return NULL;
@@ -1536,41 +1901,12 @@ static void  w_tmp_set_richText(void *self, bool on) {
     @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
 
-// ====== TMP_InputField (1.4.4 input alanina metin yazma) ======
-static void* g_mTmpInputSetText = NULL;
-typedef void (*tmp_input_set_text_fn)(void*, void*);
-static tmp_input_set_text_fn g_fnTmpInputSetText = NULL;
-
-static void few1n_tmp_input_set_text(void *self, void *value) {
-    if (!ptrOk(self) || !value) return;
-    if (!g_fnTmpInputSetText && global_base) {
-        g_fnTmpInputSetText = (tmp_input_set_text_fn)(global_base + 0x6802BA4);
-    }
-    if (g_fnTmpInputSetText) {
-        @try { g_fnTmpInputSetText(self, value); } @catch (...) {}
-    } else {
-        if (!g_mTmpInputSetText) {
-            void* c = few1n_classAnyImage("TMPro", "TMP_InputField");
-            if (!c) c = few1n_findClassByName(NULL, "TMP_InputField");
-            if (c && i_class_get_method_from_name) {
-                g_mTmpInputSetText = i_class_get_method_from_name(c, "set_text", 1);
-            }
-        }
-        if (g_mTmpInputSetText && i_runtime_invoke) {
-            @try { void *args[1] = { value }; i_runtime_invoke(g_mTmpInputSetText, self, args, NULL); } @catch (...) {}
-        }
-    }
-    // Fail-safe: TMP_InputField.m_Text backing field @ 0x210
-    @try {
-        *(void**)((uintptr_t)self + 0x210) = value;
-    } @catch (...) {}
-}
-
 // ====== ChatManager (get_Instance obfuscated) ======
 static void* w_chatGetInst(void) {
     // Obfuscated on 1.4.3: fzi(). Class isim korunmuş, method mangled.
     static void *m = NULL;
-    if (!m) { void *c = few1n_chatMgrClass(); m = few1n_resolveOn(c, "fzi", 0); }
+    if (!m) { static const char* const n[] = {"fzi","get_Instance","Instance",NULL};
+              m = few1n_singletonGetter(few1n_chatMgrClass(), n, "ChatManager", "ChatManager.get_Instance"); }
     if (!m || !i_runtime_invoke) return NULL;
     @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
 }
@@ -1580,7 +1916,7 @@ static void  w_chatSend(void *self, void *message) {
     @try { void *args[1]={message}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
 
-// 1.4.4 Chat RichText zorlama — allText.richText = true yaparak renk tag'lerinin ekranda kod olarak kalmasını önle
+// 1.4.4 Chat RichText zorlama — allText.richText = true ve <noparse> temizleme
 static void few1n_enableChatRichText(void) {
     @try {
         void* cm = w_chatGetInst();
@@ -1588,13 +1924,10 @@ static void few1n_enableChatRichText(void) {
         // ChatManager.chatUI @ 0x40
         void* cui = *(void**)((uintptr_t)cm + 0x40);
         if (ptrOk(cui)) {
-            // ChatUI.allText @ 0x20
             void* allText = *(void**)((uintptr_t)cui + 0x20);
             if (ptrOk(allText)) {
                 w_tmp_set_richText(allText, true);
-                *(bool*)((uintptr_t)allText + 0x342) = true; // m_isRichText
-
-                // 1.4.4 FIX: Censorship.ra.opp'un eklediği <noparse><</noparse> etiketlerini temizle
+                *(bool*)((uintptr_t)allText + 0x342) = true;
                 void* textObj = w_tmp_get_text(allText);
                 if (ptrOk(textObj)) {
                     NSString *cur = readStr(textObj);
@@ -1606,7 +1939,6 @@ static void few1n_enableChatRichText(void) {
                     }
                 }
             }
-            // ChatUI.ozh @ 0x50
             void* ozh = *(void**)((uintptr_t)cui + 0x50);
             if (ptrOk(ozh)) {
                 w_tmp_set_richText(ozh, true);
@@ -1619,15 +1951,47 @@ static void few1n_enableChatRichText(void) {
 // ====== PlayerManager (para — sunucu-kilitli ama getters visual için) ======
 static void* w_playerManagerGetInst(void) {
     static void *m = NULL;
-    if (!m) { void *c = few1n_playerMgrClass(); m = few1n_resolveOn(c, "gns", 0); }
+    if (!m) { static const char* const n[] = {"gns","get_Instance","Instance",NULL};
+              m = few1n_singletonGetter(few1n_playerMgrClass(), n, "PlayerManager", "PlayerManager.get_Instance"); }
     if (!m || !i_runtime_invoke) return NULL;
     @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+}
+static int w_pm_getMoney(void *self) {
+    static void *m = NULL;
+    if (!m) { static const char* const n[] = {"goc","get_Money","GetMoney",NULL};
+        m = few1n_methodSmart(few1n_playerMgrClass(), n, 0, "Int32", NULL, 0, "PlayerManager.get_Money"); }
+    if (!m || !i_runtime_invoke || !self) return -1;
+    @try { return few1n_unboxInt(i_runtime_invoke(m, self, NULL, NULL)); } @catch (...) { return -1; }
+}
+static void w_pm_addMoney(void *self, int amount) {
+    static void *m = NULL;
+    if (!m) { static const char* const n[] = {"gor","AddMoney",NULL};
+        static const char* pr[] = {"Int32"};
+        m = few1n_methodSmart(few1n_playerMgrClass(), n, 1, "Void", pr, 1, "PlayerManager.AddMoney"); }
+    if (!m || !i_runtime_invoke || !self) return;
+    @try { void *args[1] = { &amount }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+}
+static void w_pm_syncWithServer(void *self) {
+    static void *m = NULL;
+    if (!m) { static const char* const n[] = {"goo","SyncWithServer",NULL};
+        m = few1n_methodSmart(few1n_playerMgrClass(), n, 0, NULL, NULL, 0, "PlayerManager.SyncWithServer"); }
+    if (!m || !i_runtime_invoke || !self) return;
+    @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+}
+static void w_pm_updateNicknameInternal(void *self, void *name) {
+    static void *m = NULL;
+    if (!m) { static const char* const n[] = {"gos","UpdateNicknameInternal",NULL};
+        static const char* pr[] = {"String"};
+        m = few1n_methodSmart(few1n_playerMgrClass(), n, 1, "Void", pr, 0, "PlayerManager.UpdateNickname"); }
+    if (!m || !i_runtime_invoke || !self || !name) return;
+    @try { void *args[1] = { name }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
 
 // ====== HR_PhotonLobbyManager (get_Instance obfuscated -> eov) ======
 static void* w_lobbyGetInst(void) {
     static void *m = NULL;
-    if (!m) { void *c = few1n_lobbyMgrClass(); m = few1n_resolveOn(c, "eov", 0); }
+    if (!m) { static const char* const n[] = {"eov","get_Instance","Instance",NULL};
+              m = few1n_singletonGetter(few1n_lobbyMgrClass(), n, "HR_PhotonLobbyManager", "Lobby.get_Instance"); }
     if (!m || !i_runtime_invoke) return NULL;
     @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
 }
@@ -1735,16 +2099,53 @@ static void* w_mbp_getPhotonView(void *self) {
 // ====== MapList.get_Instance (obf gtp) ======
 static void* w_mapList_getInstance(void) {
     static void *m = NULL;
-    if (!m) { void *c = few1n_mapListClass(); m = few1n_resolveOn(c, "gtp", 0); }
+    if (!m) { static const char* const n[] = {"gtp","get_Instance","Instance",NULL};
+              m = few1n_singletonGetter(few1n_mapListClass(), n, "MapList", "MapList.get_Instance"); }
     if (!m || !i_runtime_invoke) return NULL;
     @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
 }
 
 // ====== MapSelection.SelectMap ======
 static void w_mapSel_selectMap(void *self, void *name) {
-    static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_mapSelClass(), "SelectMap", 1);
+    static void *m = NULL;
+    if (!m) { static const char* const n[] = {"SelectMap",NULL};
+              static const char* pr[] = {"String"};
+              m = few1n_methodSmart(few1n_mapSelClass(), n, 1, "Void", pr, 0, "MapSelection.SelectMap"); }
     if (!m || !i_runtime_invoke || !self) return;
     @try { void *args[1]={name}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+}
+
+// ====== PhotonManager.LoadLevel(string scene, bool addressable) — static ======
+// Odadayken harita degistirmenin CALISAN yolu. Isim her surumde degisiyor:
+//   1.4.2 -> "LoadLevel" (obfuscate edilmemis)
+//   1.4.3 -> "ese"       (obfuscated)
+//   daha eski -> "enp"
+// Bu yuzden aday listesi ile aranir; ilk tutan kullanilir. Hepsi ayni imza:
+// static void (string, bool = false).
+static bool g_photonMgrLLResolved = false;
+static void w_photonMgrLoadLevel(void *sceneStr, bool addressable) {
+    static void *m = NULL;
+    if (!m && !g_photonMgrLLResolved) {
+        g_photonMgrLLResolved = true;
+        // Isim adaylari once; tutmazsa imza ile: static void(String, Boolean).
+        // Bu imza PhotonManager icinde tekil, obfuscation seed'i degisse de bulunur.
+        static const char* const cands[] = { "LoadLevel", "ese", "enp", NULL };
+        static const char* prm[] = { "String", "Boolean" };
+        m = few1n_methodSmart(few1n_photonMgrClass(), cands, 2, "Void", prm, 0,
+                              "PhotonManager.LoadLevel");
+        if (m) {
+            const char* nm = (i_method_get_name ? i_method_get_name(m) : NULL);
+            FLog([NSString stringWithFormat:@"🗺️ PhotonManager.%s(string,bool) bulundu", nm ?: "?"]);
+        } else {
+            FLog(@"🗺️ PhotonManager LoadLevel bulunamadi — PhotonNetwork.LoadLevel yedegi kullanilacak");
+        }
+    }
+    if (!m || !i_runtime_invoke || !sceneStr) return;
+    @try {
+        unsigned char b = addressable ? 1 : 0;
+        void *args[2] = { sceneStr, &b };
+        i_runtime_invoke(m, NULL, args, NULL);
+    } @catch (...) {}
 }
 
 // PlayerManager AddMoney/get_Money/SyncWithServer/UpdateNicknameInternal:
@@ -1758,17 +2159,10 @@ static void w_mapSel_selectMap(void *self, void *name) {
 // SmoothSyncRCC — hiçbiri obfuscated değil.
 static void w_cps_TeleportCar_RPC(void* self, Vec3 pos, Quaternion rot, void* methodInfo) {
     static void *m = NULL;
-    // 1.4.4: CarPhotonSync.TeleportCar_RPC artik 3 arg aliyor (pos, rot, velocity)
-    if (!m) { void *c = few1n_classAnyImage("", "CarPhotonSync"); m = few1n_resolveOn(c, "TeleportCar_RPC", 3); }
-    // fallback: 2 arglik eski imza dene
     if (!m) { void *c = few1n_classAnyImage("", "CarPhotonSync"); m = few1n_resolveOn(c, "TeleportCar_RPC", 2); }
     if (!m || !i_runtime_invoke || !self) return;
     (void)methodInfo;
-    @try {
-        Vec3 vel = {0,0,0};
-        void *args[3] = { &pos, &rot, &vel };
-        i_runtime_invoke(m, self, args, NULL);
-    } @catch (...) {}
+    @try { void *args[2] = { &pos, &rot }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
 static void w_rbps_TeleportCar_RPC(void* self, Vec3 pos, Quaternion rot, void* methodInfo) {
     static void *m = NULL;
@@ -1929,6 +2323,49 @@ static inline bool few1n_memOk(void* p) {
     return ok;
 }
 
+// v114.79: SIGSEGV-korumali HAM okuma. Cozulen offset'ler oyun surumu degisince
+// (drift) yanlis/haritasiz adrese kayabilir; @try bunu YAKALAMAZ (segfault, C++
+// exception degil). few1n_memOk once sayfayi probe eder -> cokme yerine guvenli
+// deger doner. Baskasinin plakasi / zipla / firlat gibi "hedef bul" yollarindaki
+// pv+owner ve dizi okumalari bu yuzden ara sira oyunu cokertiyordu.
+static inline void* few1n_rdPtr(void* base, uintptr_t off) {
+    if ((uintptr_t)base < 0x1000) return NULL;
+    void* addr = (void*)((uintptr_t)base + off);
+    if (!few1n_memOk(addr)) return NULL;
+    if (!few1n_memOk((void*)((uintptr_t)addr + 7))) return NULL;   // 8 baytin sonu da haritali mi
+    return *(void**)addr;
+}
+static inline int few1n_rdI32(void* base, uintptr_t off, int def) {
+    if ((uintptr_t)base < 0x1000) return def;
+    void* addr = (void*)((uintptr_t)base + off);
+    if (!few1n_memOk(addr)) return def;
+    if (!few1n_memOk((void*)((uintptr_t)addr + 3))) return def;
+    return *(int*)addr;
+}
+
+// v114.85: il2cpp metodunu SIGSEGV/SIGBUS GUARD altinda cagir. Bir oyun metodu
+// (orn. baska oyuncunun PlateTuner.Apply'i, RPC marshaling) ic dereference'te
+// segfault yaparsa Obj-C @try YAKALAMAZ (donanim sinyali) -> oyun coker. Bu
+// sarici sigsetjmp ile sinyali yakalar: cokme yerine NULL doner + *pCrashed=true.
+// NOT: longjmp native stack'i temiz unwind etmez (kilit/GC riski) ama "oyunu
+// cokertme" onceligi icin kabul edilebilir bir emniyet agi. Sadece kisa, tekil
+// "dene" cagrilarinda kullan — surekli tick'te DEGIL.
+static void* few1n_guardedInvoke(void* method, void* obj, void** args, bool* pCrashed) {
+    if (pCrashed) *pCrashed = false;
+    if (!method || !i_runtime_invoke) { if (pCrashed) *pCrashed = true; return NULL; }
+    void* ret = NULL;
+    int prev = few1n_inProtected;
+    few1n_inProtected = 1;
+    if (sigsetjmp(few1n_jmpBuf, 1) == 0) {
+        ret = i_runtime_invoke(method, obj, args, NULL);
+    } else {
+        if (pCrashed) *pCrashed = true;   // segfault yakalandi -> cokme onlendi
+        ret = NULL;
+    }
+    few1n_inProtected = prev;
+    return ret;
+}
+
 // Substrate calisiyor mu? Bagli sembol bos stub olabilir -> dlsym ile gercegini ara.
 typedef void (*MSHookFn)(void*, void*, void**);
 static MSHookFn g_msHook = NULL;
@@ -1975,8 +2412,15 @@ static void safeHook(void* target, void* replacement, void** original, const cha
                   insn, (insn != 0 && insn != 0xFFFFFFFF) ? @"(kod gibi)" : @"(BOS! adres yanlis)"]);
         } else { FLog(@"Hedef okunamiyor - adres gecersiz"); }
     }
-    if (g_msHook) g_msHook(target, replacement, original);   // dlsym ile bulunan gercek motor
-    // GERCEK dogrulama: MSHookFunction basarili olursa *original orijinal koda isaret eder.
+    // v114.39: Direkt MSHookFunction cagrisi KALDIRILDI.
+    // O cagri, dylib'e libsubstrate'e SABIT bag (LC_LOAD_DYLIB) ekliyordu; jailbreak'siz
+    // cihazda libsubstrate olmadigi icin oyun ACILISTA cokuyordu ("oyun atiyor").
+    // Artik hook motoru SADECE dlsym ile bulunur (g_msHook): jailbreak'te bulunur ve
+    // hooklar calisir; sideload'da NULL kalir -> *original NULL (yukarida set edildi) ->
+    // asagidaki FAIL dali g_hooksDead=true yapar -> il2cpp yolu devreye girer.
+    // Sonuc: substrate bagimliligi tamamen kalkti, sideload'da acilis cokmesi biter.
+    if (g_msHook) g_msHook(target, replacement, original);   // dlsym ile bulunan gercek motor (Substrate/ElleKit)
+    // GERCEK dogrulama: hook basarili olursa *original orijinal koda isaret eder.
     // Sideload'da (Substrate yok) MSHookFunction sessizce hicbir sey yapmaz -> *original NULL kalir.
     if (original && *original == NULL) {
         FLog([NSString stringWithFormat:@"FAIL (hook yazilamadi) %@", nm]);
@@ -1988,8 +2432,40 @@ static void safeHook(void* target, void* replacement, void** original, const cha
     hookSuccessCount++;
 }
 
+// v114.22: MethodInfo'dan kod adresini al.
+//
+// il2cpp_method_get_pointer bu build'de dlsym ile BULUNAMIYOR (export edilmemis) —
+// v114.19-21'de 18/18 hook bu yuzden "SKIP (il2cpp API yok)" diyordu. Cozum:
+// MethodInfo struct'inin ILK alani zaten methodPointer (il2cpp.h ile dogrulandi):
+//
+//   struct MethodInfo {
+//       Il2CppMethodPointer methodPointer;         // 0x00  <-- bu
+//       Il2CppMethodPointer virtualMethodPointer;  // 0x08
+//       InvokerMethod       invoker_method;        // 0x10
+//       const char*         name;                  // 0x18
+//       Il2CppClass*        klass;                 // 0x20
+//       ...
+//   };
+//
+// Export varsa onu kullan, yoksa dogrudan *(void**)m oku. Ikisi de ayni degeri verir.
+static void* few1n_methodCodeAddr(void* m) {
+    if (!m) return NULL;
+    if (i_method_get_pointer) {
+        void* a = NULL;
+        @try { a = i_method_get_pointer(m); } @catch (...) { a = NULL; }
+        if (a) return a;
+    }
+    // Fallback: MethodInfo.methodPointer @ +0x00
+    if (!few1n_memOk(m)) return NULL;
+    void* a = *(void**)m;
+    // Kod adresi olmali: NULL degil, arm64 4-byte hizali, okunabilir bellek.
+    if (!a || ((uintptr_t)a & 0x3) != 0) return NULL;
+    if (!few1n_memOk(a)) return NULL;
+    return a;
+}
+
 // v114.19: Drift-immune safeHook — hedef adresi il2cpp isim ile bul.
-// Hardcoded RVA yerine class+method lookup + il2cpp_method_get_pointer kullanir.
+// Hardcoded RVA yerine class+method lookup + MethodInfo.methodPointer kullanir.
 // Oyun her sürüm update'inde offset'ler kaysa bile isim korunuyorsa çalışır.
 // Namespace bos "" ise tum image'lardan class taranir.
 static void safeHookByName(const char* ns, const char* class_name, const char* method_name, int argc,
@@ -1997,7 +2473,7 @@ static void safeHookByName(const char* ns, const char* class_name, const char* m
     char logbuf[256];
     snprintf(logbuf, sizeof(logbuf), "%s [%s.%s(%d args)]",
              label ?: "", class_name ?: "?", method_name ?: "?", argc);
-    if (!i_class_from_name || !i_class_get_method_from_name || !i_method_get_pointer) {
+    if (!i_class_from_name || !i_class_get_method_from_name) {
         FLog([NSString stringWithFormat:@"SKIP (il2cpp API yok) %s", logbuf]);
         hookFailCount++; return;
     }
@@ -2011,7 +2487,53 @@ static void safeHookByName(const char* ns, const char* class_name, const char* m
         FLog([NSString stringWithFormat:@"SKIP (method YOK) %s", logbuf]);
         hookFailCount++; return;
     }
-    void* addr = i_method_get_pointer(m);
+    void* addr = few1n_methodCodeAddr(m);
+    if (!addr) {
+        FLog([NSString stringWithFormat:@"SKIP (code addr NULL) %s", logbuf]);
+        hookFailCount++; return;
+    }
+    safeHook(addr, replacement, original, logbuf);
+}
+
+// v114.24: obfuscated isimli hook hedefleri icin — once isim adaylari, tutmazsa
+// TEKIL tip imzasi. Oyun yeniden obfuscate edildiginde (fgp/ghs/eqn -> baska
+// harfler) isim aramasi olur ama imza degismez, hook ayakta kalir.
+// Imza birden fazla metoda uyuyorsa hook KURULMAZ (yanlis hedef = crash).
+static void safeHookBySig(const char* ns, const char* class_name,
+                          const char* const* nameCands, int argc,
+                          const char* retType, const char** params,
+                          const char* const* exclude,
+                          void* replacement, void** original, const char* label) {
+    char logbuf[256];
+    snprintf(logbuf, sizeof(logbuf), "%s [%s(%d args)]",
+             label ?: "", class_name ?: "?", argc);
+    if (!i_class_from_name || !i_class_get_method_from_name) {
+        FLog([NSString stringWithFormat:@"SKIP (il2cpp API yok) %s", logbuf]);
+        hookFailCount++; return;
+    }
+    void* c = few1n_classAnyImage(ns ?: "", class_name);
+    if (!c) {
+        FLog([NSString stringWithFormat:@"SKIP (class YOK) %s", logbuf]);
+        hookFailCount++; return;
+    }
+    void* m = NULL;
+    if (nameCands) {
+        for (int i = 0; nameCands[i] && !m; i++)
+            m = i_class_get_method_from_name(c, nameCands[i], argc);
+    }
+    if (!m) {
+        m = few1n_methodBySigUnique(c, retType, params, argc, exclude, label);
+        if (m) {
+            const char* nm = (i_method_get_name ? i_method_get_name(m) : NULL);
+            FLog([NSString stringWithFormat:@"🔎 %s: isim tutmadi, tekil imzayla bulundu -> %s",
+                  label ?: "?", nm ?: "?"]);
+        }
+    }
+    if (!m) {
+        FLog([NSString stringWithFormat:@"SKIP (method YOK) %s", logbuf]);
+        hookFailCount++; return;
+    }
+    void* addr = few1n_methodCodeAddr(m);
     if (!addr) {
         FLog([NSString stringWithFormat:@"SKIP (code addr NULL) %s", logbuf]);
         hookFailCount++; return;
@@ -2050,6 +2572,7 @@ static void  (*tmp_set_richText)(void* self, bool value) = NULL;   // 0x66017B8
 static void* (*rinfo_getName)(void* self) = NULL;  // RoomInfo.get_Name (ham oda ismi)
 static void  (*pn_setNickName)(void* name) = NULL;
 static void* (*lobbyGetInst)(void) = NULL;
+// PlayerManager pointer'lari, RVA degil IL2CPP by-name wrapper'larina baglanir.
 static void* (*playerManagerGetInst)(void) = NULL;
 static void  (*pm_updateNicknameInternal)(void* self, void* newName) = NULL;
 static int   (*pm_getMoney)(void* self) = NULL;
@@ -2158,388 +2681,369 @@ static void h_setTimeScale(float v) {
 }
 
 // ===== ANTI-KICK & OYUNCU ATMA =====
-// 1.4.4: VoteKick dinamik çözümleme (Chat.dll ve tüm image'lar)
+// ===== 1.4.4 VOTEKICK SISTEMI (Oylamayi Full Evet Yap & Aninda Atma & 0sn Beklemesiz & Dokunulmazlik) =====
+// VoteKick sinifi (MonoBehaviourPunCallbacks) alanlari (1.4.4 dump):
+//   +0x28: VoteKickPopup nvy (UI)
+//   +0x30: int nvz (EVET sayisi)
+//   +0x34: int nwa (HAYIR sayisi)
+//   +0x38: Player nwb (oylanan hedef oyuncu)
+//   +0x40: List<Player> nwc (oy kullananlar listesi)
+//   +0x48: Dictionary<Player, float> nwd (oyuncu bazli 180sn bekleme suresi)
+//   +0x50: float nwe (kalan oylama suresi — 0 olunca oylama biter)
+//   +0x54: float nwf (son oylamadan beri gecen sure — < 60 ise yeni oylamayi kilitler)
+//   +0x58: float nwg (odaya giristen beri gecen sure — < 60 ise oylamayi kilitler!)
+//   +0x5C: bool nwh (su an aktif oylama var mi?)
+static void* g_voteKickClass = NULL;
+static void* g_voteKickTypeObj = NULL;
+static void* g_mVoteKickStart = NULL;      // VoteKick.StartVoteKick(Player) — 0x32058AC
+static void* g_mVoteKickEndRPC = NULL;     // VoteKick.VoteKickEndRPC(int) — 0x3205FA0
+static void* g_mVoteKickStartRPC = NULL;   // VoteKick.VoteKickStartRPC(Player) — 0x3205DC8
+static void* g_mGetVoteKickPac = NULL;     // VoteKick.get_pac() — 0x3205600
+static bool  g_voteKickFullYes = true;     // Oylamayi Full Evet Yap (varsayilan ACIK)
+
 static void few1n_ensureVoteKick(void) {
-    if (g_voteKickClass && g_mVoteKickStart && g_mVoteKickEndRPC && g_mVoteKickStartRPC) return;
-
     if (!g_voteKickClass) {
-        // VoteKick sınıfını Chat.dll ve tüm yüklü image'larda ara
         g_voteKickClass = few1n_classAnyImage("", "VoteKick");
-        if (!g_voteKickClass) g_voteKickClass = few1n_classAnyImage(NULL, "VoteKick");
-    }
-
-    if (g_voteKickClass) {
-        if (!g_voteKickTypeObj) {
+        if (!g_voteKickClass) g_voteKickClass = few1n_findClassByName(NULL, "VoteKick");
+        if (g_voteKickClass) {
             g_voteKickTypeObj = few1n_typeObjOf(g_voteKickClass);
+            if (i_class_get_method_from_name) {
+                g_mVoteKickStart    = i_class_get_method_from_name(g_voteKickClass, "StartVoteKick", 1);
+                g_mVoteKickEndRPC   = i_class_get_method_from_name(g_voteKickClass, "VoteKickEndRPC", 1);
+                g_mVoteKickStartRPC = i_class_get_method_from_name(g_voteKickClass, "VoteKickStartRPC", 1);
+                g_mGetVoteKickPac   = i_class_get_method_from_name(g_voteKickClass, "get_pac", 0);
+            }
         }
-        if (!g_mVoteKickEndRPC)   g_mVoteKickEndRPC   = few1n_resolveOn(g_voteKickClass, "VoteKickEndRPC", 4);
-        if (!g_mVoteKickStartRPC) g_mVoteKickStartRPC = few1n_resolveOn(g_voteKickClass, "VoteKickStartRPC", 2);
-        
-        // 1.4.4 metot isimleri: mkw(Player) normal oylama baslatma, kyb() singleton
-        if (!g_mVoteKickStart)    g_mVoteKickStart    = few1n_resolveOn(g_voteKickClass, "mkw", 1);
-        if (!g_mVoteKickStart)    g_mVoteKickStart    = few1n_resolveOn(g_voteKickClass, "VoteKickStart", 1);
-        
-        if (!g_mGetVoteKickPac && i_class_get_method_from_name) {
-            g_mGetVoteKickPac = i_class_get_method_from_name(g_voteKickClass, "kyb", 0);
-            if (!g_mGetVoteKickPac) g_mGetVoteKickPac = i_class_get_method_from_name(g_voteKickClass, "get_pac", 0);
-        }
-
-        FLog([NSString stringWithFormat:@"🗳️ VoteKick RESOLVED: cls=%p type=%p startRPC=%p endRPC=%p mkw=%p getPac=%p",
-              g_voteKickClass, g_voteKickTypeObj, g_mVoteKickStartRPC, g_mVoteKickEndRPC, g_mVoteKickStart, g_mGetVoteKickPac]);
-    } else {
-        FLog(@"⚠️ VoteKick sınıfı henüz bulunamadı");
     }
 }
 
 static void* few1n_findVoteKickInstance(void) {
     few1n_ensureVoteKick();
-    if (!g_voteKickClass) return NULL;
-
-    // 1. Singleton metot kyb() / get_pac()
     if (g_mGetVoteKickPac && i_runtime_invoke) {
         @try {
-            void* exc = NULL;
-            void* inst = i_runtime_invoke(g_mGetVoteKickPac, NULL, NULL, &exc);
-            if (!exc && ptrOk(inst) && unityAlive(inst)) return inst;
+            void* inst = i_runtime_invoke(g_mGetVoteKickPac, NULL, NULL, NULL);
+            if (unityAlive(inst)) return inst;
         } @catch (...) {}
     }
-
-    // 2. Static backing field <pac>k__BackingField
-    if (i_class_get_field_from_name && i_field_static_get_value) {
+    if (g_voteKickTypeObj && g_mFindObjectsPlural && i_runtime_invoke) {
         @try {
-            void* f = i_class_get_field_from_name(g_voteKickClass, "<pac>k__BackingField");
-            if (!f) f = i_class_get_field_from_name(g_voteKickClass, "pac");
-            if (f) {
-                void* inst = NULL;
-                i_field_static_get_value(f, &inst);
-                if (ptrOk(inst) && unityAlive(inst)) return inst;
+            void* a[1] = { g_voteKickTypeObj };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            if (ptrOk(arr)) {
+                int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+                if (cnt > 0 && cnt <= 16) {
+                    void** items = (void**)((uintptr_t)arr + 0x20);
+                    for (int i = 0; i < cnt; i++) {
+                        if (unityAlive(items[i])) return items[i];
+                    }
+                }
             }
         } @catch (...) {}
     }
-
-    // 3. Unity Object.FindObjectOfType
-    if (g_voteKickTypeObj && g_mFindObjectOfType && i_runtime_invoke) {
-        @try {
-            void* args[1] = { g_voteKickTypeObj };
-            void* inst = i_runtime_invoke(g_mFindObjectOfType, NULL, args, NULL);
-            if (ptrOk(inst) && unityAlive(inst)) return inst;
-        } @catch (...) {}
+    if (g_voteKickTypeObj) {
+        void* any = few1n_findByType(g_voteKickTypeObj);
+        if (unityAlive(any)) return any;
     }
-
-    // 4. Unity Object.FindAnyObjectByType
-    if (g_voteKickTypeObj && g_mFindAnyByType && i_runtime_invoke) {
-        @try {
-            void* args[1] = { g_voteKickTypeObj };
-            void* inst = i_runtime_invoke(g_mFindAnyByType, NULL, args, NULL);
-            if (ptrOk(inst) && unityAlive(inst)) return inst;
-        } @catch (...) {}
-    }
-
     return NULL;
 }
 
-// 1.4.4: Il2Cpp Dictionary / HashSet temizleme yardımcısı (_count @ +0x20)
-static void few1n_clearCollection(void* coll) {
-    if (!ptrOk(coll) || !i_runtime_invoke) return;
+static void few1n_clearCollection(void* colObj) {
+    if (!ptrOk(colObj) || !i_class_get_method_from_name || !i_runtime_invoke) return;
     @try {
-        int cnt = *(int*)((uintptr_t)coll + 0x20);
-        if (cnt <= 0) return;
-        void* cls = *(void**)coll;
-        if (!ptrOk(cls)) return;
-        void* mClear = few1n_resolveOn(cls, "Clear", 0);
-        if (mClear) {
-            i_runtime_invoke(mClear, coll, NULL, NULL);
-        }
+        void* klass = *(void**)colObj;
+        if (!ptrOk(klass)) return;
+        void* mClear = i_class_get_method_from_name(klass, "Clear", 0);
+        if (mClear) i_runtime_invoke(mClear, colObj, NULL, NULL);
     } @catch (...) {}
 }
 
-// 1.4.4: Odaya girer girmez beklemeden oylama başlatabilmek için tüm VoteKick süre kilitlerini (60sn oda giriş & 180sn oylama arası) sıfırla
+// 1.4.4 ODA GIRIS VE OYLAMA BEKLEME SURESI BYPASS (nwf @ 0x54, nwg @ 0x58, nwd @ 0x48)
 static void few1n_resetVoteKickCooldowns(void* vk) {
-    if (!ptrOk(vk)) return;
+    if (!unityAlive(vk)) return;
     @try {
-        // pam (+0x5C): Odaya giriş zamanı (60sn bekleme kilidi -> -99999 ile anında açılır)
-        *(float*)((uintptr_t)vk + 0x5C) = -99999.0f;
-        // pao (+0x60): Son oylama başlatma zamanı (180sn bekleme kilidi -> -99999 ile anında açılır)
-        *(float*)((uintptr_t)vk + 0x60) = -99999.0f;
-        // paq (+0x68): Hedef oyuncunun 180sn tekrar oylanmama sözlüğü (mky kontrolü)
-        few1n_clearCollection(*(void**)((uintptr_t)vk + 0x68));
-        // paw (+0x90): MasterClient tarafı 180sn oylama başlatan oyuncu bekleme sözlüğü
-        few1n_clearCollection(*(void**)((uintptr_t)vk + 0x90));
-        // pax (+0x98): MasterClient tarafı 60sn odaya yeni giren oyuncu bekleme sözlüğü (OnPlayerEnteredRoom)
-        few1n_clearCollection(*(void**)((uintptr_t)vk + 0x98));
+        *(float*)((uintptr_t)vk + 0x54) = 9999.0f; // nwf: son oylamadan beri gecen sure (>60s sart)
+        *(float*)((uintptr_t)vk + 0x58) = 9999.0f; // nwg: odaya giristen beri gecen sure (>60s sart)
+        void* dictNwd = *(void**)((uintptr_t)vk + 0x48); // nwd: Dictionary<Player, float> (180s oyuncu kilidi)
+        if (ptrOk(dictNwd)) {
+            int dictCount = *(int*)((uintptr_t)dictNwd + 0x20);
+            if (dictCount > 0) few1n_clearCollection(dictNwd);
+        }
     } @catch (...) {}
 }
 
-// 1.4.4: VoteKick.Count Hook — Oyun motorunun oy sayımını 99 Evet yap
-static void (*o_voteKickCount)(void*, int*, int*) = NULL;
-static void h_voteKickCount(void* self, int* yes, int* no) {
-    if (o_voteKickCount) o_voteKickCount(self, yes, no);
-    if (ptrOk(self)) {
-        int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
-        int target = *(int*)((uintptr_t)self + 0x3C);
-        if (myActor > 0 && target == myActor) {
-            // SANA KARŞI OYLAMA: Evet = 0, Hayır = 99 (asla düşme)
-            if (yes) *yes = 0;
-            if (no)  *no  = 99;
-            return;
-        }
+// VoteKick.Count(bool isYes) hook: basilan her oyu 99 EVET'e cevirir ve oylamayi aninda onaylar
+static void (*o_voteKickCount)(void*, bool) = NULL;
+static void h_voteKickCount(void* self, bool isYes) {
+    if (g_voteKickFullYes && unityAlive(self)) {
+        @try {
+            void* target = *(void**)((uintptr_t)self + 0x38);
+            void* me = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+            if (target && me && target == me) {
+                *(int*)((uintptr_t)self + 0x30) = 0;
+                *(int*)((uintptr_t)self + 0x34) = 99;
+                *(float*)((uintptr_t)self + 0x50) = 0.01f;
+                if (o_voteKickCount) o_voteKickCount(self, false);
+                return;
+            }
+            isYes = true;
+            *(int*)((uintptr_t)self + 0x30) = 99;   // nvz = 99 EVET
+            *(int*)((uintptr_t)self + 0x34) = 0;    // nwa = 0 HAYIR
+            *(float*)((uintptr_t)self + 0x50) = 0.05f; // nwe = 0.05sn (aninda bitir)
+        } @catch (...) {}
     }
-    if (g_voteKickFullYes) {
-        if (yes) *yes = 99;
-        if (no)  *no  = 0;
-    }
+    if (o_voteKickCount) o_voteKickCount(self, isYes);
 }
 
-// 1.4.4: Oylamayı Full Evet Yap (Evet sayısını tavana çıkar + pau/pav sözlüklerine 99 Evet bas)
+// Aktif oylamayi 99 EVET yap + tüm odaya EVET RPC'si + VoteKickEndRPC(1) gonder
 static bool few1n_makeVoteKickFullYes(void) {
-    few1n_ensureVoteKick();
     void* vk = few1n_findVoteKickInstance();
-    if (!ptrOk(vk)) return false;
-
+    if (!unityAlive(vk)) {
+        FLog(@"⚠️ VoteKick instance bulunamadi (odada olmalisin)");
+        return false;
+    }
     @try {
-        few1n_resetVoteKickCooldowns(vk);
-
-        bool isActive = *(bool*)((uintptr_t)vk + 0x38);
-        if (!isActive) return false;
-
-        // Kendi actor numaramızı al (kendimizi kazara oylamayla atmayalım)
-        int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
-        int target = *(int*)((uintptr_t)vk + 0x3C);
-        if (myActor > 0 && target == myActor) {
-            // Sana karşı oylama açılmış! Hayır'ı 99 yap, oylamayı düşür
-            *(int*)((uintptr_t)vk + 0x40) = 0;   // Evet = 0
-            *(int*)((uintptr_t)vk + 0x44) = 99;  // Hayır = 99
-            *(int*)((uintptr_t)vk + 0x50) += 1;
+        void* target = *(void**)((uintptr_t)vk + 0x38);
+        void* me = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+        if (target && me && target == me) {
+            *(int*)((uintptr_t)vk + 0x30) = 0;
+            *(int*)((uintptr_t)vk + 0x34) = 99;
+            *(float*)((uintptr_t)vk + 0x50) = 0.01f;
+            FLog(@"🛡️ Kendine karsi acilan oylama 99 HAYIR ile iptal edildi!");
             return false;
         }
+        *(int*)((uintptr_t)vk + 0x30) = 99;     // nvz (EVET = 99)
+        *(int*)((uintptr_t)vk + 0x34) = 0;      // nwa (HAYIR = 0)
+        *(float*)((uintptr_t)vk + 0x50) = 0.05f; // nwe (süreyi aninda bitir)
 
-        // MasterClient yetkisi iste (CAS uyumlu)
-        few1n_claimMaster();
+        if (o_voteKickCount) {
+            o_voteKickCount(vk, true);
+        }
+        if (mbp_getPhotonView && i_runtime_invoke && i_array_new && i_value_box) {
+            void* pv = mbp_getPhotonView(vk);
+            void* objcls = few1n_classAnyImage("System", "Object");
+            void* pvcls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+            void* boolCls = few1n_classAnyImage("System", "Boolean");
+            void* intCls  = few1n_classAnyImage("System", "Int32");
+            if (ptrOk(pv) && objcls && pvcls) {
+                const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+                void* mRPC = few1n_methodBySig(pvcls, "Void", prm, 3, 0);
+                if (mRPC) {
+                    int all = 0; // RpcTarget.All
+                    if (boolCls) {
+                        bool yesVal = true;
+                        void* boxedYes = i_value_box(boolCls, &yesVal);
+                        void* arrCount = i_array_new(objcls, 1);
+                        if (ptrOk(arrCount) && boxedYes) {
+                            *(void**)((uintptr_t)arrCount + 0x20) = boxedYes;
+                            void* rpcCount = mkStr(@"Count");
+                            void* argsC[3] = { rpcCount, &all, arrCount };
+                            for (int k = 0; k < 10; k++) {
+                                bool cr = false;
+                                few1n_guardedInvoke(mRPC, pv, argsC, &cr);
+                                if (cr) break;
+                            }
+                        }
+                    }
+                    if (intCls) {
+                        int resVal = 1; // 1 = KICK ONemli
+                        void* boxedRes = i_value_box(intCls, &resVal);
+                        void* arrEnd = i_array_new(objcls, 1);
+                        if (ptrOk(arrEnd) && boxedRes) {
+                            *(void**)((uintptr_t)arrEnd + 0x20) = boxedRes;
+                            void* rpcEnd = mkStr(@"VoteKickEndRPC");
+                            void* argsE[3] = { rpcEnd, &all, arrEnd };
+                            bool cr = false;
+                            few1n_guardedInvoke(mRPC, pv, argsE, &cr);
+                        }
+                    }
+                }
+            }
+        }
+        if (g_mVoteKickEndRPC && i_runtime_invoke) {
+            int res = 1;
+            void* a[1] = { &res };
+            i_runtime_invoke(g_mVoteKickEndRPC, vk, a, NULL);
+        }
+        FLog(@"🗳️ Oylama FULL EVET (99-0) yapildi ve VoteKickEndRPC(1) gonderildi!");
+        return true;
+    } @catch (...) { return false; }
+}
 
-        int eligible = *(int*)((uintptr_t)vk + 0x48);
-        int targetYes = (eligible > 99) ? eligible : 99;
+// Her tick'te: (1) oda giris/oylama bekleme surelerini sifirla, (2) g_voteKickFullYes acikken aktif oylamalari 99 EVET yap
+static void few1n_tickVoteKickFullYes(void) {
+    static int tick = 0;
+    if ((tick++ % 10) != 0) return;
+    void* vk = few1n_findVoteKickInstance();
+    if (!unityAlive(vk)) return;
+    few1n_resetVoteKickCooldowns(vk);
+    if (!g_voteKickFullYes) return;
+    @try {
+        bool active = *(bool*)((uintptr_t)vk + 0x5C); // nwh
+        void* target = *(void**)((uintptr_t)vk + 0x38); // nwb
+        if (!active && !ptrOk(target)) return;
+        void* me = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+        if (target && me && target == me) {
+            *(int*)((uintptr_t)vk + 0x30) = 0;
+            *(int*)((uintptr_t)vk + 0x34) = 99;
+            *(float*)((uintptr_t)vk + 0x50) = 0.01f;
+            return;
+        }
+        int curYes = *(int*)((uintptr_t)vk + 0x30);
+        if (curYes < 99) {
+            few1n_makeVoteKickFullYes();
+        }
+    } @catch (...) {}
+}
 
-        // 1. Ekrandaki banner ve oylama verisini FULL EVET yap (99+)
-        *(int*)((uintptr_t)vk + 0x40) = targetYes;  // Evet sayısı (full 99+)
-        *(int*)((uintptr_t)vk + 0x44) = 0;          // Hayır sayısı (0)
-        *(int*)((uintptr_t)vk + 0x50) += 1;         // Sequence counter artır -> VoteKickBanner anında ekranda günceller!
+// 1.4.4 BEKLEMESIZ OYLAMA BASLATMA:
+// Odaya yeni girildiginde (60sn kilit) veya onceki oylamadan hemen sonra (180sn kilit) bile
+// bekleme suresini sifirlayip hem StartVoteKick hem de dogrudan VoteKickStartRPC(All) atar.
+static bool few1n_forceStartVoteKickDirect(void* playerObj, BOOL autoApprove99) {
+    if (!ptrOk(playerObj)) return false;
+    void* vk = few1n_findVoteKickInstance();
+    if (!unityAlive(vk)) {
+        FLog(@"⚠️ VoteKick instance bulunamadi!");
+        return false;
+    }
+    @try {
+        // 1) Cooldown kilitlerini kir ve mevcut oylama kilidini temizle
+        few1n_resetVoteKickCooldowns(vk);
+        *(bool*)((uintptr_t)vk + 0x5C) = false;          // nwh = aktif oylama yok
+        void* listNwc = *(void**)((uintptr_t)vk + 0x40); // nwc = oy verenler listesi
+        if (ptrOk(listNwc)) few1n_clearCollection(listNwc);
 
-        // 1.b: pau (HashSet<int> @ +0x80) ve pav (Dictionary<int, bool> @ +0x88) içine 99 gerçek Evet oyu enjekte et
-        // (Substrate olmayan sideload ortamlarında bile VoteKick.Count doğal olarak 99 Evet sayar!)
-        void* pau = *(void**)((uintptr_t)vk + 0x80);
-        void* pav = *(void**)((uintptr_t)vk + 0x88);
-        if (ptrOk(pau) && ptrOk(pav) && i_runtime_invoke) {
-            int curPauCnt = *(int*)((uintptr_t)pau + 0x20);
-            if (curPauCnt < 99) {
-                void* pauCls = *(void**)pau;
-                void* pavCls = *(void**)pav;
-                void* mAdd = ptrOk(pauCls) ? few1n_resolveOn(pauCls, "Add", 1) : NULL;
-                void* mSetItem = ptrOk(pavCls) ? few1n_resolveOn(pavCls, "set_Item", 2) : NULL;
-                if (mAdd && mSetItem) {
-                    for (int fk = 10001; fk < 10001 + 99; fk++) {
-                        int voterId = fk;
-                        bool voteVal = true;
-                        void* a1[1] = { &voterId };
-                        void* a2[2] = { &voterId, &voteVal };
-                        i_runtime_invoke(mAdd, pau, a1, NULL);
-                        i_runtime_invoke(mSetItem, pav, a2, NULL);
+        // 2) Normal StartVoteKick(Player) cagir (artik nwf/nwg=9999 oldugu icin aninda gecer)
+        bool started = false;
+        if (g_mVoteKickStart && i_runtime_invoke) {
+            void* a[1] = { playerObj };
+            i_runtime_invoke(g_mVoteKickStart, vk, a, NULL);
+            started = true;
+        }
+
+        // 3) Eger StartVoteKick herhangi bir sebeple RPC atmadiysa dogrudan VoteKickStartRPC(All, target) firlat
+        bool activeAfter = *(bool*)((uintptr_t)vk + 0x5C);
+        if (!activeAfter && mbp_getPhotonView && i_runtime_invoke && i_array_new) {
+            void* pv = mbp_getPhotonView(vk);
+            void* objcls = few1n_classAnyImage("System", "Object");
+            void* pvcls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+            if (ptrOk(pv) && objcls && pvcls) {
+                const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+                void* mRPC = few1n_methodBySig(pvcls, "Void", prm, 3, 0);
+                if (mRPC) {
+                    int all = 0; // RpcTarget.All
+                    void* arrStart = i_array_new(objcls, 1);
+                    if (ptrOk(arrStart)) {
+                        *(void**)((uintptr_t)arrStart + 0x20) = playerObj;
+                        void* rpcStart = mkStr(@"VoteKickStartRPC");
+                        void* argsS[3] = { rpcStart, &all, arrStart };
+                        bool cr = false;
+                        few1n_guardedInvoke(mRPC, pv, argsS, &cr);
+                        started = !cr;
                     }
                 }
             }
         }
 
-        // 2. Kendi lokal EVET oyumuzu sunucuya yolla (mkx(true))
-        static void* mMkx = NULL;
-        if (!mMkx && g_voteKickClass) mMkx = few1n_resolveOn(g_voteKickClass, "mkx", 1);
-        if (mMkx && i_runtime_invoke && !(*(bool*)((uintptr_t)vk + 0x4c))) {
-            bool yes = true;
-            void* args[1] = { &yes };
-            i_runtime_invoke(mMkx, vk, args, NULL);
+        if (autoApprove99) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                few1n_makeVoteKickFullYes();
+            });
         }
-
-        // 3. Eğer odada MasterClient isek:
-        // mla() ile oylamayı kabul edip hedef oyuncuyu attır
-        bool isMaster = (ply_getIsMaster && pn_getLocalPlayer) ? ply_getIsMaster(pn_getLocalPlayer()) : false;
-        static void* mMla = NULL;
-        if (!mMla && g_voteKickClass) mMla = few1n_resolveOn(g_voteKickClass, "mla", 0);
-        if (isMaster && mMla && i_runtime_invoke) {
-            i_runtime_invoke(mMla, vk, NULL, NULL);
-        }
-
-        return true;
-    } @catch (...) {
-        return false;
-    }
+        return started;
+    } @catch (...) { return false; }
 }
 
-static void few1n_tickVoteKickFullYes(void) {
-    // Her ~15 frame'de bir odaya yeni girildiğinde VoteKick 60sn/180sn bekleme kilitlerini sıfırla
-    static int s_vkCooldownTick = 0;
-    if (++s_vkCooldownTick >= 15) {
-        s_vkCooldownTick = 0;
-        if (pn_getInRoom && pn_getInRoom()) {
-            void* vk = few1n_findVoteKickInstance();
-            if (ptrOk(vk)) few1n_resetVoteKickCooldowns(vk);
-        }
-    }
-    if (!g_voteKickFullYes) return;
-    few1n_makeVoteKickFullYes();
+// ===== 1.4.4 COOLDOWN BYPASS HOOKLARI (mkv / mky / OnPlayerEnteredRoom) =====
+static bool (*o_voteKickMkv)(void*, void*) = NULL;
+static bool h_voteKickMkv(void* self, void* targetPlayer) {
+    if (unityAlive(self)) few1n_resetVoteKickCooldowns(self);
+    return true; // Her zaman oylama baslatilabilir!
 }
 
-// 1.4.4: Odaya girer girmez (veya 2 kişilik odada) beklemeden doğrudan VoteKick başlatma garantisi
-static void few1n_forceStartVoteKickDirect(void* vk, void* targetPlayer) {
-    if (!ptrOk(vk) || !ptrOk(targetPlayer) || !i_runtime_invoke) return;
+static bool (*o_voteKickMky)(void*, void*, float*) = NULL;
+static bool h_voteKickMky(void* self, void* targetPlayer, float* remTime) {
+    if (remTime) *remTime = 0.0f;
+    if (unityAlive(self)) few1n_resetVoteKickCooldowns(self);
+    return true; // 180sn oyuncu bekleme suresi her zaman 0!
+}
+
+static void (*o_voteKickOnPlayerEntered)(void*, void*) = NULL;
+static void h_voteKickOnPlayerEntered(void* self, void* newPlayer) {
+    if (o_voteKickOnPlayerEntered) o_voteKickOnPlayerEntered(self, newPlayer);
+    if (unityAlive(self)) few1n_resetVoteKickCooldowns(self);
+}
+
+// ===== 1.4.4 TAM KORUMA (VOTEKICK + DUMMY KICK + REPORT + CLOSECONNECTION IMMUNITY) =====
+static void (*o_voteKickMkw)(void*) = NULL;
+static void h_voteKickMkw(void* self) {
+    FLog(@"🛡️ [KORUMA] VoteKick.mkw (oylamayla odadan atilma) ENGELLENDI!");
+    return; // Oylama sonunda seni odadan atan fonksiyonu tamamen iptal et!
+}
+
+static void (*o_voteKickEndRPC)(void*, int) = NULL;
+static void h_voteKickEndRPC(void* self, int result) {
     @try {
-        few1n_claimMaster();
-        few1n_resetVoteKickCooldowns(vk);
-        int targetActor = ply_getActorNumber ? ply_getActorNumber(targetPlayer) : *(int*)((uintptr_t)targetPlayer + 0x18);
-        if (targetActor <= 0) return;
-        int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : 1;
-
-        *(bool*)((uintptr_t)vk + 0x70) = true; // par = server vote active
-        int voteId = *(int*)((uintptr_t)vk + 0x74) + 1;
-        *(int*)((uintptr_t)vk + 0x74) = voteId; // pas = voteId
-        *(int*)((uintptr_t)vk + 0x78) = targetActor; // pat = targetActor
-
-        void* pau = *(void**)((uintptr_t)vk + 0x80);
-        void* pav = *(void**)((uintptr_t)vk + 0x88);
-        if (ptrOk(pau) && ptrOk(pav)) {
-            few1n_clearCollection(pau);
-            few1n_clearCollection(pav);
-            void* pauCls = *(void**)pau;
-            void* pavCls = *(void**)pav;
-            void* mAdd = ptrOk(pauCls) ? few1n_resolveOn(pauCls, "Add", 1) : NULL;
-            void* mSetItem = ptrOk(pavCls) ? few1n_resolveOn(pavCls, "set_Item", 2) : NULL;
-            if (mAdd && mSetItem && myActor > 0) {
-                bool voteVal = true;
-                void* a1[1] = { &myActor };
-                void* a2[2] = { &myActor, &voteVal };
-                i_runtime_invoke(mAdd, pau, a1, NULL);
-                i_runtime_invoke(mSetItem, pav, a2, NULL);
+        if (unityAlive(self)) {
+            void* target = *(void**)((uintptr_t)self + 0x38); // nwb (hedef Player)
+            void* me = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+            if (target && me && target == me && result == 1) {
+                FLog(@"🛡️ [KORUMA] Sana karsi VoteKickEndRPC(1) geldi -> result=0 (REDDEDILDI) cevrildi!");
+                result = 0; // Bize karsi kick sonucunu iptal et!
             }
         }
+    } @catch (...) {}
+    if (o_voteKickEndRPC) o_voteKickEndRPC(self, result);
+}
 
-        // PhotonNetwork.get_ServerTimestamp() + 30000 ms ile mkz(end) çağır -> tüm odaya VoteKickStateRPC yayar
-        static void* mGetTs = NULL;
-        if (!mGetTs) mGetTs = few1n_resolveOn(few1n_photonNetworkClass(), "get_ServerTimestamp", 0);
-        int endTs = 30000;
-        if (mGetTs) {
-            void* box = i_runtime_invoke(mGetTs, NULL, NULL, NULL);
-            if (box) endTs = *(int*)((uintptr_t)box + 0x10) + 30000;
-        }
-        static void* mMkz = NULL;
-        if (!mMkz && g_voteKickClass) mMkz = few1n_resolveOn(g_voteKickClass, "mkz", 1);
-        if (mMkz) {
-            void* args[1] = { &endTs };
-            i_runtime_invoke(mMkz, vk, args, NULL);
+static void (*o_voteKickStartRPC)(void*, void*) = NULL;
+static void h_voteKickStartRPC(void* self, void* targetPlayer) {
+    if (o_voteKickStartRPC) o_voteKickStartRPC(self, targetPlayer);
+    @try {
+        void* me = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+        if (targetPlayer && me && targetPlayer == me && unityAlive(self)) {
+            // Bize karsi oylama baslatildi -> aninda 99 HAYIR bas ve bitir!
+            *(int*)((uintptr_t)self + 0x30) = 0;
+            *(int*)((uintptr_t)self + 0x34) = 99;
+            *(float*)((uintptr_t)self + 0x50) = 0.01f;
+            FLog(@"🛡️ [KORUMA] Sana karsi oylama baslatildi -> aninda 99 HAYIR ile ezildi!");
+            if (o_voteKickEndRPC) o_voteKickEndRPC(self, 0);
+        } else if (g_voteKickFullYes && unityAlive(self)) {
+            // Baskasina karsi oylama baslatildi -> otomatik 99 EVET yap!
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                few1n_makeVoteKickFullYes();
+            });
         }
     } @catch (...) {}
 }
 
-// 1.4.4: VoteKick.mkv (CanVoteKick — RVA 0x32874A0) Hook:
-// Odaya girince 60sn bekleme, oylamalar arası 180sn bekleme ve en az 3 oyuncu şartını tamamen kaldırır!
-static bool (*o_voteKickMkv)(void*, void*) = NULL;
-static bool h_voteKickMkv(void* self, void* targetPlayer) {
-    if (ptrOk(self)) {
-        few1n_resetVoteKickCooldowns(self);
-        bool isActive = *(bool*)((uintptr_t)self + 0x38);
-        if (!isActive && ptrOk(targetPlayer)) {
-            bool isLocal = *(bool*)((uintptr_t)targetPlayer + 0x1C);
-            if (!isLocal) return true;
-        }
-    }
-    return o_voteKickMkv ? o_voteKickMkv(self, targetPlayer) : true;
-}
-
-// 1.4.4: VoteKick.mky (Hedef oyuncu 180sn bekleme kontrolü — RVA 0x328B110) Hook:
-static bool (*o_voteKickMky)(void*, int, float) = NULL;
-static bool h_voteKickMky(void* self, int actor, float time) {
-    return false; // Hedef oyuncu hiçbir zaman korumada sayılmaz
-}
-
-// 1.4.4: VoteKick.OnPlayerEnteredRoom (RVA 0x328C144) Hook:
-// Odaya yeni giren oyuncular için 60 saniyelik pax[actor] bekleme kaydını engeller
-static void (*o_voteKickOnPlayerEntered)(void*, void*) = NULL;
-static void h_voteKickOnPlayerEntered(void* self, void* newPlayer) {
-    if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
-    return;
-}
-
-// 1.4.4: VoteKick.mkw (StartVoteKick — RVA 0x32895D4) Hook:
-// Oyun içi normal VoteKick butonuna basıldığında da süre beklemeden anında başlatır
-static void (*o_voteKickMkw)(void*, void*) = NULL;
-static void h_voteKickMkw(void* self, void* targetPlayer) {
-    if (ptrOk(self)) {
-        few1n_claimMaster();
-        few1n_resetVoteKickCooldowns(self);
-    }
-    if (o_voteKickMkw) o_voteKickMkw(self, targetPlayer);
-    if (ptrOk(self)) {
-        few1n_resetVoteKickCooldowns(self);
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        void* vk = few1n_findVoteKickInstance();
-        if (ptrOk(vk)) {
-            // Eğer eski MasterClient 60sn kilidi yüzünden paketi yok saydıysa veya odada 2 kişi varsa doğrudan Master olarak başlat!
-            if (!(*(bool*)((uintptr_t)vk + 0x38)) && ptrOk(targetPlayer)) {
-                few1n_forceStartVoteKickDirect(vk, targetPlayer);
-            }
-            if (g_voteKickFullYes) {
-                few1n_makeVoteKickFullYes();
-            }
-        }
-    });
-}
-
-// Anti-VoteKick (1.4.4): Seni oylamayla atmaya çalışanları engelle
-static void (*o_voteKickEndRPC)(void*, int, int, unsigned char, void*) = NULL;
-static void h_voteKickEndRPC(void* self, int vote, int target, unsigned char result, void* info) {
-    int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
-    if (myActor > 0 && target == myActor) {
-        FLog([NSString stringWithFormat:@"🛡️ Anti-VoteKick: Birisi seni oylamayla atmaya çalıştı! Engellendi (vote=%d, target=%d, result=%d)", vote, target, (int)result]);
-        return; // Düşmeyi engelle - LeaveRoom'a gitmesini önle!
-    }
-    if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
-    if (o_voteKickEndRPC) o_voteKickEndRPC(self, vote, target, result, info);
-}
-
-static void (*o_voteKickStartRPC)(void*, int, void*) = NULL;
-static void h_voteKickStartRPC(void* self, int target, void* info) {
-    int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
-    if (myActor > 0 && target == myActor) {
-        FLog(@"🛡️ Anti-VoteKick: Sana karşı oylama başlatıldı, sessize alındı.");
-        return;
-    }
-    if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
-    if (o_voteKickStartRPC) o_voteKickStartRPC(self, target, info);
-}
-
-// Anti-Kick (1.4.4): Lobide KickPlayerRPC ile atılmayı engelle
 static void (*o_dummyKickRPC)(void*, void*) = NULL;
-static void h_dummyKickRPC(void* self, void* playerName) {
-    FLog(@"🛡️ Anti-Kick: Lobby KickPlayerRPC engellendi.");
-    return;
+static void h_dummyKickRPC(void* self, void* kickNickStr) {
+    @try {
+        if (ptrOk(kickNickStr) && pn_getNickName) {
+            NSString *kickNick = readStr(kickNickStr);
+            NSString *myNick = readStr(pn_getNickName());
+            if (kickNick.length > 0 && myNick.length > 0 &&
+                ([kickNick isEqualToString:myNick] || [[ stripRichTextTags(kickNick) ?: kickNick lowercaseString] isEqualToString:[stripRichTextTags(myNick) ?: myNick lowercaseString]])) {
+                FLog(@"🛡️ [KORUMA] KickPlayerRPC sana gonderildi -> ENGELLENDI!");
+                return;
+            }
+        }
+    } @catch (...) {}
+    if (o_dummyKickRPC) o_dummyKickRPC(self, kickNickStr);
 }
 
-// 1.4.4: Anti-Report (Rapor isteklerini düşür)
-static void (*o_reportRPC)(void*, unsigned char, void*, void*) = NULL;
-static void h_reportRPC(void* self, unsigned char reason, void* subject, void* info) {
-    FLog([NSString stringWithFormat:@"🛡️ Anti-Report: RaporRPC engellendi (sebep=%d)", (int)reason]);
-    return;
-}
-
-// 1.4.4: Tüm Araçları Aç (Free Garage)
-static bool isUnlockAllCarsEnabled = false;
-static bool (*o_carManager_gmz)(void*, int) = NULL;
-static bool h_carManager_gmz(void* self, int carId) {
-    if (isUnlockAllCarsEnabled) return true;
-    return o_carManager_gmz ? o_carManager_gmz(self, carId) : true;
-}
-
-static bool (*o_carManager_gna)(void*, void*) = NULL;
-static bool h_carManager_gna(void* self, void* carName) {
-    if (isUnlockAllCarsEnabled) return true;
-    return o_carManager_gna ? o_carManager_gna(self, carName) : true;
+static void (*o_reportRPC)(void*, void*, void*, void*) = NULL;
+static void h_reportRPC(void* self, void* reporterStr, void* reportedStr, void* reasonStr) {
+    @try {
+        NSString *reported = ptrOk(reportedStr) ? readStr(reportedStr) : @"";
+        NSString *reporter = ptrOk(reporterStr) ? readStr(reporterStr) : @"";
+        NSString *myNick = (pn_getNickName && ptrOk(pn_getNickName())) ? readStr(pn_getNickName()) : @"";
+        if (reported.length > 0 && myNick.length > 0 && [reported isEqualToString:myNick]) {
+            FLog([NSString stringWithFormat:@"🛡️ [KORUMA] '%@' seni raporlamaya calisti -> ENGELLENDI!", reporter]);
+            return;
+        }
+    } @catch (...) {}
+    if (o_reportRPC) o_reportRPC(self, reporterStr, reportedStr, reasonStr);
 }
 
 static bool g_isManualKick = false;
@@ -2563,185 +3067,295 @@ static void few1n_forceEnableKick(void) {
 // Eger A sunucu tarafinda reddedilirse client B sayesinde kendini master gorur (yerel isler calisir).
 static inline void few1n_claimMaster(void) {
     if (isMasterClaimDisabled) return;   // v70 klasik davranis: hicbir sey yapma
-    if (pn_getLocalPlayer && pn_getCurrentRoom) {
-        @try {
-            void* me = pn_getLocalPlayer();
-            void* room = pn_getCurrentRoom();
-            if (me && room) {
-                int myActor = *(int*)((uintptr_t)me + 0x18);
-                int currentMaster = *(int*)((uintptr_t)room + 0x48);
-                if (currentMaster != myActor) {
-                    // A) Once server'a SetMasterClient gonder (CAS icin gercek eski master ID'si lazim)
-                    if (pn_setMasterClient) {
-                        @try { pn_setMasterClient(me); } @catch (...) {}
-                    }
-                    // B) Client-side memory patch: ActorNumber = offset 0x18, MasterClientId = offset 0x48
-                    *(int*)((uintptr_t)room + 0x48) = myActor;
-                }
-            }
-        } @catch (...) {}
+    // v114.72: LOKAL SAHTE MASTER YAMASI KALDIRILDI (kullanici istegi). Eskiden
+    // room.MasterClientId'yi elle benim actor'ume yaziyordu -> master SADECE benim
+    // cihazimda "master" gorunuyordu, sunucu bilmiyordu. Bu yuzden (a) sahne
+    // senkronu gibi sunucu-tarafli isler yine reddediliyordu, (b) "gercek master
+    // miyim" kontrolu yaniltiliyordu. Artik SADECE gercek SetMasterClient(me).
+    if (pn_getLocalPlayer && pn_setMasterClient) {
+        @try { void* me = pn_getLocalPlayer(); if (me) pn_setMasterClient(me); } @catch (...) {}
     }
 }
-// Forward declarations (tanimlari asagida; burada erken kullanimlar icin)
-
-// DOGRU lobi yoneticisini bul: PhotonView'i OLAN instance (yoksa KickPlayer RPC'den once patlar).
-static void* few1n_findLobbyMgr(void) {
-    if (!g_lobbyDummyType || !g_mFindObjectsPlural || !i_runtime_invoke) return NULL;
+// v114.72: TEMIZ gercek master claim — lokal sahte yama YOK. Sadece sunucuya
+// SetMasterClient(me). Boylece few1n_amRealMaster sunucu-gercegini yansitir.
+static void few1n_sendRealSetMaster(void) {
+    if (!pn_getLocalPlayer || !pn_setMasterClient) return;
+    @try { void* me = pn_getLocalPlayer(); if (me) pn_setMasterClient(me); } @catch (...) {}
+}
+// Gercekten master miyim? room.MasterClientId (sunucu-set) == benim actor.
+// NOT: auto-master/claimMaster lokal yamasi bunu yaniltabilir; temiz test icin
+// once auto-master KAPALI olmali.
+static bool few1n_amRealMaster(void) {
+    if (!pn_getLocalPlayer || !pn_getCurrentRoom) return false;
     @try {
-        void* a[1]; a[0] = g_lobbyDummyType;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-        if (!ptrOk(arr)) return NULL;
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-        if (cnt <= 0 || cnt > 32) return NULL;
-        void** insts = (void**)((uintptr_t)arr + 0x20);
+        void* me = pn_getLocalPlayer(); void* room = pn_getCurrentRoom();
+        if (!me || !room) return false;
+        int myActor  = *(int*)((uintptr_t)me   + OFFR_PLAYER_ACTORNUM);
+        int masterId = *(int*)((uintptr_t)room + OFFR_ROOM_MASTERID);
+        return myActor > 0 && myActor == masterId;
+    } @catch (...) { return false; }
+}
+// Forward declarations (tanimlari asagida; burada erken kullanimlar icin)
+static inline bool ptrOk(void* p);
+static inline bool unityAlive(void* obj);
+static void few1n_joinTargetRoom(NSString *nm);   // v114.75: harita cik-gir icin
+// DOGRU lobi yoneticisini bul: PhotonView'i OLAN instance (yoksa KickPlayer RPC'den once patlar).
+static void* few1n_findByType(void* typeObj);   // v115.3: ileri bildirim (tanim asagida)
+static void* few1n_findLobbyMgr(void) {
+    if (!g_lobbyDummyType || !i_runtime_invoke) return NULL;
+    @try {
         void* fallback = NULL;
-        for (int i = 0; i < cnt; i++) {
-            void* inst = insts[i]; if (!unityAlive(inst)) continue;
-            if (!fallback) fallback = inst;
-            if (mbp_getPhotonView) {
-                void* pv = NULL; @try { pv = mbp_getPhotonView(inst); } @catch (...) {}
-                if (ptrOk(pv)) return inst;   // photonView'li instance -> RPC gercekten gider
+        // 1) Aktif plural: photonView'li instance ara (oda/bekleme ekraninda aktifse)
+        if (g_mFindObjectsPlural) {
+            void* a[1]; a[0] = g_lobbyDummyType;
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            if (ptrOk(arr)) {
+                int cnt = few1n_rdI32(arr, 0x18, 0);
+                if (cnt > 0 && cnt <= 32) {
+                    for (int i = 0; i < cnt; i++) {
+                        void* inst = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*)); if (!unityAlive(inst)) continue;
+                        if (!fallback) fallback = inst;
+                        if (mbp_getPhotonView) { void* pv=NULL; @try { pv=mbp_getPhotonView(inst); } @catch (...) {}
+                            if (ptrOk(pv)) return inst; }   // photonView'li -> RPC gider
+                    }
+                }
             }
         }
-        return fallback;   // hicbirinde yoksa ilkini dene
+        // 2) v115.2: PASIF-DAHIL ara — yaris/oda sirasinda LobbyDummy inactive olabilir,
+        // aktif-only FindObjectsOfType bulamiyor. few1n_findByType inactive'i de tarar.
+        void* any = few1n_findByType(g_lobbyDummyType);
+        if (unityAlive(any)) {
+            if (mbp_getPhotonView) { void* pv=NULL; @try { pv=mbp_getPhotonView(any); } @catch (...) {}
+                if (ptrOk(pv)) return any; }   // photonView'li -> tercih et
+            if (!fallback) fallback = any;
+        }
+        return fallback;   // photonView'li yoksa eldeki en iyi instance
     } @catch (...) { return NULL; }
 }
+// v116.6: KOOPERATIF KICK — Dummy'nin PhotonView'inde dogrudan RPC("KickPlayerRPC", All, {nick}).
+// KickPlayer()'in ic mantigina (jdz okuma) GUVENMEZ; ham RPC yollar. Alici kendi KickPlayerRPC'sinde
+// ismi kontrol edip LeaveRoom() yapar. SADECE bekleme odasinda calisir (Dummy sahne PhotonView'i her
+// iki tarafta canli olmali). Satir 4064'teki kanitlanmis LoadTuners RPC deseninin aynisi.
+static bool few1n_sendKickRPC(NSString* nick) {
+    if (!nick || nick.length == 0) return false;
+    if (!i_runtime_invoke || !i_array_new || !mbp_getPhotonView) return false;
+    void* mgr = few1n_findLobbyMgr();
+    if (!unityAlive(mgr)) { FLog(@"  → RPC-kick: LobbyDummy bulunamadi (bekleme odasinda dene)"); return false; }
+    void* pv = NULL; @try { pv = mbp_getPhotonView(mgr); } @catch (...) {}
+    if (!ptrOk(pv)) { FLog(@"  → RPC-kick: Dummy PhotonView yok (yaris/pasif — bekleme odasinda dene)"); return false; }
+    void* objcls = few1n_classAnyImage("System", "Object");
+    void* pvcls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvcls) pvcls = few1n_classAnyImage("", "PhotonView");
+    if (!objcls || !pvcls) { FLog(@"  → RPC-kick: Object/PhotonView sinifi yok"); return false; }
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC = few1n_methodBySig(pvcls, "Void", prm, 3, 0);
+    if (!mRPC) { FLog(@"  → RPC-kick: PhotonView.RPC(String,RpcTarget,Object[]) yok"); return false; }
+    @try {
+        void* arr = i_array_new(objcls, 1);
+        if (!ptrOk(arr)) return false;
+        void* nickStr = mkStr(nick);
+        if (!nickStr) return false;
+        *(void**)((uintptr_t)arr + 0x20) = nickStr;   // object[0] = hedef isim (string referans, box yok)
+        void* rpcName = mkStr(@"KickPlayerRPC");
+        int all = 0;   // RpcTarget.All
+        void* args[3] = { rpcName, &all, arr };
+        bool crashed = false;
+        few1n_guardedInvoke(mRPC, pv, args, &crashed);
+        if (crashed) { FLog(@"  → RPC-kick: RPC segfault yakalandi -> iptal"); return false; }
+        FLog([NSString stringWithFormat:@"  → KickPlayerRPC('%@', All) gonderildi ✓ (bekleme odasi kooperatif kick)", nick]);
+        return true;
+    } @catch (...) { FLog(@"  → RPC-kick: exception"); return false; }
+}
+// v116.6: DUMP GERCEGINE gore yeniden yazildi (3 ajan analizi). Oyunda kick icin SADECE 2
+// gercek yol var:
+//   A) CloseConnection(Player) — SUNUCU-ZORLAMALI, kesin atar (yarista bile). SART: GERCEK
+//      master + EnableCloseConnection=true. Kurban reddedemez.
+//   B) KickPlayerRPC(nick) — KOOPERATIF, master gerekmez ama SADECE bekleme odasinda (Dummy
+//      sahne PhotonView'i her iki tarafta canli olmali). Kurban kendi LeaveRoom'unu cagirir.
+// Yarista + master degilken oyunun kick'i YOKTUR (dump: hicbir canli networked bilesen eject
+// RPC'si tasimiyor). Bunu durustce soyleriz. ESKI olu yollar (PlayerListLine bos-stub, teleport
+// crash) KALDIRILDI.
 static void few1n_kickPlayer(void* playerObj) {
     if (!playerObj) return;
     @try {
-        few1n_forceEnableKick();
+        few1n_forceEnableKick();   // PhotonNetwork.EnableCloseConnection = true (field @0x28)
 
-        // Hedef ActorNumber'ı al (pointer karşılaştırması yerine ActorNumber kullan)
         int targetActor = ply_getActorNumber ? ply_getActorNumber(playerObj) : -1;
         void* nmeStr = ply_getNickName ? ply_getNickName(playerObj) : NULL;
         NSString *targetNick = ptrOk(nmeStr) ? readStr(nmeStr) : nil;
-        FLog([NSString stringWithFormat:@"🎯 Hedef: '%@' (Actor=%d, ptr=%p)", targetNick ?: @"?", targetActor, playerObj]);
+        bool amMaster = few1n_amRealMaster();
+        FLog([NSString stringWithFormat:@"🎯 Kick hedef: '%@' (Actor=%d) — GERCEK-MASTER=%@", targetNick ?: @"?", targetActor, amMaster ? @"EVET ✅" : @"HAYIR ❌"]);
 
-        // 1. OTOMATIK MASTER CLIENT YETKISI AL (Sunucunun kick reddetmesini engeller)
-        if (pn_getLocalPlayer && pn_setMasterClient) {
-            void* me = pn_getLocalPlayer();
-            if (me) {
-                pn_setMasterClient(me);
-                FLog(@"  → Master client yetkisi istendi");
-            }
-        }
-
-        // 2. EnableCloseConnection'ı TEKRAR zorla (oyun resetlemiş olabilir)
-        few1n_forceEnableKick();
-
-        // 3. PUN2 CloseConnection (Doğrudan Photon Kick)
-        // Hook varsa o_closeConnection orijinali çağırır; yoksa pn_closeConnection direkt çağırır
-        bool kicked = false;
-        if (o_closeConnection) {
-            g_isManualKick = true;
-            @try { kicked = o_closeConnection(playerObj); } @catch (...) {}
-            g_isManualKick = false;
-            FLog([NSString stringWithFormat:@"  → CloseConnection (orig): %@", kicked ? @"BAŞARILI ✓" : @"BAŞARISIZ (master değilsin?)"]);
-        } else if (pn_closeConnection) {
-            g_isManualKick = true;
-            @try { kicked = pn_closeConnection(playerObj); } @catch (...) {}
-            g_isManualKick = false;
-            FLog([NSString stringWithFormat:@"  → CloseConnection (direkt): %@", kicked ? @"BAŞARILI ✓" : @"BAŞARISIZ"]);
-        } else {
-            FLog(@"  → CloseConnection: POINTER YOK (hook+fn ikisi de NULL)");
-        }
-
-        // 4. Oyunun kendi Lobi RPC Kick mekanizması (LobbyManagerDummy.KickPlayer)
-        if (g_lobbyDummyType && g_mFindObjectsPlural && i_runtime_invoke && g_mDummyKick && ptrOk(nmeStr)) {
-            void* mgr = few1n_findLobbyMgr();
-            if (unityAlive(mgr)) {
-                *(void**)((uintptr_t)mgr + 0x108) = nmeStr;
-                @try {
-                    i_runtime_invoke(g_mDummyKick, mgr, NULL, NULL);
-                    FLog(@"  → Lobby RPC KickPlayer gönderildi ✓");
-                } @catch (...) { FLog(@"  → Lobby RPC kick HATA"); }
+        // ===== YOL A: CloseConnection — SADECE gercek master (sunucu-zorlamali, kesin) =====
+        bool masterKicked = false;
+        if (amMaster) {
+            few1n_forceEnableKick();   // oda girisinde resetlenmis olabilir -> tekrar zorla
+            if (pn_closeConnection) {
+                g_isManualKick = true;
+                @try { masterKicked = pn_closeConnection(playerObj); } @catch (...) {}
+                g_isManualKick = false;
+                FLog([NSString stringWithFormat:@"  → CloseConnection (master): %@", masterKicked ? @"BAŞARILI ✓ (sunucu düşürdü)" : @"reddedildi (EnableCloseConnection?)"]);
+            } else if (o_closeConnection) {
+                g_isManualKick = true;
+                @try { masterKicked = o_closeConnection(playerObj); } @catch (...) {}
+                g_isManualKick = false;
+                FLog([NSString stringWithFormat:@"  → CloseConnection (hook): %@", masterKicked ? @"BAŞARILI ✓" : @"reddedildi"]);
             } else {
-                FLog(@"  → Lobby RPC: Manager bulunamadı (PhotonView'li instance yok)");
+                FLog(@"  → CloseConnection: pointer YOK");
             }
         } else {
-            FLog(@"  → Lobby RPC kick: Gerekli pointer(lar) hazır değil");
+            FLog(@"  → CloseConnection ATLANDI (master degilsin — sunucu reddeder)");
         }
 
-        // 5. Hedef oyuncunun PhotonView/CPS nesnesine özel Teleport RPC Düşürme paketi
-        //    DÜZELTME: Pointer karşılaştırması yerine ActorNumber karşılaştırması kullan
-        bool rpcSent = false;
-        if (g_photonViewType && g_pvOwnerOff > 0 && g_mFindObjectsPlural && i_runtime_invoke && targetActor > 0) {
-            void* b2[1]; b2[0] = g_photonViewType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, b2, NULL);
-            if (ptrOk(arr)) {
-                int c = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-                void** pvs = (void**)((uintptr_t)arr + 0x20);
-                for (int i = 0; i < c && i < 128; i++) {
-                    void* pv = pvs[i]; if (!unityAlive(pv)) continue;
-                    void* owner = *(void**)((uintptr_t)pv + g_pvOwnerOff);
-                    if (!ptrOk(owner)) continue;
-                    // ActorNumber karşılaştırması (güvenilir, pointer değişse bile çalışır)
-                    int ownerActor = ply_getActorNumber ? ply_getActorNumber(owner) : -2;
-                    if (ownerActor == targetActor) {
-                        Vec3 crashV = {9999999.0f, 9999999.0f, 9999999.0f};
-                        Quaternion crashQ = {99999.0f, 99999.0f, 99999.0f, 99999.0f};
-                        if (g_carPhotonSyncTypeObj && g_mGetCompInParent && cps_TeleportCar_RPC) {
-                            void* args2[2]; args2[0] = g_carPhotonSyncTypeObj; bool inc = true; args2[1] = &inc;
-                            void* cps = i_runtime_invoke(g_mGetCompInParent, pv, args2, NULL);
-                            if (ptrOk(cps)) {
-                                cps_TeleportCar_RPC(cps, crashV, crashQ, NULL);
-                                rpcSent = true;
-                            }
-                        }
-                        // Ek: HR_PhotonHandler TeleportPlayerRPC (ikinci crash vektörü)
-                        if (g_hrPhotonHandlerTypeObj && g_mGetCompInParent && hrph_TeleportPlayerRPC) {
-                            void* args3[2]; args3[0] = g_hrPhotonHandlerTypeObj; bool inc2 = true; args3[1] = &inc2;
-                            void* hrph = i_runtime_invoke(g_mGetCompInParent, pv, args3, NULL);
-                            if (ptrOk(hrph)) {
-                                hrph_TeleportPlayerRPC(hrph, crashV, NULL);
-                                rpcSent = true;
-                            }
-                        }
-                    }
-                }
-            }
-            FLog(rpcSent ? @"  → Teleport RPC crash paketi gönderildi ✓" : @"  → Teleport RPC: Hedefin PhotonView'i bulunamadı");
+        // ===== YOL B: KickPlayerRPC — bekleme odasi kooperatif kick (master olsan da dene) =====
+        // Master isek de gonderiyoruz: bekleme odasinda kurban hizli/temiz ayrilir (CloseConnection
+        // zaten garanti). Master degilsek TEK sansimiz bu (ve sadece bekleme odasinda).
+        bool rpcKicked = false;
+        if (targetNick.length > 0) {
+            rpcKicked = few1n_sendKickRPC(targetNick);
         } else {
-            if (g_pvOwnerOff <= 0) FLog(@"  → Teleport RPC: OwnerOffset=0 (PhotonView field bulunamadı)");
-            else if (targetActor <= 0) FLog(@"  → Teleport RPC: ActorNumber alınamadı");
-            else FLog(@"  → Teleport RPC: Gerekli pointer(lar) hazır değil");
+            FLog(@"  → RPC-kick: hedef ismi bos");
         }
 
-        // 6. 1.4.4 VoteKick Force Kick (Oylama beklemeden direkt Passed=1 paketi yolla)
-        bool vkSent = false;
-        if (targetActor > 0 && i_runtime_invoke) {
-            void* vk = few1n_findVoteKickInstance();
-            if (unityAlive(vk)) {
-                if (!g_mVoteKickEndRPC && g_voteKickClass) {
-                    g_mVoteKickEndRPC = few1n_resolveOn(g_voteKickClass, "VoteKickEndRPC", 4);
-                }
-                if (g_mVoteKickEndRPC) {
-                    int voteId = 1;
-                    int target = targetActor;
-                    unsigned char result = 1; // 1 = Passed (Kick)
-                    void* args[4] = { &voteId, &target, &result, NULL };
-                    @try {
-                        i_runtime_invoke(g_mVoteKickEndRPC, vk, args, NULL);
-                        vkSent = true;
-                        FLog([NSString stringWithFormat:@"  → VoteKickEndRPC (Passed=1, targetActor=%d) iletildi ✓", targetActor]);
-                    } @catch (...) { FLog(@"  → VoteKickEndRPC exception"); }
-                }
-                if (!g_mVoteKickStart && g_voteKickClass) {
-                    g_mVoteKickStart = few1n_resolveOn(g_voteKickClass, "mkw", 1);
-                }
-                if (g_mVoteKickStart && playerObj) {
-                    void* args2[1] = { playerObj };
-                    @try {
-                        i_runtime_invoke(g_mVoteKickStart, vk, args2, NULL);
-                        FLog(@"  → VoteKick.mkw oylaması tetiklendi ✓");
-                    } @catch (...) {}
-                }
-            }
+        // ===== YOL C: 1.4.4 VoteKick Force-Kick (0sn beklemesiz oylama + aninda 99 EVET + VoteKickEndRPC(1)) =====
+        bool vkKicked = few1n_forceStartVoteKickDirect(playerObj, YES);
+        if (vkKicked) {
+            FLog(@"  → VoteKick Force-Kick (1.4.4): StartVoteKick + 99 EVET + VoteKickEndRPC(1) gonderildi ✓");
         }
 
-        FLog([NSString stringWithFormat:@"💥 '%@' (Actor=%d) atma işlemi tamamlandı (kick=%@, rpc=%@, votekick=%@)",
-              targetNick ?: @"?", targetActor, kicked ? @"✓" : @"✗", rpcSent ? @"✓" : @"✗", vkSent ? @"✓" : @"✗"]);
+        // ===== SONUC + DURUST TESHIS =====
+        FLog([NSString stringWithFormat:@"💥 '%@' atma sonucu: master-kick=%@ | rpc-kick=%@",
+              targetNick ?: @"?", masterKicked ? @"✓" : @"✗", rpcKicked ? @"✓" : @"✗"]);
+        if (!masterKicked && !rpcKicked) {
+            if (amMaster)
+                FLog(@"⚠️ Master'sin ama düşmedi — EnableCloseConnection resetlenmiş olabilir; tekrar dene.");
+            else
+                FLog(@"⚠️ Kick tutmadı. KESİN atmak icin: KENDİ odanda (master sensin) at — yarışta bile "
+                      "çalışır. Başkasının odasında master değilsen sunucu kick'i reddeder. Bekleme "
+                      "odasında (yarış başlamadan) normal oyuncular RPC ile atılır; yarış sırasında "
+                      "oyunun kendi kick'i yoktur.");
+        }
     } @catch (...) { g_isManualKick = false; FLog(@"Kick hatası (exception)"); }
+}
+
+// ===== v114.37: BAN LISTESI + OTOMATIK TEKRAR-KICK =====
+// Kick tek seferlik; oyuncu geri girebiliyor (Photon CloseConnection baglantiyi
+// kesmiyor). Cozum: banlı isimleri sakla, her ~2sn odayi tara, banlı biri varsa
+// otomatik tekrar at. Kendi odanda (gercek master) kesin calisir; geri geleni
+// surekli disari atar = pratikte kalici ban.
+static NSString* stripRichTextTags(NSString *text);   // tanim asagida (~4049)
+static NSMutableArray<NSString*> *g_banNicks = nil;   // banli nick'ler (kalici)
+static bool isAutoBanEnabled = true;                  // ban listesi zorlamasi acik
+static void few1n_loadBans(void) {
+    if (g_banNicks) return;
+    NSArray *a = [[NSUserDefaults standardUserDefaults] arrayForKey:@"few1n_bans"];
+    g_banNicks = a ? [a mutableCopy] : [NSMutableArray array];
+}
+static void few1n_saveBans(void) {
+    if (!g_banNicks) return;
+    [[NSUserDefaults standardUserDefaults] setObject:g_banNicks forKey:@"few1n_bans"];
+}
+static bool few1n_isBanned(NSString *nick) {
+    if (!nick || nick.length == 0) return false;
+    few1n_loadBans();
+    NSString *clean = stripRichTextTags(nick) ?: nick;
+    for (NSString *b in g_banNicks) {
+        if ([b caseInsensitiveCompare:clean] == NSOrderedSame) return true;
+        if ([b caseInsensitiveCompare:nick] == NSOrderedSame) return true;
+    }
+    return false;
+}
+static void few1n_addBan(NSString *nick) {
+    if (!nick || nick.length == 0) return;
+    few1n_loadBans();
+    NSString *clean = stripRichTextTags(nick) ?: nick;
+    if (!few1n_isBanned(clean)) { [g_banNicks addObject:clean]; few1n_saveBans(); }
+}
+
+// Her ~2sn: odadaki banlı oyunculari otomatik tekrar at (tick'ten cagrilir).
+static double g_lastBanScan = 0;
+static void few1n_enforceBans(void) {
+    if (!isAutoBanEnabled) return;
+    if (!pn_getInRoom || !pn_getInRoom()) return;
+    if (!pn_getPlayerListOthers || !i_runtime_invoke || !ply_getNickName) return;
+    double now = CACurrentMediaTime();
+    if (now - g_lastBanScan < 2.0) return;   // throttle
+    g_lastBanScan = now;
+    few1n_loadBans();
+    if (g_banNicks.count == 0) return;
+    @try {
+        void* pa = pn_getPlayerListOthers();
+        if (!ptrOk(pa)) return;
+        int c = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+        if (c <= 0 || c > 64) return;
+        void** ps = (void**)((uintptr_t)pa + 0x20);
+        for (int i = 0; i < c; i++) {
+            void* p = ps[i]; if (!ptrOk(p)) continue;
+            void* nsObj = ply_getNickName(p);
+            NSString *nm = ptrOk(nsObj) ? readStr(nsObj) : nil;
+            if (few1n_isBanned(nm)) {
+                FLog([NSString stringWithFormat:@"🚫 Ban: '%@' odada — otomatik tekrar atiliyor", nm]);
+                few1n_forceEnableKick();
+                if (pn_setMasterClient && pn_getLocalPlayer) { void* me = pn_getLocalPlayer(); if (me) @try { pn_setMasterClient(me); } @catch (...) {} }
+                few1n_kickPlayer(p);
+            }
+        }
+    } @catch (...) {}
+}
+
+// v114.46: ANTI-KICK — oda ismini takip et; kicklenirsen (beklenmedik cikis)
+// 1sn sonra ayni odaya geri gir, 2sn sonra master ol. Tick'ten cagrilir.
+// NOT: Kendin cikmak istersen once Anti-Kick'i kapat (aksi halde geri ceker).
+static void few1n_antiKickTick(void) {
+    if (!isAntiKickEnabled || !pn_getInRoom) return;
+    static bool wasIn = false;
+    bool inRoom = false;
+    @try { inRoom = pn_getInRoom(); } @catch (...) {}
+    if (inRoom) {
+        if (pn_getCurrentRoom && rinfo_getName) {
+            @try {
+                void* room = pn_getCurrentRoom();
+                if (ptrOk(room)) {
+                    NSString *nm = readStr(rinfo_getName(room));
+                    if (nm.length > 0) { strncpy(g_lastRoomName, nm.UTF8String, sizeof(g_lastRoomName)-1); g_lastRoomName[sizeof(g_lastRoomName)-1] = '\0'; }
+                }
+            } @catch (...) {}
+        }
+    } else if (wasIn && g_lastRoomName[0] && pn_joinRoom) {
+        NSString *rn = [NSString stringWithUTF8String:g_lastRoomName];
+        FLog([NSString stringWithFormat:@"🛡️ Anti-Kick: '%@' odasindan cikarildim -> geri giriliyor", rn]);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @try { void* ns = mkStr(rn); if (ns) pn_joinRoom(ns, NULL); } @catch (...) {}
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ @try { few1n_claimMaster(); } @catch (...) {} });
+        });
+    }
+    wasIn = inRoom;
+}
+
+// v114.47: HOOKSUZ RENKLI ODA ISMI. Sideload'da room-line setup hook'u olu ->
+// TMP_Text'lerde richText zorlanmiyor -> <color=..> etiketleri DUZ METIN gorunuyor
+// ("kodu ekrana render ediyor"). Cozum: lobby'deki room line'lari polling ile bul,
+// RoomNameText/MapNameText/PlayerCountText'e richText=true zorla.
+static void few1n_forceRoomRichText(void) {
+    if (!g_hooksDead) return;   // jailbreak'te hook zaten yapiyor
+    if (!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke || !g_mSetRichText) return;
+    @try {
+        void* a[1] = { g_roomLineType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return;
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 128) return;
+        void** lines = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* ln = lines[i]; if (!unityAlive(ln)) continue;
+            void* nameText = *(void**)((uintptr_t)ln + OFFR_RL_NAMETEXT);
+            void* mapText  = *(void**)((uintptr_t)ln + OFFR_RL_MAPTEXT);
+            void* pCount   = *(void**)((uintptr_t)ln + OFFR_RL_PLAYERCOUNT);
+            if (unityAlive(nameText)) setRichTextIl(nameText, true);
+            if (unityAlive(mapText))  setRichTextIl(mapText, true);
+            if (unityAlive(pCount))   setRichTextIl(pCount, true);
+        }
+    } @catch (...) {}
 }
 
 // ===== INFINITE NITRO =====
@@ -2751,10 +3365,10 @@ static float h_getNitro(void* self) {
     fNitro++;
     if (self && ptrOk(self)) {
         @try {
-            void* ds = *(void**)((uintptr_t)self + 0x28);
-            if (ds) { void* rb = *(void**)((uintptr_t)ds + 0x48); if (rb) g_rb = rb; }
-            diagNitroVal = *(float*)((uintptr_t)self + 0x34);
-            if (isInfiniteNitroEnabled) *(float*)((uintptr_t)self + 0x34) = 1.0f;  // nitroAmount backing field'i de doldur
+            void* ds = *(void**)((uintptr_t)self + OFFR_NITRO_DRIVE);
+            if (ds) { void* rb = *(void**)((uintptr_t)ds + OFFR_CDS_RIGIDBODY); if (rb) g_rb = rb; }
+            diagNitroVal = *(float*)((uintptr_t)self + OFFR_NITRO_AMOUNT);
+            if (isInfiniteNitroEnabled) *(float*)((uintptr_t)self + OFFR_NITRO_AMOUNT) = 1.0f;  // nitroAmount backing field'i de doldur
         } @catch (...) {}
     }
     if (isInfiniteNitroEnabled) return 1.0f;
@@ -2782,18 +3396,18 @@ static void h_driveMove(void* self, float a, float b, float c, float d) {
     if (self) {
         @try {
             diagDrive  = self;
-            diagCurSpd = *(float*)((uintptr_t)self + 0x9C);   // currentSpeed
-            diagTopSpd = *(float*)((uintptr_t)self + 0x98);   // topSpeed
+            diagCurSpd = *(float*)((uintptr_t)self + OFFR_CDS_CURSPEED);   // currentSpeed
+            diagTopSpd = *(float*)((uintptr_t)self + OFFR_CDS_TOPSPEED);   // topSpeed
             // topSpeed cap'ini de yukselt (bazi oyunlar hizi buna clamp eder)
             if (speedMult != 1.0f || speedMode > 1) {
                 if (g_origTop <= 0.0f && diagTopSpd > 0.0f && diagTopSpd < 1000.0f) g_origTop = diagTopSpd;
                 float base = (g_origTop > 0.0f) ? g_origTop : 200.0f;
-                *(float*)((uintptr_t)self + 0x98) = base * 3.0f;
+                *(float*)((uintptr_t)self + OFFR_CDS_TOPSPEED) = base * 3.0f;
             } else if (g_origTop > 0.0f) {
-                *(float*)((uintptr_t)self + 0x98) = g_origTop; g_origTop = 0.0f;
+                *(float*)((uintptr_t)self + OFFR_CDS_TOPSPEED) = g_origTop; g_origTop = 0.0f;
             }
             // ASIL HIZ: Rigidbody linearVelocity'yi dogrudan olcekle (en kesin yontem)
-            void* rb = *(void**)((uintptr_t)self + 0x48);     // CarDriveSystem._rigidbody
+            void* rb = *(void**)((uintptr_t)self + OFFR_CDS_RIGIDBODY);     // CarDriveSystem._rigidbody
             g_rb = rb;                                        // fly/zipla/lowgrav icin sakla
             if (rb && rb_getVel && rb_setVel) {
                 Vec3 v = {0,0,0};
@@ -2822,7 +3436,16 @@ static void* g_carDrive = NULL;
 static void* g_carNitro = NULL;
 static int   g_findTick  = 0;   // arama throttle sayaci
 
-
+// Bir pointer okunabilir/makul mu? (cop pointer dereference crash'ini onler)
+static inline bool ptrOk(void* p) {
+    uintptr_t v = (uintptr_t)p;
+    return v > 0x1000 && v < 0x0000800000000000ULL && (v & 0x7) == 0;
+}
+// Bir Unity nesnesi hala canli mi? Yok edilince m_CachedPtr (+0x10) NULL olur.
+static inline bool unityAlive(void* obj) {
+    if (!ptrOk(obj)) return false;
+    @try { return *(void**)((uintptr_t)obj + OFF_UNITY_CACHED_PTR) != NULL; } @catch (...) { return false; }
+}
 // Bir tipi 3 farkli Unity API'siyle aramayi dener (aktif olmayanlar dahil)
 static void* few1n_findByType(void* typeObj) {
     if (!typeObj || !i_runtime_invoke) return NULL;
@@ -3078,14 +3701,14 @@ static void few1n_findCar(void) {
         if (g_carInputTypeObj && ((!g_carDrive) || (!g_carNitro) || (g_findTick % 8 == 0))) {
             void* inp = few1n_findByType(g_carInputTypeObj);
             if (ptrOk(inp)) {
-                void* drive = *(void**)((uintptr_t)inp + 0x20);   // jhr -> CarDriveSystem (SENIN)
+                void* drive = *(void**)((uintptr_t)inp + OFFR_CPI_DRIVE);   // jhr -> CarDriveSystem (SENIN)
                 if (unityAlive(drive)) {
                     if (drive != g_carDrive) fFind++;
                     g_carDrive = drive; gotMine = true;
-                    void* rb = *(void**)((uintptr_t)drive + 0x48); // Rigidbody (SENIN araban)
+                    void* rb = *(void**)((uintptr_t)drive + OFFR_CDS_RIGIDBODY); // Rigidbody (SENIN araban)
                     if (ptrOk(rb)) g_rb = rb;
                 }
-                void* nos = *(void**)((uintptr_t)inp + 0x28);     // jhs -> CarNitro
+                void* nos = *(void**)((uintptr_t)inp + OFFR_CPI_NITRO);     // jhs -> CarNitro
                 if (ptrOk(nos)) g_carNitro = nos;
             }
         }
@@ -3094,7 +3717,7 @@ static void few1n_findCar(void) {
             void* found = few1n_findByType(g_carDriveTypeObj);
             if (ptrOk(found)) {
                 g_carDrive = found;
-                void* rb = *(void**)((uintptr_t)found + 0x48);
+                void* rb = *(void**)((uintptr_t)found + OFFR_CDS_RIGIDBODY);
                 if (ptrOk(rb)) g_rb = rb;
             }
         }
@@ -3110,8 +3733,8 @@ static void few1n_findCar(void) {
                 void* cd = i_runtime_invoke(g_mGetCompInParent, g_rb, a, NULL);
                 if (unityAlive(cd)) {
                     g_carDrive = cd;
-                    void* inp = *(void**)((uintptr_t)cd + 0x20);   // jfs -> CarPlayerInput
-                    if (unityAlive(inp)) { void* nos = *(void**)((uintptr_t)inp + 0x28); if (ptrOk(nos)) g_carNitro = nos; }
+                    void* inp = *(void**)((uintptr_t)cd + OFFR_CDS_INPUT);   // jfs -> CarPlayerInput
+                    if (unityAlive(inp)) { void* nos = *(void**)((uintptr_t)inp + OFFR_CPI_NITRO); if (ptrOk(nos)) g_carNitro = nos; }
                 }
             } @catch (...) {}
         }
@@ -3122,7 +3745,7 @@ static void few1n_findCar(void) {
 static void few1n_applyCar(void) {
     @try {
         if (isInfiniteNitroEnabled && unityAlive(g_carNitro)) {
-            *(float*)((uintptr_t)g_carNitro + 0x34) = 1.0f;   // nitro dolu tut
+            *(float*)((uintptr_t)g_carNitro + OFFR_NITRO_AMOUNT) = 1.0f;   // nitro dolu tut
         }
         // NO-CLIP (hayalet) + ANTI-GRAV - sadece g_rb yeterli (carDrive gerekmez)
         if (unityAlive(g_rb)) {
@@ -3142,15 +3765,15 @@ static void few1n_applyCar(void) {
         if (!unityAlive(g_carDrive)) return;   // araba oldu -> field yazma (crash korumasi)
         uintptr_t d = (uintptr_t)g_carDrive;
         diagDrive  = g_carDrive;
-        diagCurSpd = *(float*)(d + 0x9C);
+        diagCurSpd = *(float*)(d + OFFR_CDS_CURSPEED);
         g_hudSpeed = fabsf(diagCurSpd);   // HUD icin hiz
-        diagTopSpd = *(float*)(d + 0x98);
+        diagTopSpd = *(float*)(d + OFFR_CDS_TOPSPEED);
         if (speedMult != 1.0f || speedMode > 1) {
             if (g_origTop <= 0.0f && diagTopSpd > 0.0f && diagTopSpd < 1000.0f) g_origTop = diagTopSpd;
             float base = (g_origTop > 0.0f) ? g_origTop : 200.0f;
-            *(float*)(d + 0x98) = base * 3.0f;
+            *(float*)(d + OFFR_CDS_TOPSPEED) = base * 3.0f;
         } else if (g_origTop > 0.0f && !isCarPanelEnabled) {
-            *(float*)(d + 0x98) = g_origTop; g_origTop = 0.0f;
+            *(float*)(d + OFFR_CDS_TOPSPEED) = g_origTop; g_origTop = 0.0f;
         }
         float scale = targetScale();
         if (unityAlive(g_rb) && scale > 1.05f) {
@@ -3167,21 +3790,33 @@ static void few1n_applyCar(void) {
             }
         }
         if (isCarPanelEnabled) {
-            *(unsigned char*)(d + 0x61) = 1;
-            *(float*)(d + 0x6C) = carAccelPower;
-            *(unsigned char*)(d + 0x62) = 1;
-            *(float*)(d + 0x64) = carSteerPower;
-            *(float*)(d + 0x98) = carTopSpeed;
+            *(unsigned char*)(d + OFFR_CDS_OVR_ACCEL) = 1;
+            *(float*)(d + OFFR_CDS_ACCELPOWER) = carAccelPower;
+            *(unsigned char*)(d + OFFR_CDS_OVR_STEER) = 1;
+            *(float*)(d + OFFR_CDS_STEERPOWER) = carSteerPower;
+            *(float*)(d + OFFR_CDS_TOPSPEED) = carTopSpeed;
         }
     } @catch (...) {}
 }
 
 // ===== PLAKA ZORLA (il2cpp, hook olu) =====
-// PlateVariant.parts (+0x20) = TMP_Text[]; disableSplit (+0x29). Her karede zorla yaz.
+// PlateVariant.parts ve disableSplit alanlari IL2CPP field API ile bulunur; her karede zorla yaz.
 // NOT: sadece SENIN ekranindaki plaka - server/digerleri baska gorebilir.
 static void* g_plateEmptyStr = NULL;
 static void few1n_forcePlate(void) {
-    if (!isCustomPlateEnabled || !g_mTmpSetText || !g_plateTypeObj || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+    if (!isCustomPlateEnabled || !g_mTmpSetText || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+    // PlateVariant daha sonra yuklenirse alanlari IL2CPP metadata'dan yeniden cozumle.
+    if (!g_plateTypeObj || g_offPlateParts <= 0 || g_offPlateDisableSplit <= 0) {
+        void* pc = few1n_classAnyImage("", "PlateVariant");
+        if (!pc || !i_class_get_field_from_name || !i_field_get_offset) return;
+        g_plateClass = pc;
+        g_plateTypeObj = few1n_typeObjOf(pc);
+        void* f = i_class_get_field_from_name(pc, "parts");
+        if (f) g_offPlateParts = (int)i_field_get_offset(f);
+        f = i_class_get_field_from_name(pc, "disableSplit");
+        if (f) g_offPlateDisableSplit = (int)i_field_get_offset(f);
+    }
+    if (!g_plateTypeObj || g_offPlateParts <= 0 || g_offPlateDisableSplit <= 0) return;
     @try {
         void* a[1]; a[0] = g_plateTypeObj;
         void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
@@ -3195,12 +3830,15 @@ static void few1n_forcePlate(void) {
         for (int i = 0; i < cnt; i++) {
             void* pv = plates[i];
             if (!ptrOk(pv)) continue;
-            *(unsigned char*)((uintptr_t)pv + 0x29) = 1;        // disableSplit = true (tek parca)
-            void* parts = *(void**)((uintptr_t)pv + 0x20);      // TMP_Text[]
+            *(unsigned char*)((uintptr_t)pv + g_offPlateDisableSplit) = 1; // disableSplit = true
+            void* parts = *(void**)((uintptr_t)pv + g_offPlateParts);       // TMP_Text[]
             if (!ptrOk(parts)) continue;
             int pc = (int)(*(uintptr_t*)((uintptr_t)parts + 0x18));
             if (pc < 0 || pc > 32) continue;
             void** tp = (void**)((uintptr_t)parts + 0x20);
+            // v114.52: per-karakter (v114.41) GERI ALINDI. Kullanici "HAT gorunen ama
+            // CALISAN" surumu istiyor — basit yol: tum metni part[0]'a, digerleri bos.
+            // (Ekranda kayik/kesik gorunebilir ama plaka degisir ve COKME yok.)
             for (int k = 0; k < pc; k++) {
                 void* t = tp[k];
                 if (!ptrOk(t)) continue;
@@ -3209,6 +3847,1268 @@ static void few1n_forcePlate(void) {
             }
         }
     } @catch (...) {}
+}
+
+// Resmi PlateUIElement akisini kullanir: PlayerManager.goy(...) sunucuya gider,
+// SpinPlateResponse'tan gelen plaka oyuncunun kaydina yazilir. Yerel preview degildir.
+static bool few1n_spinServerPlate(void) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    if (!g_plateUiTypeObj || !g_mPlateSpinRandom) {
+        void* cls = few1n_classAnyImage("", "PlateUIElement");
+        if (!cls) return false;
+        g_plateUiTypeObj = few1n_typeObjOf(cls);
+        g_mPlateSpinRandom = i_class_get_method_from_name(cls, "SpinRandom", 0);
+    }
+    if (!g_plateUiTypeObj || !g_mPlateSpinRandom) return false;
+    @try {
+        void* args[1] = { g_plateUiTypeObj };
+        void* array = i_runtime_invoke(g_mFindObjectsPlural, NULL, args, NULL);
+        if (!ptrOk(array)) return false;
+        int count = *(int*)((uintptr_t)array + 0x18);
+        if (count < 1 || count > 16) return false;
+        void** elements = (void**)((uintptr_t)array + 0x20);
+        for (int i = 0; i < count; i++) {
+            if (!ptrOk(elements[i])) continue;
+            i_runtime_invoke(g_mPlateSpinRandom, elements[i], NULL, NULL);
+            FLog(@"Plaka: resmi sunucu cevirmesi baslatildi");
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// ===== v114.27: OZEL PLAKA — HERKESTE GORUNUR (client-authoritative) =====
+//
+// dump.cs analizi: odadaki diger oyunculara plaka, sunucu dogrulamasiyla DEGIL,
+// oyunun kendi tuning RPC'siyle gidiyor:
+//   PlateTuner.Apply(string country, string text)  -> plakayi lokal ayarlar
+//   TuningManager : MonoBehaviourPun                -> [PunRPC] LoadTuners(byte[])
+//   ile tum tuning'i (plaka dahil) herkese yayinlar.
+// Sunucunun SpinPlate'i yalniz kalicilik + para icin; oda-ici canli gorunum
+// client'in RPC'sine guveniyor. Yani Apply'a girdigimiz metin herkese gider.
+//
+// Hook DEGIL, dogrudan il2cpp cagrisi — sideload'da hook'lar olu olsa bile calisir.
+// SADECE benim aracima uygulanir: PlateTuner'in ustundeki PhotonView.IsMine kontrol
+// edilir (uzak oyuncularin plakasina dokunmayiz). Garajda PhotonView yoksa (tek
+// arac) yine uygulanir.
+static bool few1n_pvIsMineFor(void* comp) {
+    if (!g_mGetCompInParent || !g_photonViewType || !i_runtime_invoke || g_isMineOff <= 0) return true; // kontrol edilemiyorsa izin ver
+    @try {
+        unsigned char inc = 1;
+        void* a[2] = { g_photonViewType, &inc };
+        void* pv = i_runtime_invoke(g_mGetCompInParent, comp, a, NULL);
+        if (!ptrOk(pv)) return true;   // PhotonView yok = garaj/tek arac -> uygula
+        return *(unsigned char*)((uintptr_t)pv + g_isMineOff) != 0;
+    } @catch (...) { return true; }
+}
+
+// Tuning'i (plaka + renk + tum tuner'lar) odadaki HERKESE yayinla: benim
+// TuningManager instance'imda LoadTuners RPC'sini tetikleyen metodu cagir.
+//
+// v114.35: Metotlar obfuscated (ead/eae/eah...), hangisi yayin yapiyor gövde
+// olmadan kesin bilinemiyor. Bu yuzden aday listesi deneniyor; en guclu aday
+// eah(bool) — muhtemelen Save(broadcast=true). Log her birini ayri gosteriyor,
+// boylece cihaz log'u hangisinin var oldugunu ve cagrildigini soyler.
+static void few1n_broadcastTuning(const char* who) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke) return;
+    @try {
+        void* tmCls = few1n_classAnyImage("", "TuningManager");
+        if (!tmCls) { FLog(@"Yayin: TuningManager sinifi yok"); return; }
+        void* tmType = few1n_typeObjOf(tmCls);
+        // Aday metotlar: eah(bool), ead(0), eae(0), eai(0)
+        void* mEahBool = i_class_get_method_from_name(tmCls, "eah", 1);
+        void* mEad     = i_class_get_method_from_name(tmCls, "ead", 0);
+        void* mEae     = i_class_get_method_from_name(tmCls, "eae", 0);
+        void* mEai     = i_class_get_method_from_name(tmCls, "eai", 0);
+        // v114.43: TAZE TuningData zinciri. eaj() -> guncel tuner durumlarindan
+        // TuningData kurar; eac(data) -> currentData'ya yazar; eah(true) -> serialize+RPC.
+        // Eski kod sadece eah cagiriyordu -> muhtemelen ESKI/BOS currentData yayilıyordu
+        // (mod tuner'lari DOGRUDAN Apply ediyor, TuningManager.currentData guncellenmiyordu).
+        void* mEaj     = i_class_get_method_from_name(tmCls, "eaj", 0);   // TuningData eaj()
+        void* mEac     = i_class_get_method_from_name(tmCls, "eac", 1);   // void eac(TuningData)
+        FLog([NSString stringWithFormat:@"Yayin adaylari: eaj=%@ eac=%@ eah(bool)=%@ ead=%@ eae=%@ eai=%@",
+              mEaj?@"✓":@"✗", mEac?@"✓":@"✗", mEahBool?@"✓":@"✗", mEad?@"✓":@"✗", mEae?@"✓":@"✗", mEai?@"✓":@"✗"]);
+        if (!tmType) return;
+        void* b[1] = { tmType };
+        void* tms = i_runtime_invoke(g_mFindObjectsPlural, NULL, b, NULL);
+        if (!ptrOk(tms)) { FLog(@"Yayin: TuningManager instance yok"); return; }
+        int tc = *(int*)((uintptr_t)tms + 0x18);
+        void** tmi = (void**)((uintptr_t)tms + 0x20);
+        int done = 0;
+        unsigned char t = 1;
+        for (int i = 0; i < tc && i < 16; i++) {
+            void* tm = tmi[i];
+            if (!unityAlive(tm) || !few1n_pvIsMineFor(tm)) continue;
+            // v114.58: eaj->eac zinciri TEKRAR KALDIRILDI (kullanici v114.57'yi test etti
+            // -> COKME). eaj/eac TuningManager ic metodlarini dogrudan cagirmak null-deref/
+            // native crash uretiyor; @try native segfault'u yakalamaz. v114.51'deki STABIL
+            // eah/ead/eae yayinina geri donuldu. Plaka tipi "eu" (v114.55) korunuyor.
+            // NOT: eaj/eac olmadan yayin currentData'yi tazelemez -> plaka karsi tarafta
+            // gorunmeyebilir (lokal kalabilir). AMA COKMEZ. Oncelik: cokme yok + eu tipi.
+            if (mEahBool) { @try { void* a[1]={&t}; i_runtime_invoke(mEahBool, tm, a, NULL); } @catch (...) {} }
+            if (mEad)     { @try { i_runtime_invoke(mEad, tm, NULL, NULL); } @catch (...) {} }
+            if (mEae)     { @try { i_runtime_invoke(mEae, tm, NULL, NULL); } @catch (...) {} }
+            done++;
+        }
+        FLog([NSString stringWithFormat:@"%s: %d TuningManager'a yayin (eah+ead+eae)", who ?: "Tuning", done]);
+    } @catch (...) {}
+}
+
+static bool few1n_applyServerPlate(NSString *text) {
+    if (!text || text.length == 0) return false;
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* ptCls = few1n_classAnyImage("", "PlateTuner");
+    if (!ptCls) { FLog(@"OzelPlaka: PlateTuner sinifi yok"); return false; }
+    void* ptType = few1n_typeObjOf(ptCls);
+    void* mApply = i_class_get_method_from_name(ptCls, "Apply", 2);   // Apply(country, text)
+    if (!ptType || !mApply) { FLog(@"OzelPlaka: PlateTuner.Apply(2) yok"); return false; }
+    void* textStr = mkStr(text);
+    if (!textStr) return false;
+    // v114.59: PLAKA TIPI SABIT "eu1" (Avrupa). "eu" YANLISTI -> oyun tanimayip
+    // Rus'a dusuyordu. Dogru deger dump'tan bulundu: PlateDetail'de
+    //   [Header("rus2, rus3, rusj2, rusj3, us1, eu1")]
+    // yani country degeri BASE+VARYANT-NUMARASI formatinda. Avrupa'nin tek varyanti
+    // "eu1". (PlateUIElement: FinishedStage1(country) + FinishedStage22(int style) ->
+    // ikisi birlesip "eu"+"1"="eu1" oluyor.) Rus="rus2/rus3", ABD="us1".
+    void* euStr = mkStr(@"eu1");
+    if (!euStr) return false;
+
+    int applied = 0;
+    @try {
+        void* a[1] = { ptType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog(@"OzelPlaka: PlateTuner instance yok (garaj/tuning ekranini ac)"); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 64) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt)) continue;
+            if (!few1n_pvIsMineFor(pt)) continue;   // uzak oyuncunun plakasina dokunma
+            // v114.59: country = "eu1" -> tip HEP Avrupa (Rus/ABD degil).
+            void* args[2] = { euStr, textStr };
+            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+
+    if (applied == 0) { FLog(@"OzelPlaka: uygulanacak (benim) PlateTuner bulunamadi"); return false; }
+
+    few1n_broadcastTuning("OzelPlaka");
+    FLog([NSString stringWithFormat:@"OzelPlaka: '%@' %d araca uygulandi + yayinlandi", text, applied]);
+    return true;
+}
+
+// ============================================================================
+// v114.42: 3 YENI OZELLIK — hepsi IZOLE + @try korumali (mevcut kodu etkilemez).
+// Kaynak: dump.cs HR_PhotonHandler [PunRPC]'leri + PlayerManager.goy.
+// Calismasalar bile digerlerini BOZMAZ (bagimsiz fonksiyonlar, guard'li).
+// ============================================================================
+
+// Kendi arabamin PhotonView'i (IsMine==true olan)
+static void* few1n_myPhotonView(void) {
+    if (!g_photonViewType || g_isMineOff <= 0 || !g_mFindObjectsPlural || !i_runtime_invoke) return NULL;
+    @try {
+        void* a[1]; a[0] = g_photonViewType;
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return NULL;
+        int n = *(int*)((uintptr_t)arr + 0x18);
+        if (n < 1 || n > 512) return NULL;
+        void** pvs = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < n; i++) {
+            void* pv = pvs[i];
+            if (!unityAlive(pv)) continue;
+            if (*(unsigned char*)((uintptr_t)pv + g_isMineOff)) return pv;   // benim
+        }
+    } @catch (...) {}
+    return NULL;
+}
+
+// PhotonView.get_ViewID() -> int
+static int few1n_viewIDOf(void* pv) {
+    static void* mVID = NULL;
+    if (!pv || !i_runtime_invoke) return 0;
+    if (!mVID && i_class_get_method_from_name) {
+        void* cls = few1n_classAnyImage("Photon.Pun", "PhotonView");
+        if (!cls) cls = few1n_classAnyImage("", "PhotonView");
+        if (cls) mVID = i_class_get_method_from_name(cls, "get_ViewID", 0);
+    }
+    if (!mVID) return 0;
+    @try {
+        void* box = i_runtime_invoke(mVID, pv, NULL, NULL);
+        if (ptrOk(box)) return *(int*)((uintptr_t)box + 0x10);   // boxed int unbox
+    } @catch (...) {}
+    return 0;
+}
+
+// 1) RESMI PLAKA: PlayerManager.goy(int, ulke, metin) -> plaka SUNUCU profiline yazilir.
+// setServerPlate (tuner-broadcast) ile FARKLI: bu kalici + herkes spawn'da gorur.
+static bool few1n_officialPlate(NSString *country, NSString *text) {
+    if (!text || text.length == 0 || !i_runtime_invoke || !playerManagerGetInst || !i_class_get_method_from_name) return false;
+    void* pmCls = few1n_classAnyImage("", "PlayerManager");
+    if (!pmCls) { FLog(@"ResmiPlaka: PlayerManager sinifi yok"); return false; }
+    void* mGoy = i_class_get_method_from_name(pmCls, "goy", 3);   // UniTask<SpinPlateResponse> goy(int,string,string)
+    if (!mGoy) { FLog(@"ResmiPlaka: goy(3) yok"); return false; }
+    void* pm = playerManagerGetInst();
+    if (!ptrOk(pm)) { FLog(@"ResmiPlaka: PlayerManager instance yok"); return false; }
+    void* cStr = mkStr(country.length ? country : @"TR");
+    void* tStr = mkStr(text);
+    if (!cStr || !tStr) return false;
+    @try {
+        int price = 0;
+        void* args[3] = { &price, cStr, tStr };
+        i_runtime_invoke(mGoy, pm, args, NULL);   // UniTask -> fire & forget (istek sunucuya gider)
+        FLog([NSString stringWithFormat:@"🔰 ResmiPlaka: goy(0,'%@','%@') sunucuya gonderildi", country, text]);
+        return true;
+    } @catch (...) { FLog(@"ResmiPlaka: goy exception"); return false; }
+}
+
+// 1b) SUNUCU ISMI: PlayerManager.gow(string) = [UpdateNickname] -> isim SUNUCU
+// profiline yazilir -> odadaki herkes yeni ismini gorur (plaka gibi kesin karsida).
+static bool few1n_officialNickname(NSString *name) {
+    if (!name || name.length == 0 || !i_runtime_invoke || !playerManagerGetInst || !i_class_get_method_from_name) return false;
+    void* pmCls = few1n_classAnyImage("", "PlayerManager");
+    if (!pmCls) { FLog(@"SunucuIsmi: PlayerManager sinifi yok"); return false; }
+    void* mGow = i_class_get_method_from_name(pmCls, "gow", 1);   // UniTask<bool> gow(string)
+    if (!mGow) { FLog(@"SunucuIsmi: gow(1) yok"); return false; }
+    void* pm = playerManagerGetInst();
+    if (!ptrOk(pm)) { FLog(@"SunucuIsmi: PlayerManager instance yok"); return false; }
+    void* nStr = mkStr(name);
+    if (!nStr) return false;
+    @try {
+        void* args[1] = { nStr };
+        i_runtime_invoke(mGow, pm, args, NULL);   // UniTask -> fire & forget
+        FLog([NSString stringWithFormat:@"🏷️ SunucuIsmi: gow('%@') sunucuya gonderildi", name]);
+        return true;
+    } @catch (...) { FLog(@"SunucuIsmi: gow exception"); return false; }
+}
+
+// 2) ANINDA KAZAN: HR_PhotonHandler won-RPC'sini kendi viewID'mle tetikle.
+static bool few1n_instantWin(void) {
+    if (!g_hrPhotonHandlerTypeObj || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* inst = few1n_findByType(g_hrPhotonHandlerTypeObj);
+    if (!ptrOk(inst)) { FLog(@"AnindaKazan: HR_PhotonHandler instance yok (yarista dene)"); return false; }
+    void* cls = few1n_classAnyImage("", "HR_PhotonHandler");
+    if (!cls) return false;
+    void* pv = few1n_myPhotonView();
+    int vid = pv ? few1n_viewIDOf(pv) : 0;
+    @try {
+        // Once agli gonderici enz(PhotonView) — RpcTarget.All ile herkes + lokal
+        void* mEnz = i_class_get_method_from_name(cls, "enz", 1);
+        if (mEnz && ptrOk(pv)) {
+            void* a[1] = { pv };
+            i_runtime_invoke(mEnz, inst, a, NULL);
+            FLog([NSString stringWithFormat:@"🏆 AnindaKazan: enz(PhotonView) gonderildi (viewID=%d)", vid]);
+            return true;
+        }
+        // Yedek: lokal NetworkPlayerWonRPC(viewID)
+        void* mWon = i_class_get_method_from_name(cls, "NetworkPlayerWonRPC", 1);
+        if (mWon && vid > 0) {
+            void* a[1] = { &vid };
+            i_runtime_invoke(mWon, inst, a, NULL);
+            FLog([NSString stringWithFormat:@"🏆 AnindaKazan: NetworkPlayerWonRPC(%d) lokal tetiklendi", vid]);
+            return true;
+        }
+        FLog(@"AnindaKazan: enz/won metodu yok veya viewID alinamadi");
+    } @catch (...) { FLog(@"AnindaKazan: exception"); }
+    return false;
+}
+
+// 3) TRAFIK FIRLAT (DENEYSEL): onune trafik araci spawnla.
+// EnableTrafficvehicleRPC(int viewID, byte modelIndex, Vector3 position). Guard'li; tutmazsa no-op.
+static bool few1n_trafficStrike(void) {
+    if (!g_hrPhotonHandlerTypeObj || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    if (!unityAlive(g_rb)) { FLog(@"TrafikFirlat: once arabana bin"); return false; }
+    void* inst = few1n_findByType(g_hrPhotonHandlerTypeObj);
+    if (!ptrOk(inst)) { FLog(@"TrafikFirlat: HR_PhotonHandler yok"); return false; }
+    void* cls = few1n_classAnyImage("", "HR_PhotonHandler");
+    if (!cls) return false;
+    void* mEnable = i_class_get_method_from_name(cls, "EnableTrafficvehicleRPC", 3);
+    if (!mEnable) { FLog(@"TrafikFirlat: EnableTrafficvehicleRPC(3) yok"); return false; }
+    void* pv = few1n_myPhotonView();
+    int vid = pv ? few1n_viewIDOf(pv) : 0;
+    @try {
+        Vec3 pos = {0,0,0}; rbGetPosIl(g_rb, &pos);
+        Vec3 fwd; if (few1n_fwd(g_rb, &fwd)) { pos.x += fwd.x * 30.0f; pos.y += fwd.y * 30.0f; pos.z += fwd.z * 30.0f; }  // 30m ilerisi
+        unsigned char model = 0;
+        void* args[3] = { &vid, &model, &pos };
+        i_runtime_invoke(mEnable, inst, args, NULL);
+        FLog([NSString stringWithFormat:@"🚧 TrafikFirlat: EnableTrafficvehicleRPC(vid=%d, model=0) 30m ileriye gonderildi", vid]);
+        return true;
+    } @catch (...) { FLog(@"TrafikFirlat: exception"); return false; }
+}
+
+// v114.43: Generic Apply(int) tuner (hs) uygula + HERKESE yayinla.
+// Wheels/Tire gibi tuner'lar icin: benim aracimdaki tuner'a Apply(index), sonra broadcast.
+static bool few1n_applyTunerInt(const char* className, int index, const char* who) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("", className);
+    if (!cls) { FLog([NSString stringWithFormat:@"%s: sinif yok", who]); return false; }
+    void* tobj = few1n_typeObjOf(cls);
+    void* mApply = i_class_get_method_from_name(cls, "Apply", 1);   // Apply(int)
+    if (!tobj || !mApply) { FLog([NSString stringWithFormat:@"%s: Apply(1) yok", who]); return false; }
+    int applied = 0;
+    @try {
+        void* a[1] = { tobj };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog([NSString stringWithFormat:@"%s: tuner yok (garaj/arac ac)", who]); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 64) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* tn = items[i];
+            if (!unityAlive(tn) || !few1n_pvIsMineFor(tn)) continue;
+            void* args[1] = { &index };
+            @try { i_runtime_invoke(mApply, tn, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    if (applied == 0) { FLog([NSString stringWithFormat:@"%s: benim tuner bulunamadi", who]); return false; }
+    few1n_broadcastTuning(who);
+    FLog([NSString stringWithFormat:@"%s: index=%d %d tuner'a uygulandi + yayinlandi", who, index, applied]);
+    return true;
+}
+
+// ============================================================================
+// v114.45: HEDEF OYUNCUNUN ARABASINI SENIN TUNING'INLE DEGISTIR (herkeste)
+// PUN2 sahibi olmadigin view'e de RPC yollamana izin verir. Oyunun kendi
+// zincirini kullaniyoruz: eaj(benimTM)->benim TuningData; eac(hedefTM,data)->
+// hedefin currentData'sina yaz; eah(hedefTM,true)-> hedefin photonView'inden
+// LoadTuners RPC -> tum client'lar benim tuning'i hedefin arabasina uygular.
+// DENEYSEL: LoadTuners icin sahiplik kontrolu varsa oyun reddedebilir.
+// ============================================================================
+
+// actorNumber'a ait TuningManager'i bul (photonView.Owner.ActorNumber ile).
+static void* few1n_tuningManagerOfActor(int actor) {
+    if (actor <= 0 || !g_mFindObjectsPlural || !i_runtime_invoke || !mbp_getPhotonView
+        || g_pvOwnerOff <= 0 || !ply_getActorNumber) return NULL;
+    void* cls = few1n_classAnyImage("", "TuningManager");
+    if (!cls) return NULL;
+    void* tobj = few1n_typeObjOf(cls);
+    if (!tobj) return NULL;
+    @try {
+        void* a[1] = { tobj };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return NULL;
+        int n = few1n_rdI32(arr, 0x18, 0); if (n < 1 || n > 64) return NULL;   // v114.79: guvenli sayac
+        for (int i = 0; i < n; i++) {
+            void* tm = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*)); if (!unityAlive(tm)) continue;
+            void* pv = NULL; @try { pv = mbp_getPhotonView(tm); } @catch (...) {}
+            if (!ptrOk(pv)) continue;
+            void* owner = few1n_rdPtr(pv, (uintptr_t)g_pvOwnerOff);   // v114.79: offset drift = cokme yerine NULL
+            if (!ptrOk(owner) || !few1n_memOk(owner)) continue;
+            @try { if (ply_getActorNumber(owner) == actor) return tm; } @catch (...) {}
+        }
+    } @catch (...) {}
+    return NULL;
+}
+
+// Benim tuning'imi hedefin arabasina uygula + hedefin view'inden HERKESE yayinla.
+static bool few1n_copyTuningToTarget(int targetActor) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name || !g_mFindObjectsPlural) return false;
+    void* cls = few1n_classAnyImage("", "TuningManager");
+    if (!cls) { FLog(@"HedefTuning: TuningManager sinifi yok"); return false; }
+    void* mEaj = i_class_get_method_from_name(cls, "eaj", 0);
+    void* mEac = i_class_get_method_from_name(cls, "eac", 1);
+    void* mEah = i_class_get_method_from_name(cls, "eah", 1);
+    if (!mEaj || !mEac || !mEah) { FLog(@"HedefTuning: eaj/eac/eah yok"); return false; }
+    void* tobj = few1n_typeObjOf(cls);
+    // 1) benim TuningManager (IsMine)
+    void* myTM = NULL;
+    @try {
+        void* a[1] = { tobj };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (ptrOk(arr)) {
+            int n = *(int*)((uintptr_t)arr + 0x18);
+            void** el = (void**)((uintptr_t)arr + 0x20);
+            for (int i = 0; i < n && i < 64; i++) { void* tm = el[i]; if (unityAlive(tm) && few1n_pvIsMineFor(tm)) { myTM = tm; break; } }
+        }
+    } @catch (...) {}
+    if (!ptrOk(myTM)) { FLog(@"HedefTuning: benim TuningManager yok (araca bin/garaj)"); return false; }
+    // 2) benim tuning verim
+    void* myData = NULL;
+    @try { myData = i_runtime_invoke(mEaj, myTM, NULL, NULL); } @catch (...) {}
+    if (!ptrOk(myData)) { FLog(@"HedefTuning: benim TuningData alinamadi"); return false; }
+    // 3) hedefin TuningManager'i
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM)) { FLog([NSString stringWithFormat:@"HedefTuning: actor=%d TuningManager bulunamadi (hedef yarista/gorunur olmali)", targetActor]); return false; }
+    // 4) hedefin currentData = benim data; sonra hedefin view'inden yayinla
+    @try {
+        void* a1[1] = { myData };
+        i_runtime_invoke(mEac, tgtTM, a1, NULL);            // eac(myData)
+        unsigned char t = 1; void* a2[1] = { &t };
+        i_runtime_invoke(mEah, tgtTM, a2, NULL);            // eah(true) -> LoadTuners RPC
+        FLog([NSString stringWithFormat:@"🎭 HedefTuning: actor=%d arabasina benim tuning yayinlandi", targetActor]);
+        return true;
+    } @catch (...) { FLog(@"HedefTuning: eac/eah exception"); return false; }
+}
+
+// ============================================================================
+// v114.63: HEDEFIN PLAKASINI DEGISTIR (herkeste) — EN SAGLAM YOL.
+// Eski few1n_copyTuningToTarget eaj->eac->eah kullaniyordu; eah tuning'i _tuners'
+// tan yeniden kuruyor (hedefin kendi tuner'larindan), enjekte edilen currentData'yi
+// yok sayiyor -> hedefin kendi plakasi yayilıyordu (fail). Kendi plakam ise
+// PlateTuner.Apply + eah ile calisiyor. Bu yuzden ayni yolu HEDEFE uyguluyoruz:
+//   1) hedefin PlateTuner'ina plakami yaz (Apply)
+//   2) hedefin TuningManager'inda eah/ead/eae (eaj/eac YOK -> cokme yok)
+// -> hedefin photonView'inden LoadTuners RPC -> herkes hedefin arabasinda benim
+// plakami gorur. DENEYSEL: Photon sahiplik reddedebilir; tutmazsa da cokmez.
+// ============================================================================
+
+// Hedef oyuncunun (actorNumber) PlateTuner'ini bul (ustundeki PhotonView.Owner ile).
+static void* few1n_plateTunerOfActor(int actor) {
+    if (actor <= 0 || !g_mFindObjectsPlural || !i_runtime_invoke || !g_mGetCompInParent
+        || !g_photonViewType || g_pvOwnerOff <= 0 || !ply_getActorNumber) return NULL;
+    void* cls = few1n_classAnyImage("", "PlateTuner");
+    if (!cls) return NULL;
+    void* tobj = few1n_typeObjOf(cls);
+    if (!tobj) return NULL;
+    @try {
+        void* a[1] = { tobj };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return NULL;
+        int n = few1n_rdI32(arr, 0x18, 0); if (n < 1 || n > 128) return NULL;   // v114.79: guvenli sayac
+        for (int i = 0; i < n; i++) {
+            void* pt = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*)); if (!unityAlive(pt)) continue;
+            unsigned char inc = 1;
+            void* ga[2] = { g_photonViewType, &inc };
+            void* pv = NULL;
+            @try { pv = i_runtime_invoke(g_mGetCompInParent, pt, ga, NULL); } @catch (...) {}
+            if (!ptrOk(pv)) continue;
+            void* owner = few1n_rdPtr(pv, (uintptr_t)g_pvOwnerOff);   // v114.79: offset drift = cokme yerine NULL
+            if (!ptrOk(owner) || !few1n_memOk(owner)) continue;
+            @try { if (ply_getActorNumber(owner) == actor) return pt; } @catch (...) {}
+        }
+    } @catch (...) {}
+    return NULL;
+}
+
+static bool few1n_hijackPlateToTarget(int targetActor, NSString* text) {
+    strcpy(g_plateDiag, "baslamadi");
+    if (!text || text.length == 0 || !i_runtime_invoke || !i_class_get_method_from_name) { strcpy(g_plateDiag, "temel pointer/metin yok"); return false; }
+    // 1) hedefin PlateTuner'i + plakami Apply et
+    void* ptCls = few1n_classAnyImage("", "PlateTuner");
+    if (!ptCls) { strcpy(g_plateDiag, "PlateTuner sinifi yok"); FLog(@"HedefPlaka: PlateTuner sinifi yok"); return false; }
+    void* mApply = i_class_get_method_from_name(ptCls, "Apply", 2);
+    if (!mApply) { strcpy(g_plateDiag, "PlateTuner.Apply yok"); FLog(@"HedefPlaka: PlateTuner.Apply(2) yok"); return false; }
+    void* tgtPT = few1n_plateTunerOfActor(targetActor);
+    if (!ptrOk(tgtPT)) { strcpy(g_plateDiag, "hedef PlateTuner BULUNAMADI (arac gorunur degil?)"); FLog([NSString stringWithFormat:@"HedefPlaka: actor=%d PlateTuner yok", targetActor]); return false; }
+    void* euStr  = mkStr(@"eu1");
+    void* txtStr = mkStr(text);
+    if (!euStr || !txtStr) { strcpy(g_plateDiag, "string olusmadi"); return false; }
+    // v114.88: Apply BASKA oyuncunun component'inde -> ic null-deref segfault olabilir.
+    { bool crashed=false; void* args[2] = { euStr, txtStr };
+      few1n_guardedInvoke(mApply, tgtPT, args, &crashed);
+      if (crashed) { strcpy(g_plateDiag, "Apply SEGFAULT yakalandi"); FLog(@"HedefPlaka: Apply segfault -> iptal"); return false; } }
+    strcpy(g_plateDiag, "Apply OK, TM araniyor");
+    // 2) hedefin TuningManager'inda eah/ead/eae -> hedefin view'inden LoadTuners yayin
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM)) { strcpy(g_plateDiag, "Apply OK ama hedef TuningManager YOK"); FLog(@"HedefPlaka: hedef TuningManager yok"); return false; }
+    void* tmCls = few1n_classAnyImage("", "TuningManager");
+    void* mEah = tmCls ? i_class_get_method_from_name(tmCls, "eah", 1) : NULL;
+    void* mEad = tmCls ? i_class_get_method_from_name(tmCls, "ead", 0) : NULL;
+    void* mEae = tmCls ? i_class_get_method_from_name(tmCls, "eae", 0) : NULL;
+    // v114.65 PLAN B: eah() `if(photonView.IsMine)` ile korunuyor. Hedefin view'inde
+    // IsMine=false oldugu icin v114.63'te yayin ATLANDI (plaka lokal kaldi). Cozum:
+    // PhotonView.<IsMine>k__BackingField (dump: 0x68 = g_isMineOff) GECICI 1 yapilir ->
+    // get_IsMine() bu alani okur -> true doner -> eah LoadTuners RPC'sini hedefin
+    // view'inden yayinlar -> herkes hedefin arabasinda benim plakami gorur. Sonra geri alinir.
+    // v114.99: TAM SAHIPLIK SPOOF. Dump: IsMine sadece @0x68 backing; ama eah muhtemelen
+    // ownerActorNr(@0x88)/AmOwner'i kontrol ediyor -> tek IsMine-flip yayin yaptirmadi
+    // (lokal kaldi). Cozum: TUM sahiplik alanlarini GECICI bana ayarla, eah'i oyle cagir
+    // -> RPC("LoadTuners",All) GERCEKTEN gitsin. g_isMineOff'a GORE-goreli offset (drift'e dayanikli).
+    void* tgtPV = NULL;
+    if (mbp_getPhotonView) { @try { tgtPV = mbp_getPhotonView(tgtTM); } @catch (...) {} }
+    int myAN = 0; void* myLP = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+    if (myLP && ply_getActorNumber) { @try { myAN = ply_getActorNumber(myLP); } @catch (...) {} }
+    // v116.0: OWNERSHIP TRANSFER — sahiplik devri. Aracin PV OwnershipTransfer'i (@0x50 =
+    // g_isMineOff-0x18) Takeover(1)/Request(2) ise RequestOwnership() ile GERCEKTEN sahip
+    // olurum -> LoadTuners RPC mesru gider -> HERKESTE degisir. Fixed(0) ise imkansiz.
+    int owTrans = (ptrOk(tgtPV) && g_isMineOff > 0) ? few1n_rdI32(tgtPV, (uintptr_t)(g_isMineOff - 0x18), -1) : -1;
+    if (ptrOk(tgtPV) && owTrans != 0) {   // Fixed degilse sahiplik iste
+        void* pvcls = few1n_classAnyImage("Photon.Pun", "PhotonView");
+        if (!pvcls) pvcls = few1n_classAnyImage("", "PhotonView");
+        void* mReqOwn = pvcls ? i_class_get_method_from_name(pvcls, "RequestOwnership", 0) : NULL;
+        if (mReqOwn) { bool cr=false; few1n_guardedInvoke(mReqOwn, tgtPV, NULL, &cr); }
+    }
+    bool spoofed = false;
+    unsigned char sMine=0, sAmOwner=0; void *sCtrl=NULL, *sOwner=NULL; int sOwnerAN=0, sCtrlAN=0;
+    uintptr_t b = (uintptr_t)tgtPV; int oM = g_isMineOff;   // 0x68
+    // offsetler oM'e goreli: Controller +0x08, AmOwner +0x14, Owner +0x18, ownerActorNr +0x20, ctrlActorNr +0x24
+    if (ptrOk(tgtPV) && oM > 0 && myAN > 0
+        && few1n_memOk((void*)(b + oM)) && few1n_memOk((void*)(b + oM + 0x24))) {
+        @try {
+            sMine    = *(unsigned char*)(b + oM);
+            sCtrl    = *(void**)(b + oM + 0x08);
+            sAmOwner = *(unsigned char*)(b + oM + 0x14);
+            sOwner   = *(void**)(b + oM + 0x18);
+            sOwnerAN = *(int*)(b + oM + 0x20);
+            sCtrlAN  = *(int*)(b + oM + 0x24);
+            *(unsigned char*)(b + oM)        = 1;      // IsMine
+            *(void**)(b + oM + 0x08)         = myLP;   // Controller
+            *(unsigned char*)(b + oM + 0x14) = 1;      // AmOwner
+            *(void**)(b + oM + 0x18)         = myLP;   // Owner
+            *(int*)(b + oM + 0x20)           = myAN;   // ownerActorNr
+            *(int*)(b + oM + 0x24)           = myAN;   // controllerActorNr
+            spoofed = true;
+        } @catch (...) {}
+    }
+    // eah = oyunun kendi yayini (gecerli JSON -> alicida cokmez). Guard'li.
+    bool eahSent = false;
+    if (mEah) { bool cr=false; unsigned char t=1; void* a[1]={&t}; few1n_guardedInvoke(mEah, tgtTM, a, &cr); if (!cr) eahSent = true; }
+    if (mEad) { bool cr=false; few1n_guardedInvoke(mEad, tgtTM, NULL, &cr); }
+    if (mEae) { bool cr=false; few1n_guardedInvoke(mEae, tgtTM, NULL, &cr); }
+    // GERI AL (RPC zaten senkron gitti)
+    if (spoofed) { @try {
+        *(unsigned char*)(b + oM)        = sMine;
+        *(void**)(b + oM + 0x08)         = sCtrl;
+        *(unsigned char*)(b + oM + 0x14) = sAmOwner;
+        *(void**)(b + oM + 0x18)         = sOwner;
+        *(int*)(b + oM + 0x20)           = sOwnerAN;
+        *(int*)(b + oM + 0x24)           = sCtrlAN;
+    } @catch (...) {} }
+    const char* owTxt = (owTrans==0)?"Fixed(devir YOK)":(owTrans==1)?"Takeover(alinabilir!)":(owTrans==2)?"Request(istenebilir)":"?";
+    snprintf(g_plateDiag, sizeof(g_plateDiag), "SPOOF+OWN: eah=%s spoof=%s OwnershipTransfer=%s myAN=%d",
+        eahSent?"gonderildi":"YOK", spoofed?"evet":"HAYIR", owTxt, myAN);
+    FLog([NSString stringWithFormat:@"🎭 HedefPlaka: actor=%d '%@' uygulandi (spoof=%d eah=%d)", targetActor, text, spoofed, eahSent]);
+    return true;
+}
+
+// v114.71: BASKASININ PLAKASINI DEGISTIR — NON-OWNER RPC ENJEKSIYONU (kullanici fikri).
+// eah KULLANMAZ (kayit yan etkisi yok -> senin garaj aracin bozulmaz, kendi plakana
+// dokunmaz). Zipla/firlat'i calistiran ayni non-owner RPC yolu:
+//   1) hedefin PlateTuner'ina benim plakami uygula (tuner state degisir, lokal)
+//   2) hedefin tuning'ini dzz() ile JSON'a serialize et (benim plakam dahil, arac
+//      onun kalir -> sadece-plaka)
+//   3) JSON -> byte[] (Encoding.UTF8.GetBytes)
+//   4) hedefin arac PhotonView'inde RPC("LoadTuners", All, [byte[]]) enjekte et ->
+//      tum client'lar (hedef + herkes) hedefin arabasina uygular = plaka herkeste.
+__attribute__((unused))   // v114.88: hijackPlatePick artik eah yolunu (few1n_hijackPlateToTarget) kullaniyor
+static bool few1n_setTargetPlateNonOwner(int targetActor, NSString* text) {
+    if (!text || text.length == 0 || !i_runtime_invoke || !i_class_get_method_from_name || !i_array_new || !mbp_getPhotonView) return false;
+    // 1) hedefin PlateTuner'ina plakami uygula
+    void* ptCls = few1n_classAnyImage("", "PlateTuner");
+    void* mApply = ptCls ? i_class_get_method_from_name(ptCls, "Apply", 2) : NULL;
+    void* tgtPT = few1n_plateTunerOfActor(targetActor);
+    if (!ptCls || !mApply || !ptrOk(tgtPT)) { FLog(@"HedefPlaka2: PlateTuner/Apply yok (hedef gorunur olmali)"); return false; }
+    void* euStr = mkStr(@"eu1"); void* txtStr = mkStr(text);
+    if (!euStr || !txtStr) return false;
+    // v114.85: Apply BASKA oyuncunun component'inde calisir -> ic null-deref segfault
+    // yapabilir. GUARD altinda cagir: cokme yerine temiz cikis.
+    { bool crashed=false; void* a[2] = { euStr, txtStr };
+      few1n_guardedInvoke(mApply, tgtPT, a, &crashed);
+      if (crashed) { FLog(@"HedefPlaka2: Apply segfault yakalandi -> iptal (cokme onlendi)"); return false; } }
+    // 2) hedefin tuning'ini serialize et (dzz -> JSON string)
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM)) { FLog(@"HedefPlaka2: hedef TM yok"); return false; }
+    void* tmCls = few1n_classAnyImage("", "TuningManager");
+    void* mDzz = tmCls ? i_class_get_method_from_name(tmCls, "dzz", 0) : NULL;
+    if (!mDzz) { FLog(@"HedefPlaka2: dzz (serialize) yok"); return false; }
+    void* jsonStr = NULL;
+    { bool crashed=false; jsonStr = few1n_guardedInvoke(mDzz, tgtTM, NULL, &crashed);
+      if (crashed) { FLog(@"HedefPlaka2: dzz segfault yakalandi -> iptal"); return false; } }
+    if (!ptrOk(jsonStr)) { FLog(@"HedefPlaka2: serialize bos"); return false; }
+    // 3) JSON string -> byte[] (Encoding.UTF8.GetBytes)
+    void* encCls = few1n_classAnyImage("System.Text", "Encoding");
+    void* mUTF8 = encCls ? i_class_get_method_from_name(encCls, "get_UTF8", 0) : NULL;
+    void* mGetBytes = encCls ? i_class_get_method_from_name(encCls, "GetBytes", 1) : NULL;
+    if (!mUTF8 || !mGetBytes) { FLog(@"HedefPlaka2: UTF8.GetBytes yok"); return false; }
+    void* bytes = NULL;
+    @try {
+        void* utf8 = i_runtime_invoke(mUTF8, NULL, NULL, NULL);
+        if (!ptrOk(utf8)) return false;
+        void* ga[1] = { jsonStr };
+        bytes = i_runtime_invoke(mGetBytes, utf8, ga, NULL);
+    } @catch (...) {}
+    if (!ptrOk(bytes)) { FLog(@"HedefPlaka2: bytes olusmadi"); return false; }
+    // 4) hedefin view'inde RPC("LoadTuners", All, [bytes]) enjekte (non-owner)
+    void* carPV = NULL; @try { carPV = mbp_getPhotonView(tgtTM); } @catch (...) {}
+    if (!ptrOk(carPV)) { FLog(@"HedefPlaka2: hedef PV yok"); return false; }
+    void* objcls = few1n_classAnyImage("System", "Object");
+    void* pvcls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvcls) pvcls = few1n_classAnyImage("", "PhotonView");
+    if (!objcls || !pvcls) return false;
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC = few1n_methodBySig(pvcls, "Void", prm, 3, 0);
+    if (!mRPC) { FLog(@"HedefPlaka2: PhotonView.RPC yok"); return false; }
+    @try {
+        void* arr = i_array_new(objcls, 1);
+        if (!ptrOk(arr)) return false;
+        *(void**)((uintptr_t)arr + 0x20) = bytes;   // object[0] = byte[] (referans, box yok)
+        void* nameStr = mkStr(@"LoadTuners");
+        int all = 0;   // RpcTarget.All
+        void* args[3] = { nameStr, &all, arr };
+        // v114.85: RPC marshaling + hedef view segfault yapabilir -> GUARD altinda
+        bool crashed=false;
+        few1n_guardedInvoke(mRPC, carPV, args, &crashed);
+        if (crashed) { FLog(@"HedefPlaka2: RPC segfault yakalandi -> iptal (cokme onlendi)"); return false; }
+        FLog([NSString stringWithFormat:@"🎭 HedefPlaka2: LoadTuners non-owner enjekte actor=%d '%@'", targetActor, text]);
+        return true;
+    } @catch (...) { FLog(@"HedefPlaka2: RPC injection exception"); return false; }
+}
+
+// ============================================================================
+// v114.66: OYUNCUYU HERKESTE ZIPLAT/FIRLAT — hedefin aracini yukari isinla (networked).
+// Ayni "baskasina etki" prensibi: hedefin PhotonView'inde bir [PunRPC] tetiklemek.
+//   PRIMARY: HR_PhotonHandler.eod(Vector3, Player) — oyunun KENDI oyuncu-isinlama
+//            gonderici metodu (TeleportPlayerRPC'yi hedefe yollar). Value-type
+//            pointer olarak gecer, boxing gerekmez -> temiz + dusuk risk.
+//   PLAN B (injection): hedefin arac PhotonView'inde dogrudan
+//            RPC("TeleportCar_RPC", RpcTarget.All, [box(pos), box(rot)]) cagir.
+//            eah'in IsMine guard'ini VE sender-metot ihtiyacini baypas eder.
+// DENEYSEL: Photon sunucu sahibi-olmayan RPC'yi reddederse tutmaz.
+// ============================================================================
+// v114.68: CEKIRDEK — hedefi MUTLAK bir konuma ISINLA (networked). Tum "baskasina
+// etki" ozellikleri (zipla, cek, kaydet-isinla, mass, kilit) bunu kullanir.
+//   PRIMARY: HR_PhotonHandler.eod(Vector3, Player). PLAN B: hedefin arac
+//   PhotonView'inde RPC("TeleportCar_RPC", All, [box(dest), box(rot)]) injection.
+static bool few1n_teleportPlayerTo(void* targetPlayer, int targetActor, Vec3 dest) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name) return false;
+    // ---- PRIMARY: HR_PhotonHandler.eod(Vector3, Player) ----
+    if (targetPlayer && g_hrPhotonHandlerTypeObj) {
+        void* inst = few1n_findByType(g_hrPhotonHandlerTypeObj);
+        void* cls  = few1n_classAnyImage("", "HR_PhotonHandler");
+        void* mEod = cls ? i_class_get_method_from_name(cls, "eod", 2) : NULL;
+        if (ptrOk(inst) && mEod) {
+            @try {
+                void* args[2] = { &dest, targetPlayer };
+                i_runtime_invoke(mEod, inst, args, NULL);
+                FLog([NSString stringWithFormat:@"🎯 TP PRIMARY: eod(pos,player) actor=%d -> (%.0f,%.0f,%.0f)", targetActor, dest.x, dest.y, dest.z]);
+                return true;
+            } @catch (...) { FLog(@"TP: eod exception -> plan B"); }
+        }
+    }
+    // ---- PLAN B (injection): arac PhotonView'inde RPC("TeleportCar_RPC", All, [pos,rot]) ----
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM) || !i_value_box || !i_array_new || !mbp_getPhotonView) { FLog(@"TP: injection altyapisi/arac yok"); return false; }
+    void* carPV = NULL; @try { carPV = mbp_getPhotonView(tgtTM); } @catch (...) {}
+    if (!ptrOk(carPV)) { FLog(@"TP: hedef arac PhotonView yok"); return false; }
+    void* v3cls  = few1n_classAnyImage("UnityEngine", "Vector3");
+    void* qcls   = few1n_classAnyImage("UnityEngine", "Quaternion");
+    void* objcls = few1n_classAnyImage("System", "Object");
+    void* pvcls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvcls) pvcls = few1n_classAnyImage("", "PhotonView");
+    if (!v3cls || !objcls || !pvcls) { FLog(@"TP: injection sinif(lar) yok"); return false; }
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC = few1n_methodBySig(pvcls, "Void", prm, 3, 0);
+    if (!mRPC) { FLog(@"TP: PhotonView.RPC bulunamadi"); return false; }
+    @try {
+        void* boxPos = i_value_box(v3cls, &dest);
+        float quat[4] = {0,0,0,1};
+        void* boxRot = qcls ? i_value_box(qcls, quat) : NULL;
+        int nparam = boxRot ? 2 : 1;
+        void* arr = i_array_new(objcls, (unsigned long)nparam);
+        if (!ptrOk(arr) || !ptrOk(boxPos)) { FLog(@"TP: box/array olusmadi"); return false; }
+        *(void**)((uintptr_t)arr + 0x20) = boxPos;
+        if (boxRot) *(void**)((uintptr_t)arr + 0x28) = boxRot;
+        void* nameStr = mkStr(@"TeleportCar_RPC");
+        int all = 0;
+        void* args[3] = { nameStr, &all, arr };
+        i_runtime_invoke(mRPC, carPV, args, NULL);
+        FLog([NSString stringWithFormat:@"🎯 TP PLAN B: RPC injection actor=%d", targetActor]);
+        return true;
+    } @catch (...) { FLog(@"TP: injection exception"); return false; }
+}
+
+// Hedefin mevcut konumunu oku (TuningManager anchor). false = arac yok.
+static bool few1n_playerCarPos(int targetActor, Vec3* out) {
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM)) return false;
+    return few1n_objPos(tgtTM, out);
+}
+
+// Zipla/firlat: hedefin konumundan yukari (height) isinla.
+static bool few1n_launchPlayerNetworked(void* targetPlayer, int targetActor, float height) {
+    Vec3 pos;
+    if (!few1n_playerCarPos(targetActor, &pos)) { FLog([NSString stringWithFormat:@"Zipla: actor=%d arac yok (yarista/gorunur olmali)", targetActor]); return false; }
+    Vec3 dest = { pos.x, pos.y + height, pos.z };
+    return few1n_teleportPlayerTo(targetPlayer, targetActor, dest);
+}
+
+// ActorNumber -> Player pointer (kilit tick'i icin taze pointer).
+static void* few1n_playerByActor(int actor) {
+    if (actor <= 0 || !pn_getPlayerList || !ply_getActorNumber) return NULL;
+    @try {
+        void* pa = pn_getPlayerList();
+        if (!ptrOk(pa)) return NULL;
+        int cnt = few1n_rdI32(pa, 0x18, 0);   // v114.79: guvenli sayac
+        if (cnt <= 0 || cnt > 64) return NULL;
+        for (int i = 0; i < cnt; i++) {
+            void* p = few1n_rdPtr(pa, 0x20 + (uintptr_t)i * sizeof(void*));   // v114.79: guvenli eleman
+            if (ptrOk(p) && few1n_memOk(p) && ply_getActorNumber(p) == actor) return p;
+        }
+    } @catch (...) {}
+    return NULL;
+}
+
+// Benim aracimin dunya konumu.
+static bool few1n_myCarPos(Vec3* out) {
+    if (!unityAlive(g_rb)) { @try { few1n_findMyCarPhoton(); } @catch (...) {} }
+    if (unityAlive(g_rb)) return few1n_objPos(g_rb, out);
+    return false;
+}
+
+// v114.95: BASKASININ ISMINI DEGISTIR (herkeste) — NON-OWNER Photon aktor-property.
+// Isim, Player.NickName = ActorProperties.PlayerName (byte key 255) property'sinde.
+// player.SetCustomProperties({255: yeniIsim}) -> OpSetPropertiesOfActor(hedefActor)
+// -> Photon sunucu relay -> tum client'larda o oyuncunun ismi degisir. Photon cogu
+// zaman baska aktorun property'sini set etmeye izin verir (sahiplik yok) -> plakadan
+// daha umutlu. DENEYSEL: sunucu 'check user'/property kisiti varsa tutmaz.
+static bool few1n_setTargetNameNonOwner(int targetActor, NSString* name) {
+    strcpy(g_plateDiag, "isim: baslamadi");
+    if (!name || name.length == 0 || !i_runtime_invoke || !i_class_get_method_from_name) { strcpy(g_plateDiag,"isim: temel yok"); return false; }
+    void* p = few1n_playerByActor(targetActor);
+    if (!ptrOk(p)) { strcpy(g_plateDiag,"isim: hedef Player bulunamadi"); return false; }
+    void* plyCls = few1n_classAnyImage("Photon.Realtime", "Player");
+    if (!plyCls) plyCls = few1n_classAnyImage("", "Player");
+    void* mSet = plyCls ? i_class_get_method_from_name(plyCls, "SetCustomProperties", 3) : NULL;
+    if (!mSet) { strcpy(g_plateDiag,"isim: SetCustomProperties yok"); return false; }
+    if (!g_hashtableClass || !g_mHashtableCtor || !g_mHashtableSetItem || !i_object_new || !i_value_box) { strcpy(g_plateDiag,"isim: hashtable altyapi yok"); return false; }
+    void* byteCls = few1n_classAnyImage("System", "Byte");
+    if (!byteCls) { strcpy(g_plateDiag,"isim: Byte class yok"); return false; }
+    void* ht = i_object_new(g_hashtableClass);
+    if (!ht) { strcpy(g_plateDiag,"isim: hashtable new yok"); return false; }
+    @try { i_runtime_invoke(g_mHashtableCtor, ht, NULL, NULL); } @catch (...) { strcpy(g_plateDiag,"isim: ctor hata"); return false; }
+    unsigned char keyByte = 255;   // ActorProperties.PlayerName
+    void* boxedKey = i_value_box(byteCls, &keyByte);
+    void* valStr = mkStr(name);
+    if (!boxedKey || !valStr) { strcpy(g_plateDiag,"isim: key/val olusmadi"); return false; }
+    @try { void* a[2] = { boxedKey, valStr }; i_runtime_invoke(g_mHashtableSetItem, ht, a, NULL); } @catch (...) { strcpy(g_plateDiag,"isim: hashtable set hata"); return false; }
+    // hedef Player uzerinde SetCustomProperties(ht, null, null) -> guard
+    { bool cr=false; void* args[3] = { ht, NULL, NULL }; few1n_guardedInvoke(mSet, p, args, &cr);
+      if (cr) { strcpy(g_plateDiag,"isim: SetCustomProperties SEGFAULT"); return false; } }
+    // lokal gorunum icin set_NickName (hedefte) da yaz
+    void* mSetNick = i_class_get_method_from_name(plyCls, "set_NickName", 1);
+    if (mSetNick) { bool c2=false; void* na[1]={valStr}; few1n_guardedInvoke(mSetNick, p, na, &c2); }
+    strcpy(g_plateDiag, "isim: SetCustomProperties(255) gonderildi");
+    FLog([NSString stringWithFormat:@"🏷️ HedefIsim: actor=%d -> '%@' (property 255)", targetActor, name]);
+    return true;
+}
+
+// v115.0: GENEL Photon property enjektoru — hedef Player'da SetCustomProperties({key:val}).
+// numericKey=true -> key byte box'lanir (255=isim gibi well-known); false -> string custom key.
+static bool few1n_setTargetPropNonOwner(int targetActor, NSString* keyStr, bool numericKey, NSString* val) {
+    strcpy(g_plateDiag, "prop: baslamadi");
+    if (!keyStr || keyStr.length==0 || !val || !i_runtime_invoke || !i_class_get_method_from_name) { strcpy(g_plateDiag,"prop: temel yok"); return false; }
+    void* p = few1n_playerByActor(targetActor);
+    if (!ptrOk(p)) { strcpy(g_plateDiag,"prop: hedef Player yok"); return false; }
+    void* plyCls = few1n_classAnyImage("Photon.Realtime", "Player");
+    if (!plyCls) plyCls = few1n_classAnyImage("", "Player");
+    void* mSet = plyCls ? i_class_get_method_from_name(plyCls, "SetCustomProperties", 3) : NULL;
+    if (!mSet) { strcpy(g_plateDiag,"prop: SetCustomProperties yok"); return false; }
+    if (!g_hashtableClass || !g_mHashtableCtor || !g_mHashtableSetItem || !i_object_new) { strcpy(g_plateDiag,"prop: hashtable yok"); return false; }
+    void* ht = i_object_new(g_hashtableClass);
+    if (!ht) { strcpy(g_plateDiag,"prop: ht new yok"); return false; }
+    @try { i_runtime_invoke(g_mHashtableCtor, ht, NULL, NULL); } @catch (...) { strcpy(g_plateDiag,"prop: ctor hata"); return false; }
+    void* keyObj = NULL;
+    if (numericKey) {
+        void* byteCls = few1n_classAnyImage("System", "Byte");
+        if (!byteCls || !i_value_box) { strcpy(g_plateDiag,"prop: Byte/box yok"); return false; }
+        unsigned char kb = (unsigned char)keyStr.intValue;
+        keyObj = i_value_box(byteCls, &kb);
+    } else {
+        keyObj = mkStr(keyStr);
+    }
+    void* valStr = mkStr(val);
+    if (!keyObj || !valStr) { strcpy(g_plateDiag,"prop: key/val olusmadi"); return false; }
+    @try { void* a[2] = { keyObj, valStr }; i_runtime_invoke(g_mHashtableSetItem, ht, a, NULL); } @catch(...) { strcpy(g_plateDiag,"prop: set hata"); return false; }
+    { bool cr=false; void* args[3] = { ht, NULL, NULL }; few1n_guardedInvoke(mSet, p, args, &cr);
+      if (cr) { strcpy(g_plateDiag,"prop: SetCustomProperties SEGFAULT"); return false; } }
+    snprintf(g_plateDiag, sizeof(g_plateDiag), "prop: key=%s(%s) gonderildi", keyStr.UTF8String, numericKey?"num":"str");
+    FLog([NSString stringWithFormat:@"🧬 HedefProp: actor=%d key=%@ val=%@", targetActor, keyStr, val]);
+    return true;
+}
+
+// Kaydedilen grief konumu + "surekli firlat" kilit hedefi (oturumluk).
+static Vec3 g_griefSavedPos = {0,0,0};
+static bool g_griefSavedValid = false;
+static int  g_lockLaunchActor = -1;   // -1 = kapali
+static int  g_lockLaunchFrame = 0;
+
+// Her ~0.5sn'de kilitli hedefi tekrar firlat (tick'ten cagrilir).
+static void few1n_lockLaunchTick(void) {
+    if (g_lockLaunchActor <= 0) return;
+    if (!pn_getInRoom || !pn_getInRoom()) { g_lockLaunchActor = -1; return; }
+    if (++g_lockLaunchFrame < 30) return;   // ~0.5sn (60fps)
+    g_lockLaunchFrame = 0;
+    @try {
+        void* p = few1n_playerByActor(g_lockLaunchActor);
+        if (p) few1n_launchPlayerNetworked(p, g_lockLaunchActor, 45.0f);
+        else   g_lockLaunchActor = -1;   // oyuncu ciktı -> kilidi birak
+    } @catch (...) {}
+}
+
+// v114.92: DONDUR/KILITLE — hedefi yakalanan konumda tutar (surekli ayni noktaya
+// isinlar -> hareket edemez). ~0.3sn'de bir tick'ten cagrilir.
+static int  g_freezeActor = -1;
+static Vec3 g_freezePos = {0,0,0};
+static int  g_freezeFrame = 0;
+static void few1n_freezeTick(void) {
+    if (g_freezeActor <= 0) return;
+    if (!pn_getInRoom || !pn_getInRoom()) { g_freezeActor = -1; return; }
+    if (++g_freezeFrame < 18) return;   // ~0.3sn (60fps) -> siki kilit
+    g_freezeFrame = 0;
+    @try {
+        void* p = few1n_playerByActor(g_freezeActor);
+        if (p) few1n_teleportPlayerTo(p, g_freezeActor, g_freezePos);
+        else   g_freezeActor = -1;   // oyuncu ciktı -> birak
+    } @catch (...) {}
+}
+
+// v114.93: OTO-TAKIP — hedefi surekli SENIN yanina ceker (pesinden gelir).
+static int  g_followActor = -1;
+static int  g_followFrame = 0;
+static void few1n_followTick(void) {
+    if (g_followActor <= 0) return;
+    if (!pn_getInRoom || !pn_getInRoom()) { g_followActor = -1; return; }
+    if (++g_followFrame < 24) return;   // ~0.4sn
+    g_followFrame = 0;
+    @try {
+        Vec3 my; if (!few1n_myCarPos(&my)) return;
+        void* p = few1n_playerByActor(g_followActor);
+        if (p) { my.y += 2.0f; my.x += 3.0f; few1n_teleportPlayerTo(p, g_followActor, my); }
+        else   g_followActor = -1;   // oyuncu ciktı -> birak
+    } @catch (...) {}
+}
+
+// v114.94: HERKESI DONDUR — tum odayi yakalanan konumlarda kilitler.
+#define FEW1N_MAXFREEZE 32
+static bool g_massFreezeOn = false;
+static int  g_massFreezeCount = 0;
+static int  g_massFreezeActors[FEW1N_MAXFREEZE];
+static Vec3 g_massFreezePos[FEW1N_MAXFREEZE];
+static int  g_massFreezeFrame = 0;
+static void few1n_massFreezeTick(void) {
+    if (!g_massFreezeOn) return;
+    if (!pn_getInRoom || !pn_getInRoom()) { g_massFreezeOn = false; return; }
+    if (++g_massFreezeFrame < 18) return;   // ~0.3sn
+    g_massFreezeFrame = 0;
+    @try {
+        for (int i = 0; i < g_massFreezeCount && i < FEW1N_MAXFREEZE; i++) {
+            int actor = g_massFreezeActors[i]; if (actor <= 0) continue;
+            void* p = few1n_playerByActor(actor);
+            if (p) few1n_teleportPlayerTo(p, actor, g_massFreezePos[i]);
+        }
+    } @catch (...) {}
+}
+
+// v114.94: FIRLATIP-GETIR (yo-yo) — hedefi sirayla yukari firlat / yanina getir.
+static int  g_yoyoActor = -1;
+static int  g_yoyoFrame = 0;
+static bool g_yoyoUp = true;
+static void few1n_yoyoTick(void) {
+    if (g_yoyoActor <= 0) return;
+    if (!pn_getInRoom || !pn_getInRoom()) { g_yoyoActor = -1; return; }
+    if (++g_yoyoFrame < 24) return;   // ~0.4sn
+    g_yoyoFrame = 0;
+    @try {
+        void* p = few1n_playerByActor(g_yoyoActor);
+        if (!p) { g_yoyoActor = -1; return; }
+        if (g_yoyoUp) { few1n_launchPlayerNetworked(p, g_yoyoActor, 80.0f); }        // yukari firlat
+        else { Vec3 my; if (few1n_myCarPos(&my)) { my.y += 2.0f; few1n_teleportPlayerTo(p, g_yoyoActor, my); } }  // yanina getir
+        g_yoyoUp = !g_yoyoUp;
+    } @catch (...) {}
+}
+
+// Zorla kazandir: hedefin PhotonView'inde enz() (NetworkPlayerWonRPC gonderici).
+static bool few1n_forceWinTarget(int targetActor) {
+    if (!g_hrPhotonHandlerTypeObj || !i_runtime_invoke || !i_class_get_method_from_name || !mbp_getPhotonView) return false;
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM)) { FLog(@"Kazandir: hedef arac yok"); return false; }
+    void* tgtPV = NULL; @try { tgtPV = mbp_getPhotonView(tgtTM); } @catch (...) {}
+    if (!ptrOk(tgtPV)) { FLog(@"Kazandir: hedef PhotonView yok"); return false; }
+    void* inst = few1n_findByType(g_hrPhotonHandlerTypeObj);
+    void* cls  = few1n_classAnyImage("", "HR_PhotonHandler");
+    void* mEnz = cls ? i_class_get_method_from_name(cls, "enz", 1) : NULL;
+    if (!ptrOk(inst) || !mEnz) { FLog(@"Kazandir: enz yok"); return false; }
+    @try { void* a[1] = { tgtPV }; i_runtime_invoke(mEnz, inst, a, NULL);
+           FLog([NSString stringWithFormat:@"🏁 Kazandir: enz(hedefPV) actor=%d", targetActor]); return true; }
+    @catch (...) { FLog(@"Kazandir: enz exception"); return false; }
+}
+
+// v114.69: Benim TuningManager'im (IsMine).
+static void* few1n_myTuningManager(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke) return NULL;
+    void* cls = few1n_classAnyImage("", "TuningManager");
+    if (!cls) return NULL;
+    void* tobj = few1n_typeObjOf(cls);
+    if (!tobj) return NULL;
+    @try {
+        void* a[1] = { tobj };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return NULL;
+        int n = *(int*)((uintptr_t)arr + 0x18);
+        void** el = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < n && i < 64; i++) { void* tm = el[i]; if (unityAlive(tm) && few1n_pvIsMineFor(tm)) return tm; }
+    } @catch (...) {}
+    return NULL;
+}
+
+// v114.69: ARACINI HEDEFE KOPYALA (herkeste). Kullanici plaka hijack'inde farketti:
+// eah yayini TUM tuning'i tasidigi icin hedefin araci SENINKININ klonu oluyor.
+// Bunu ozellik yapiyoruz: benim currentData'mi hedefin TM'ine DOGRUDAN yaz (eac
+// cagirmaz -> cokme yok), IsMine-flip + eah -> hedefin araci = benim aracim (plaka
+// + renk + jant + lastik). currentData offset 0x40 (dump dogrulandi).
+static bool few1n_copyMyCarToTarget(int targetActor) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name || !mbp_getPhotonView || g_isMineOff <= 0) return false;
+    void* myTM = few1n_myTuningManager();
+    if (!ptrOk(myTM)) { FLog(@"AracKopya: benim TuningManager yok (araca bin)"); return false; }
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM)) { FLog(@"AracKopya: hedef TuningManager yok"); return false; }
+    void* myData = *(void**)((uintptr_t)myTM + 0x40);   // currentData
+    if (!ptrOk(myData)) { FLog(@"AracKopya: benim currentData bos (garajda tuning yap)"); return false; }
+    void* tmCls = few1n_classAnyImage("", "TuningManager");
+    void* mEah = tmCls ? i_class_get_method_from_name(tmCls, "eah", 1) : NULL;
+    void* mEad = tmCls ? i_class_get_method_from_name(tmCls, "ead", 0) : NULL;
+    void* mEae = tmCls ? i_class_get_method_from_name(tmCls, "eae", 0) : NULL;
+    @try { *(void**)((uintptr_t)tgtTM + 0x40) = myData; } @catch (...) { return false; }   // hedef currentData = benim
+    void* tgtPV = NULL; unsigned char saved = 0; bool flipped = false;
+    @try { tgtPV = mbp_getPhotonView(tgtTM); } @catch (...) {}
+    if (ptrOk(tgtPV)) { saved = *(unsigned char*)((uintptr_t)tgtPV + g_isMineOff); *(unsigned char*)((uintptr_t)tgtPV + g_isMineOff) = 1; flipped = true; }
+    if (mEah) { @try { unsigned char t=1; void* a[1]={&t}; i_runtime_invoke(mEah, tgtTM, a, NULL); } @catch (...) {} }
+    if (mEad) { @try { i_runtime_invoke(mEad, tgtTM, NULL, NULL); } @catch (...) {} }
+    if (mEae) { @try { i_runtime_invoke(mEae, tgtTM, NULL, NULL); } @catch (...) {} }
+    if (flipped) *(unsigned char*)((uintptr_t)tgtPV + g_isMineOff) = saved;
+    FLog([NSString stringWithFormat:@"🚗 AracKopya: actor=%d arabasi benim aracima kopyalandi (flip=%d)", targetActor, flipped]);
+    return true;
+}
+
+// v114.70: HEDEFIN ARACINI KENDINE KLONLA (onun arabasi sende olsun, herkeste).
+// copyMyCarToTarget'in TERSI: hedefin currentData'sini BENIM TM'ime yaz + eah.
+// Benim TM'de IsMine zaten true -> flip GEREKMEZ (kendi aracim, normal yayin).
+static bool few1n_cloneTargetCarToMe(int targetActor) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM)) { FLog(@"AracCal: hedef TuningManager yok"); return false; }
+    void* myTM = few1n_myTuningManager();
+    if (!ptrOk(myTM)) { FLog(@"AracCal: benim TuningManager yok (araca bin)"); return false; }
+    void* theirData = *(void**)((uintptr_t)tgtTM + 0x40);   // hedefin currentData
+    if (!ptrOk(theirData)) { FLog(@"AracCal: hedef currentData bos (hedef gorunur/tuning'li olmali)"); return false; }
+    void* tmCls = few1n_classAnyImage("", "TuningManager");
+    void* mEah = tmCls ? i_class_get_method_from_name(tmCls, "eah", 1) : NULL;
+    void* mEad = tmCls ? i_class_get_method_from_name(tmCls, "ead", 0) : NULL;
+    void* mEae = tmCls ? i_class_get_method_from_name(tmCls, "eae", 0) : NULL;
+    @try { *(void**)((uintptr_t)myTM + 0x40) = theirData; } @catch (...) { return false; }   // benim currentData = onunki
+    if (mEah) { @try { unsigned char t=1; void* a[1]={&t}; i_runtime_invoke(mEah, myTM, a, NULL); } @catch (...) {} }
+    if (mEad) { @try { i_runtime_invoke(mEad, myTM, NULL, NULL); } @catch (...) {} }
+    if (mEae) { @try { i_runtime_invoke(mEae, myTM, NULL, NULL); } @catch (...) {} }
+    FLog([NSString stringWithFormat:@"🎭 AracCal: actor=%d arabasi BENIM aracima klonlandi", targetActor]);
+    return true;
+}
+
+// v114.69: Oyuncuya HIZ PATLAMASI = araci ILERI firlat (transform.forward * dist).
+static bool few1n_flingForward(void* targetPlayer, int targetActor, float dist) {
+    void* tgtTM = few1n_tuningManagerOfActor(targetActor);
+    if (!ptrOk(tgtTM)) { FLog(@"Hiz: hedef arac yok"); return false; }
+    Vec3 pos, fwd;
+    if (!few1n_objPos(tgtTM, &pos)) return false;
+    if (!few1n_fwd(tgtTM, &fwd)) { fwd = (Vec3){0,0,1}; }
+    Vec3 dest = { pos.x + fwd.x*dist, pos.y + fwd.y*dist + 3.0f, pos.z + fwd.z*dist };
+    return few1n_teleportPlayerTo(targetPlayer, targetActor, dest);
+}
+
+// ===== v114.29: OZEL RENK — HERKESTE GORUNUR =====
+// PaintTuner : MonoBehaviour, hs — plaka ile AYNI tuning yolunu kullanir, yani
+// TuningManager RPC'siyle herkese yayilir. PaintTuner.Apply(Color, int type)
+// obfuscate degil. Color = UnityEngine.Color {float r,g,b,a} = mod'daki Color4.
+// SADECE benim aracima uygulanir (PhotonView.IsMine).
+static bool few1n_applyServerColor(float r, float g, float b) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* ptCls = few1n_classAnyImage("", "PaintTuner");
+    if (!ptCls) { FLog(@"OzelRenk: PaintTuner sinifi yok"); return false; }
+    void* ptType = few1n_typeObjOf(ptCls);
+    void* mApply = i_class_get_method_from_name(ptCls, "Apply", 2);   // Apply(Color, int)
+    if (!ptType || !mApply) { FLog(@"OzelRenk: PaintTuner.Apply(Color,int) yok"); return false; }
+    Color4 col = { r, g, b, 1.0f };
+    int type = 0;   // varsayilan boya tipi (gloss)
+    int applied = 0;
+    @try {
+        void* a[1] = { ptType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog(@"OzelRenk: PaintTuner instance yok (garaj/tuning ekranini ac)"); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 64) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
+            void* args[2] = { &col, &type };
+            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    if (applied == 0) { FLog(@"OzelRenk: benim PaintTuner bulunamadi"); return false; }
+    few1n_broadcastTuning("OzelRenk");
+    FLog([NSString stringWithFormat:@"OzelRenk: rgb(%.2f,%.2f,%.2f) %d araca uygulandi + yayinlandi", r, g, b, applied]);
+    return true;
+}
+
+// ===== v114.32: JANT / KROM / CAM — HERKESTE (ayni tuning yayin yolu) =====
+// Hepsi hs tuner'i; farkli Apply imzalari var. Ortak kalip: benim (IsMine)
+// instance'lari bul, Apply cagir, few1n_broadcastTuning ile yayinla.
+
+// Jant rengi: DiskPaintTuner.Apply(Color, Color, int) — iki renk (ic/dis) + tip.
+static bool few1n_applyRimColor(float r, float g, float b) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* cls = few1n_classAnyImage("", "DiskPaintTuner");
+    if (!cls) { FLog(@"Jant: DiskPaintTuner sinifi yok"); return false; }
+    void* type = few1n_typeObjOf(cls);
+    void* mApply = i_class_get_method_from_name(cls, "Apply", 3);   // Apply(Color,Color,int)
+    if (!type || !mApply) { FLog(@"Jant: DiskPaintTuner.Apply(3) yok"); return false; }
+    Color4 col = { r, g, b, 1.0f };
+    int t = 0; int applied = 0;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog(@"Jant: instance yok (garaj/tuning ac)"); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 64) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
+            void* args[3] = { &col, &col, &t };
+            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    if (applied == 0) { FLog(@"Jant: benim DiskPaintTuner yok"); return false; }
+    few1n_broadcastTuning("Jant");
+    FLog([NSString stringWithFormat:@"Jant rengi rgb(%.2f,%.2f,%.2f) %d araca + yayinlandi", r, g, b, applied]);
+    return true;
+}
+
+// Krom: ChromeTuner.Apply(bool on).
+static bool few1n_setChrome(bool on) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* cls = few1n_classAnyImage("", "ChromeTuner");
+    if (!cls) { FLog(@"Krom: ChromeTuner sinifi yok"); return false; }
+    void* type = few1n_typeObjOf(cls);
+    void* mApply = i_class_get_method_from_name(cls, "Apply", 1);   // Apply(bool)
+    if (!type || !mApply) { FLog(@"Krom: ChromeTuner.Apply(1) yok"); return false; }
+    unsigned char b = on ? 1 : 0; int applied = 0;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog(@"Krom: instance yok (garaj/tuning ac)"); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 64) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
+            void* args[1] = { &b };
+            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    if (applied == 0) { FLog(@"Krom: benim ChromeTuner yok"); return false; }
+    few1n_broadcastTuning("Krom");
+    FLog([NSString stringWithFormat:@"Krom %@ %d araca + yayinlandi", on ? @"ACIK" : @"KAPALI", applied]);
+    return true;
+}
+
+// Cam koyulugu: GlassTuner.Apply(float value) — 0=seffaf, 1=koyu.
+static bool few1n_setGlass(float value) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* cls = few1n_classAnyImage("", "GlassTuner");
+    if (!cls) { FLog(@"Cam: GlassTuner sinifi yok"); return false; }
+    void* type = few1n_typeObjOf(cls);
+    void* mApply = i_class_get_method_from_name(cls, "Apply", 1);   // Apply(float)
+    if (!type || !mApply) { FLog(@"Cam: GlassTuner.Apply(1) yok"); return false; }
+    float v = value; int applied = 0;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog(@"Cam: instance yok (garaj/tuning ac)"); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 64) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
+            void* args[1] = { &v };
+            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    if (applied == 0) { FLog(@"Cam: benim GlassTuner yok"); return false; }
+    few1n_broadcastTuning("Cam");
+    FLog([NSString stringWithFormat:@"Cam koyulugu %.2f %d araca + yayinlandi", value, applied]);
+    return true;
+}
+
+// ===== v114.33: STANCE/KAMBER + GOVDE PARCA + BITIS TELEPORT =====
+
+// Stance: WheelbaseTuner.Apply(10 float) — fCamber,rCamber,fDist,rDist,fOfs,rOfs,
+// fWid,rWid,fRad,rRad. Nötr = camber 0, dist/ofs 0, wid/rad 1. Tuner -> yayilir.
+static bool few1n_applyStance(float camber, float offset, float width, float radius) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* cls = few1n_classAnyImage("", "WheelbaseTuner");
+    if (!cls) { FLog(@"Stance: WheelbaseTuner sinifi yok"); return false; }
+    void* type = few1n_typeObjOf(cls);
+    void* mApply = i_class_get_method_from_name(cls, "Apply", 10);
+    if (!type || !mApply) { FLog(@"Stance: WheelbaseTuner.Apply(10) yok"); return false; }
+    float fCamber=camber, rCamber=camber, fDist=0, rDist=0, fOfs=offset, rOfs=offset,
+          fWid=width, rWid=width, fRad=radius, rRad=radius;
+    int applied = 0;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog(@"Stance: instance yok (garaj/tuning ac)"); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 64) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
+            void* args[10] = { &fCamber,&rCamber,&fDist,&rDist,&fOfs,&rOfs,&fWid,&rWid,&fRad,&rRad };
+            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    if (applied == 0) { FLog(@"Stance: benim WheelbaseTuner yok"); return false; }
+    few1n_broadcastTuning("Stance");
+    FLog([NSString stringWithFormat:@"Stance camber=%.0f ofs=%.2f wid=%.2f rad=%.2f %d araca + yayin", camber, offset, width, radius, applied]);
+    return true;
+}
+
+// Govde parca: PartTuner.Apply(int partIndex, bool isAsync). Index tabanli (aralik
+// bilinmiyor) -> kullanici secer. Tuner -> yayilir.
+static bool few1n_applyBodyPart(int partIndex) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* cls = few1n_classAnyImage("", "PartTuner");
+    if (!cls) { FLog(@"Parca: PartTuner sinifi yok"); return false; }
+    void* type = few1n_typeObjOf(cls);
+    void* mApply = i_class_get_method_from_name(cls, "Apply", 2);   // Apply(int, bool)
+    if (!type || !mApply) { FLog(@"Parca: PartTuner.Apply(2) yok"); return false; }
+    int idx = partIndex; unsigned char async = 0; int applied = 0;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog(@"Parca: instance yok (garaj/tuning ac)"); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 64) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
+            void* args[2] = { &idx, &async };
+            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    if (applied == 0) { FLog(@"Parca: benim PartTuner yok"); return false; }
+    few1n_broadcastTuning("Parca");
+    FLog([NSString stringWithFormat:@"Govde parca index=%d %d araca + yayin", partIndex, applied]);
+    return true;
+}
+
+// Bitis teleport (deneysel): HR_MultiplayerTeleport.eni() — parametresiz.
+static bool few1n_finishTeleport(void) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* cls = few1n_classAnyImage("", "HR_MultiplayerTeleport");
+    if (!cls) { FLog(@"Bitis: HR_MultiplayerTeleport sinifi yok"); return false; }
+    void* type = few1n_typeObjOf(cls);
+    void* mEni = i_class_get_method_from_name(cls, "eni", 0);
+    if (!type || !mEni) { FLog(@"Bitis: eni() yok"); return false; }
+    int called = 0;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) { FLog(@"Bitis: instance yok"); return false; }
+        int cnt = *(int*)((uintptr_t)arr + 0x18);
+        if (cnt < 1 || cnt > 16) return false;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            if (!unityAlive(items[i])) continue;
+            @try { i_runtime_invoke(mEni, items[i], NULL, NULL); called++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    FLog([NSString stringWithFormat:@"Bitis teleport eni() %d cagri", called]);
+    return called > 0;
+}
+
+// ===== v114.28: NOS SUPER GUC =====
+// RCCP_Nos alanlari PUBLIC ve obfuscate DEGIL (nosInUse, torqueMultiplier, amount,
+// regenerateRate...) -> field API ile ISIMLE cozulur, surume dayanikli. Her frame
+// benim aracimin Nos'una max deger yaz: nitro bitmez + cok daha guclu iter.
+static bool isNosSuperEnabled = false;
+static int OFFR_NOS_INUSE=0x38, OFFR_NOS_TORQUEMULT=0x3C, OFFR_NOS_AMOUNT=0x40,
+           OFFR_NOS_TIMER=0x48, OFFR_NOS_REGENRATE=0x54;
+static bool g_nosOffResolved = false;
+static void* g_nosType = NULL;
+static void few1n_forceNos(void) {
+    if (!isNosSuperEnabled || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+    if (!g_nosType) {
+        void* c = few1n_classAnyImage("", "RCCP_Nos");
+        if (!c) return;
+        g_nosType = few1n_typeObjOf(c);
+        if (!g_nosOffResolved) {
+            g_nosOffResolved = true;
+            OFFR_NOS_INUSE      = few1n_fieldOffOn(c, "nosInUse",         OFFR_NOS_INUSE);
+            OFFR_NOS_TORQUEMULT = few1n_fieldOffOn(c, "torqueMultiplier", OFFR_NOS_TORQUEMULT);
+            OFFR_NOS_AMOUNT     = few1n_fieldOffOn(c, "amount",           OFFR_NOS_AMOUNT);
+            OFFR_NOS_TIMER      = few1n_fieldOffOn(c, "timer",            OFFR_NOS_TIMER);
+            OFFR_NOS_REGENRATE  = few1n_fieldOffOn(c, "regenerateRate",   OFFR_NOS_REGENRATE);
+        }
+    }
+    if (!g_nosType) return;
+    @try {
+        void* a[1] = { g_nosType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return;
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+        if (cnt < 1 || cnt > 64) return;
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt; i++) {
+            void* nos = items[i];
+            if (!unityAlive(nos) || !few1n_pvIsMineFor(nos)) continue;   // sadece benim aracim
+            *(float*)((uintptr_t)nos + OFFR_NOS_AMOUNT)     = 100.0f;   // hep dolu
+            *(float*)((uintptr_t)nos + OFFR_NOS_TORQUEMULT) = 8.0f;     // 8x itiş (varsayilan ~2)
+            *(float*)((uintptr_t)nos + OFFR_NOS_REGENRATE)  = 100.0f;   // aninda dolar
+            *(float*)((uintptr_t)nos + OFFR_NOS_TIMER)      = 0.0f;     // sure sifirlanmaz
+        }
+    } @catch (...) {}
+}
+
+// ===== v114.28: TRAFIK YOGUNLUGU =====
+// HR_TrafficPooling.frequence ve HR_TrafficCarList.frequence PUBLIC int (obfuscate
+// degil). Dusuk = az trafik / yol bos, yuksek = kalabalik. mode: 0=kapat(yol bos),
+// 1=normal, 2=cok kalabalik.
+static void few1n_setTrafficDensity(int mode) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke) return;
+    int freq = (mode == 0) ? 0 : (mode == 2 ? 200 : 40);
+    const char* classes[] = { "HR_TrafficPooling", "HR_TrafficCarList", NULL };
+    int total = 0;
+    for (int ci = 0; classes[ci]; ci++) {
+        void* c = few1n_classAnyImage("", classes[ci]);
+        if (!c) continue;
+        int off = few1n_fieldOffOn(c, "frequence", 0x18);
+        void* t = few1n_typeObjOf(c);
+        @try {
+            void* a[1] = { t };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            if (!ptrOk(arr)) continue;
+            int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+            if (cnt < 0 || cnt > 64) continue;
+            void** items = (void**)((uintptr_t)arr + 0x20);
+            for (int i = 0; i < cnt; i++) {
+                if (!unityAlive(items[i])) continue;
+                *(int*)((uintptr_t)items[i] + off) = freq;
+                total++;
+            }
+        } @catch (...) {}
+    }
+    FLog([NSString stringWithFormat:@"Trafik yogunlugu mode=%d freq=%d (%d obje)", mode, freq, total]);
+}
+
+// ===== v114.28: COMBO / SKOR SISIR =====
+// HR_PlayerHandler skor alanlari obfuscated internal (iyd@0x50 score, iyf@0x58 combo,
+// iyg@0x5C maxCombo). Isimle cozulemez -> offset+fallback. Layout eski/yeni dump'ta
+// tutarli. g_myPlayerHandler zaten godmode icin cozuluyor.
+static int OFFR_PH_SCORE=0x50, OFFR_PH_COMBO=0x58, OFFR_PH_MAXCOMBO=0x5C;
+static bool few1n_boostScore(int score, int combo) {
+    if (!unityAlive(g_myPlayerHandler)) { FLog(@"Skor: aracin/PlayerHandler yok — yarista dene"); return false; }
+    @try {
+        *(float*)((uintptr_t)g_myPlayerHandler + OFFR_PH_SCORE)    = (float)score;
+        *(int*)  ((uintptr_t)g_myPlayerHandler + OFFR_PH_COMBO)    = combo;
+        *(int*)  ((uintptr_t)g_myPlayerHandler + OFFR_PH_MAXCOMBO) = combo;
+    } @catch (...) { return false; }
+    FLog([NSString stringWithFormat:@"Skor sisirildi: score=%d combo=%d", score, combo]);
+    return true;
 }
 
 // ===== ARAC RENGI (Renderer.material.color, il2cpp) =====
@@ -3277,16 +5177,16 @@ static void few1n_applyGodmode(void) {
             void** hs = (void**)((uintptr_t)arr + 0x20);
             for (int i = 0; i < cnt; i++) {
                 void* h = hs[i]; if (!unityAlive(h)) continue;
-                void* pv = *(void**)((uintptr_t)h + OFF_PLAYERHANDLER_PHOTONVIEW);
+                void* pv = *(void**)((uintptr_t)h + OFFR_PH_PHOTONVIEW);
                 bool mine = unityAlive(pv) ? *(bool*)((uintptr_t)pv + g_isMineOff) : false;
-                if (mine) { g_myPlayerHandler = h; g_myRccp = *(void**)((uintptr_t)h + 0x20); break; }
+                if (mine) { g_myPlayerHandler = h; g_myRccp = *(void**)((uintptr_t)h + OFFR_PH_RCCP); break; }
             }
         } @catch (...) {}
         return;
     }
     if (isGodmode) { @try {
-        *(unsigned char*)((uintptr_t)g_myPlayerHandler + OFF_PLAYERHANDLER_CANCRASH) = 0;
-        *(float*)((uintptr_t)g_myPlayerHandler + OFF_PLAYERHANDLER_DAMAGE) = 0.0f;
+        *(unsigned char*)((uintptr_t)g_myPlayerHandler + OFFR_PH_CANCRASH) = 0;
+        *(float*)((uintptr_t)g_myPlayerHandler + OFFR_PH_DAMAGE) = 0.0f;
     } @catch (...) {} }
 }
 
@@ -3319,8 +5219,8 @@ static void few1n_applyAlwaysLights(void) {
         if (!unityAlive(g_myLights)) return;
     }
     @try {
-        *(unsigned char*)((uintptr_t)g_myLights + 0x40) = 1;   // lowBeam SUREKLI ON
-        *(unsigned char*)((uintptr_t)g_myLights + 0x41) = 1;   // highBeam SUREKLI ON
+        *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_LOWBEAM) = 1;   // lowBeam SUREKLI ON
+        *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_HIGHBEAM) = 1;   // highBeam SUREKLI ON
     } @catch (...) {}
 }
 
@@ -3462,8 +5362,8 @@ static void few1n_applySelektor(void) {
         g_selTick++;
         int rate = (g_selFlashRate >= 1) ? g_selFlashRate : 1;
         unsigned char on = (((g_selTick / rate) % 2) == 0) ? 1 : 0;   // hiz menuden ayarli
-        *(unsigned char*)((uintptr_t)g_myLights + 0x41) = on;   // highBeamHeadlights
-        *(unsigned char*)((uintptr_t)g_myLights + 0x40) = on;   // lowBeamHeadlights (gorunurluk icin)
+        *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_HIGHBEAM) = on;   // highBeamHeadlights
+        *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_LOWBEAM) = on;   // lowBeamHeadlights (gorunurluk icin)
     } @catch (...) {}
 }
 
@@ -3478,23 +5378,23 @@ static void h_playerInputFixed(void* self) {
     fInput++;
     if (self && ptrOk(self)) {
         @try {
-            void* drive = *(void**)((uintptr_t)self + 0x20);   // jhr -> CarDriveSystem
+            void* drive = *(void**)((uintptr_t)self + OFFR_CPI_DRIVE);   // jhr -> CarDriveSystem
             if (drive) {
                 g_carDrive = drive;
-                void* rb = *(void**)((uintptr_t)drive + 0x48); // Rigidbody backing field
+                void* rb = *(void**)((uintptr_t)drive + OFFR_CDS_RIGIDBODY); // Rigidbody backing field
                 if (rb) g_rb = rb;
             }
-            void* nos = *(void**)((uintptr_t)self + 0x28);     // jhs -> CarNitro
+            void* nos = *(void**)((uintptr_t)self + OFFR_CPI_NITRO);     // jhs -> CarNitro
             if (nos) g_carNitro = nos;
             // ---- ARAC KONTROL PANELI: oyunun kendi override alanlarini kullan ----
             // timeScale'e dokunmaz -> sadece bu arac etkilenir, digerleri fark etmez
             if (isCarPanelEnabled && g_carDrive) {
                 uintptr_t d = (uintptr_t)g_carDrive;
-                *(unsigned char*)(d + 0x61) = 1;              // overrideAcceleration
-                *(float*)(d + 0x6C) = carAccelPower;          // overrideAccelerationPower
-                *(unsigned char*)(d + 0x62) = 1;              // overrideSteering
-                *(float*)(d + 0x64) = carSteerPower;          // overrideSteeringPower
-                *(float*)(d + 0x98) = carTopSpeed;            // topSpeed
+                *(unsigned char*)(d + OFFR_CDS_OVR_ACCEL) = 1;              // overrideAcceleration
+                *(float*)(d + OFFR_CDS_ACCELPOWER) = carAccelPower;          // overrideAccelerationPower
+                *(unsigned char*)(d + OFFR_CDS_OVR_STEER) = 1;              // overrideSteering
+                *(float*)(d + OFFR_CDS_STEERPOWER) = carSteerPower;          // overrideSteeringPower
+                *(float*)(d + OFFR_CDS_TOPSPEED) = carTopSpeed;            // topSpeed
             }
         } @catch (...) {}
     }
@@ -3510,7 +5410,7 @@ static void h_rccpUpdate(void* self) {
     fRccp++;
     if (self) {
         @try {
-            void* rb = *(void**)((uintptr_t)self + 0x48);   // RCCP Rigidbody
+            void* rb = *(void**)((uintptr_t)self + OFFR_RCCPMAIN_RB);   // RCCP Rigidbody
             if (rb) g_rb = rb;
         } @catch (...) {}
     }
@@ -3524,7 +5424,7 @@ static void h_smRCC(void* self) {
     fSmRCC++;
     if (self) {
         @try {
-            void* rb = *(void**)((uintptr_t)self + 0xF8);   // SmoothSyncRCC.rb
+            void* rb = *(void**)((uintptr_t)self + OFFR_SSRCC_RB);   // SmoothSyncRCC.rb
             if (rb) g_rb = rb;
         } @catch (...) {}
     }
@@ -3569,17 +5469,12 @@ static NSMutableArray<NSString*> *g_recentlySentByMe = nil;  // son 10 mesaj (ke
 static char g_aiNameColorHex[8] = "00E5FF";  // cyan default
 static char g_aiReplyColorHex[8] = "FF00FF"; // magenta default
 
-// v113: Runtime il2cpp field enumerate + write helpers (tanimlar yukarida)
+// v113: Runtime il2cpp field enumerate + write helpers
+// v114.24: bu pointer'lar artik dosya basinda (few1n_initIl2cpp icinde dlsym'leniyor)
+// — tip-imzasi aramasi da ayni API'yi kullaniyor. Buradaki yerel kopyalar kaldirildi.
 
 static NSString* few1n_dumpClassFields(NSString *className) {
     if (!className || className.length == 0 || !i_class_from_name) return @"class API yok";
-    // Class'i tum image'larda ara
-    if (!i_class_get_fields) {
-        i_class_get_fields = (void*(*)(void*,void**))dlsym(RTLD_DEFAULT, "il2cpp_class_get_fields");
-        i_field_get_name   = (const char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_field_get_name");
-        i_field_get_type   = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_field_get_type");
-        i_type_get_name    = (const char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_type_get_name");
-    }
     void* klass = NULL;
     // Bilinen namespace'lerde dene
     NSArray *ns = @[@"", @"Photon.Realtime", @"Photon.Pun", @"UnityEngine", @"UnityEngine.UI", @"TMPro"];
@@ -3596,7 +5491,8 @@ static NSString* few1n_dumpClassFields(NSString *className) {
         NSString *typ = @"?";
         if (i_field_get_type && i_type_get_name) {
             void* tp = i_field_get_type(f);
-            if (tp) { const char *tn = i_type_get_name(tp); if (tn) typ = [NSString stringWithUTF8String:tn]; }
+            // il2cpp_type_get_name malloc'lu string dondurur — kopyalayip free et.
+            if (tp) { char *tn = i_type_get_name(tp); if (tn) { typ = [NSString stringWithUTF8String:tn]; free(tn); } }
         }
         [out appendFormat:@"  %s @+%d (%@)\n", fname ?: "?", off, typ];
         cnt++;
@@ -3913,13 +5809,17 @@ static void few1n_replyToRoomAiPrompt(NSString *prompt) {
     });
 }
 
+// ===== 1.4.4 CENSORSHIP & <noparse> BYPASS =====
+// 1.4.4'te Censorship.ra.opp(string) metodu '<' karakterini '<noparse><</noparse>' yapiyor ve küfürleri '***' ile sansürlüyor.
+// Bu hook ile kendi mesajlarimizda ve gelen mesajlarda sansür + <noparse> engeli tamamen kalkar!
 static void* (*o_censorship_opp)(void*) = NULL;
-static void* h_censorship_opp(void* a) {
-    return a; // 1.4.4: <noparse> filtresini bypass et
+static void* h_censorship_opp(void* inputStr) {
+    if (ptrOk(inputStr)) return inputStr;
+    return o_censorship_opp ? o_censorship_opp(inputStr) : inputStr;
 }
 
-static bool g_modSendingRichText = false; // v114.24: mod'un kendi renkli mesajlarini strip etme
 static void h_chatSend(void* self, void* msg) {
+    few1n_enableChatRichText();
     fChat++;
     if (msg) {
         NSString *orig = readStr(msg);
@@ -4007,9 +5907,6 @@ static void h_chatSend(void* self, void* msg) {
                                     else if ([act isEqualToString:@"balata"] || [act isEqualToString:@"brakeglow"]) { [m performSelector:@selector(tapBrakeGlow)]; }
                                     else if ([act isEqualToString:@"popbangs"]) { isPopBangsEnabled = toggle ? !isPopBangsEnabled : on; saveBool(@"popbangs", isPopBangsEnabled); }
                                     else if ([act isEqualToString:@"autohorn"]) { isAutoHornEnabled = toggle ? !isAutoHornEnabled : on; saveBool(@"autohorn", isAutoHornEnabled); }
-                                    else if ([act isEqualToString:@"detach"]) { [m performSelector:@selector(tapDetachParts)]; }
-                                    else if ([act isEqualToString:@"teleport_all"]) { [m performSelector:@selector(tapTeleportAllToMe)]; }
-                                    else if ([act isEqualToString:@"hijack"]) { [m performSelector:@selector(tapHijackCar)]; }
                                     else { [report appendFormat:@" ❓%@", act]; return; }
                                     [m performSelector:@selector(refreshUI)];
                                     [report appendFormat:@" ✅%@(%@)", act, toggle ? @"~" : (on ? @"on" : @"off")];
@@ -4024,7 +5921,7 @@ static void h_chatSend(void* self, void* msg) {
                         NSString *finalMsg = [NSString stringWithFormat:@"<color=#%@><b>[🔓 HACKER AI]</b></color> <color=#%@>%@</color>", nameCol, replyCol, [report substringFromIndex:[@"[🔓 HACKER AI]" length]]];
                         void* ns = mkStr(finalMsg);
                         void* mgr2 = chatGetInst ? chatGetInst() : NULL;
-                        if (ns && mgr2 && chatSend) { g_modSendingRichText = true; chatSend(mgr2, ns); g_modSendingRichText = false; }
+                        if (ns && mgr2 && chatSend) chatSend(mgr2, ns);
                         else if (ns && o_chatSend && selfKept) o_chatSend(selfKept, ns);
                     });
                 });
@@ -4036,10 +5933,8 @@ static void h_chatSend(void* self, void* msg) {
                 few1n_replyToRoomAiPrompt(aiPrompt);
                 return;
             }
-            // Eger gonderilen mesajda/nickte ham HTML/TMPro renk etiketleri varsa (<color=...>, <#FF0000>, <mark> vb.) temizle
-            // v114.24: Mod'un kendi renkli mesajlarini (spam, matrix, glitch, colored send) strip ETME!
-            // v114.38: Kullanıcı kasıtlı olarak renk tag'i yazıyorsa (<color, <#) veya Renkli Chat açıksa strip ETME!
-            if (!g_modSendingRichText && !isColorChatEnabled && ![orig containsString:@"<color"] && ![orig containsString:@"<#"]) {
+            // 1.4.4: Eger kullanici bilerek renk etiketi (<color / <#) yazmadiysa temizle; renkli mesajlari koru
+            if (![orig containsString:@"<color"] && ![orig containsString:@"<#"]) {
                 NSString *cleaned = stripRichTextTags(orig);
                 if (cleaned.length > 0 && ![cleaned isEqualToString:orig]) {
                     orig = cleaned;
@@ -4053,8 +5948,7 @@ static void h_chatSend(void* self, void* msg) {
                 void* colored = mkStr(glitchWrapChat(orig));
                 if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
             } else if (isColorChatEnabled) {
-                few1n_enableChatRichText();
-                void* colored = mkStr([NSString stringWithFormat:@"<color=#00E5FF><b>[FEW1N]</b></color> <color=#%s>%@</color>", spamColorHex, orig]);
+                void* colored = mkStr([NSString stringWithFormat:@"<color=cyan><b>[FEW1N]</b></color> %@", orig]);
                 if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
             }
         }
@@ -4094,81 +5988,59 @@ static void h_chatFup(void* self, void* msg) {
     if (o_chatFup) o_chatFup(self, msg);
 }
 
-// ===== PASSWORD BYPASS & AUTOFILL (v114.41) =====
+// ===== PASSWORD BYPASS (1.4.4 kzw@0x58 & kzx@0x60 + ghh click hook) =====
 static NSMutableDictionary<NSString*, NSString*> *g_knownRoomPasswords = nil;
-
 static void (*o_roomConnect)(void*) = NULL;
-static void h_roomConnect(void* self) {
-    if (isBypassPasswordEnabled && self) {
-        @try {
-            void* roomPwd = *(void**)((uintptr_t)self + OFF_ROOMLINE_PASSWORD);
-            if (!ptrOk(roomPwd)) {
-                void* oldPwd = *(void**)((uintptr_t)self + 0x50);
-                if (ptrOk(oldPwd)) roomPwd = oldPwd;
-            }
-            if (lobbyGetInst && roomPwd) {
-                void* lobby = lobbyGetInst();
-                if (lobby) {
-                    void* pOnConnect = *(void**)((uintptr_t)lobby + OFF_LOBBY_PWD_ON_CONN_INPUT);
-                    if (pOnConnect) few1n_tmp_input_set_text(pOnConnect, roomPwd);
-                    void* pInput = *(void**)((uintptr_t)lobby + OFF_LOBBY_PWD_INPUT);
-                    if (pInput) few1n_tmp_input_set_text(pInput, roomPwd);
+static void (*o_roomLineClick)(void*) = NULL;
+
+static void few1n_autofillRoomLinePassword(void* self) {
+    if (!isBypassPasswordEnabled || !ptrOk(self)) return;
+    @try {
+        // 1.4.4: HR_UI_RoomListLine.kzw (password) @ OFFR_RL_PASSWORD (0x58), fallback 0x50
+        void* roomPwd = *(void**)((uintptr_t)self + OFFR_RL_PASSWORD);
+        NSString *pw = ptrOk(roomPwd) ? readStr(roomPwd) : nil;
+        if (!pw || pw.length == 0) {
+            void* altPwd = *(void**)((uintptr_t)self + 0x50);
+            NSString *altStr = ptrOk(altPwd) ? readStr(altPwd) : nil;
+            if (altStr.length > 0) { roomPwd = altPwd; pw = altStr; }
+        }
+        // Fallback 2: RoomInfo (OFFR_RL_ROOMINFO = 0x60) veya g_knownRoomPasswords
+        void* rinfo = *(void**)((uintptr_t)self + OFFR_RL_ROOMINFO);
+        if ((!pw || pw.length == 0) && ptrOk(rinfo)) {
+            void* riPwd = *(void**)((uintptr_t)rinfo + 0x58);
+            NSString *riStr = ptrOk(riPwd) ? readStr(riPwd) : nil;
+            if (riStr.length > 0) { roomPwd = riPwd; pw = riStr; }
+            if ((!pw || pw.length == 0) && rinfo_getName && g_knownRoomPasswords) {
+                NSString *rname = readStr(rinfo_getName(rinfo));
+                if (rname.length > 0 && g_knownRoomPasswords[rname].length > 0) {
+                    pw = g_knownRoomPasswords[rname];
+                    roomPwd = mkStr(pw);
                 }
             }
-        } @catch (...) {}
-    }
-    if (o_roomConnect) o_roomConnect(self);
+        }
+        if (lobbyGetInst && ptrOk(roomPwd) && pw.length > 0) {
+            void* lobby = lobbyGetInst();
+            if (ptrOk(lobby)) {
+                void* pOnConnect = *(void**)((uintptr_t)lobby + OFFR_LOBBY_PWD_CONN);
+                if (ptrOk(pOnConnect)) w_tmp_input_set_text(pOnConnect, roomPwd);
+                void* pInput = *(void**)((uintptr_t)lobby + OFFR_LOBBY_PWD);
+                if (ptrOk(pInput)) w_tmp_input_set_text(pInput, roomPwd);
+                FLog([NSString stringWithFormat:@"🔓 Oda sifresi otomatik dolduruldu: %@", pw]);
+            }
+        }
+    } @catch (...) {}
 }
 
-// 1.4.4: JoinRoomButton tiklandiginda tetiklenen ana metod (HR_UI_RoomListLine.ghh)
-static void (*o_roomLineClick)(void*) = NULL;
+static void h_roomConnect(void* self) {
+    few1n_autofillRoomLinePassword(self);
+    if (o_roomConnect) o_roomConnect(self);
+    few1n_autofillRoomLinePassword(self);
+}
+
 static void h_roomLineClick(void* self) {
-    void* roomPwd = NULL;
-    NSString *rname = nil;
-    if (self) {
-        @try {
-            roomPwd = *(void**)((uintptr_t)self + OFF_ROOMLINE_PASSWORD);
-            if (!ptrOk(roomPwd)) {
-                void* oldPwd = *(void**)((uintptr_t)self + 0x50);
-                if (ptrOk(oldPwd)) roomPwd = oldPwd;
-            }
-            void* rawName = *(void**)((uintptr_t)self + OFF_ROOMLINE_NAME_TEXT);
-            if (rawName && tmp_get_text) {
-                rname = readStr(tmp_get_text(rawName));
-                if (rname.length > 0) rname = stripRichTextTags(rname);
-            }
-            if ((!roomPwd || readStr(roomPwd).length == 0) && rname && g_knownRoomPasswords) {
-                @synchronized(g_knownRoomPasswords) {
-                    NSString *cachedPw = g_knownRoomPasswords[rname];
-                    if (cachedPw.length > 0) roomPwd = mkStr(cachedPw);
-                }
-            }
-        } @catch (...) {}
-    }
-
-    // Orijinal ghh metodu calissin (passwordPanel'i acar, jdt'yi ayarlar)
+    few1n_autofillRoomLinePassword(self);
     if (o_roomLineClick) o_roomLineClick(self);
-
-    // Sifreli odaya basildiysa ve bypass/otomatik doldurma aciksa: sifreyi aninda kutulara yaz!
-    if (isBypassPasswordEnabled && self && roomPwd) {
-        @try {
-            void* lobby = lobbyGetInst ? lobbyGetInst() : NULL;
-            if (lobby) {
-                void* pOnConnect = *(void**)((uintptr_t)lobby + OFF_LOBBY_PWD_ON_CONN_INPUT);
-                if (pOnConnect) {
-                    few1n_tmp_input_set_text(pOnConnect, roomPwd);
-                }
-                void* pInput = *(void**)((uintptr_t)lobby + OFF_LOBBY_PWD_INPUT);
-                if (pInput) {
-                    few1n_tmp_input_set_text(pInput, roomPwd);
-                }
-                NSString *ps = readStr(roomPwd);
-                if (ps.length > 0) {
-                    FLog([NSString stringWithFormat:@"🔑 Şifre otomatik dolduruldu: %@", ps]);
-                }
-            }
-        } @catch (...) {}
-    }
+    few1n_autofillRoomLinePassword(self);
 }
 
 // ===== TMPro.TMP_Text.set_text HOOK (TÜM OYUNDA NİCKNAME & MASA RENKLERİNİ CANLI KILMA) =====
@@ -4181,16 +6053,13 @@ static void h_tmpSetText(void* self, void* textStr) {
                 // Kendi cihazımız nuke metnini render etmez -> Yerel çökme engellenir!
                 return;
             }
-            // 1.4.4 FIX: Chat veya metinlerdeki <noparse> filtrelerini kaldır ve richText'i zorla aç
+            // 1.4.4 FIX: Oyun chat ve isimlerde '<' karakterini '<noparse><</noparse>' icine aliyor.
+            // <noparse> etiketlerini silerek renk kodlarinin (TMPro RichText) tekrar calismasini sagla!
             if (str && ([str containsString:@"<noparse>"] || [str containsString:@"</noparse>"])) {
-                NSString *clean = [str stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-                clean = [clean stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-                void* newStr = mkStr(clean);
-                if (newStr) {
-                    if (self && g_mSetRichText) setRichTextIl(self, true);
-                    if (o_tmpSetText) o_tmpSetText(self, newStr);
-                    return;
-                }
+                str = [str stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+                str = [str stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+                void* cleanStr = mkStr(str);
+                if (cleanStr) textStr = cleanStr;
             }
             // v102: VIDYO ISIM MODU - kisa nickname'leri buyuk ve kirmizi yap
             if (isVidyoNamesEnabled && str && str.length >= 2 && str.length <= 20
@@ -4223,6 +6092,127 @@ static void h_tmpSetText(void* self, void* textStr) {
     if (o_tmpSetText) o_tmpSetText(self, textStr);
 }
 
+// ===== v114.38: HOOKSUZ GELEN CHAT (sideload icin il2cpp polling) =====
+//
+// Sideload'da (ESign/.dylib) MSHookFunction calismiyor -> h_chatFup olu -> gelen
+// mesajlara AI oto-cevap kirilmisti. Cozum: ChatManager.kss (List<string>) her
+// tick'te okunur, yeni satirlar h_chatFup ile AYNI mantikla islenir.
+//
+// KRITIK: sadece g_hooksDead iken calisir. Jailbreak'te (.deb) hooklar canli ->
+// h_chatFup zaten isliyor -> poller kapali -> CIFT ISLEM YOK, sifir regresyon.
+static int g_lastChatCount = -1;
+static void few1n_pollIncomingChat(void) {
+    if (!g_hooksDead) return;                 // hooklar canliysa h_chatFup yapiyor
+    if (!chatGetInst) return;
+    void* mgr = NULL;
+    @try { mgr = chatGetInst(); } @catch (...) { return; }
+    if (!ptrOk(mgr)) { g_lastChatCount = -1; return; }   // oda disi -> sifirla
+    @try {
+        void* list = *(void**)((uintptr_t)mgr + OFFR_CHAT_MSGLIST);   // List<string>
+        if (!ptrOk(list)) { g_lastChatCount = -1; return; }
+        int size = *(int*)((uintptr_t)list + 0x18);                   // List._size
+        if (size < 0 || size > 100000) { g_lastChatCount = -1; return; }
+        if (g_lastChatCount < 0)        { g_lastChatCount = size; return; } // ilk gorus: gecmisi isleme
+        if (size < g_lastChatCount)     { g_lastChatCount = size; return; } // liste temizlendi (oda degisti)
+        if (size == g_lastChatCount) return;                               // yeni mesaj yok
+        void* items = *(void**)((uintptr_t)list + 0x10);             // String[]
+        if (!ptrOk(items)) { g_lastChatCount = size; return; }
+        int arrLen = (int)(*(uintptr_t*)((uintptr_t)items + 0x18));  // Array.Length
+        for (int i = g_lastChatCount; i < size && i < arrLen; i++) {
+            void* el = *(void**)((uintptr_t)items + 0x20 + (uintptr_t)i * 8);
+            if (!ptrOk(el)) continue;
+            NSString *line = readStr(el);
+            if (line.length == 0) continue;
+            // Kendi gonderdiklerimi ve bot mesajlarini atla (h_chatFup ile ayni filtre)
+            BOOL isBotMsg = [line containsString:@"[AI "] || [line containsString:@"[🤖"];
+            if (isBotMsg) continue;
+            BOOL isMine = NO;
+            if (g_recentlySentByMe) {
+                @synchronized(g_recentlySentByMe) {
+                    for (NSString *sent in g_recentlySentByMe)
+                        if (sent.length && [line containsString:sent]) { isMine = YES; break; }
+                }
+            }
+            if (isMine) continue;
+            NSString *prompt = few1n_aiPromptFromChat(line);
+            if (prompt) { few1n_replyToRoomAiPrompt(prompt); continue; }
+            if (isAiChatModeEnabled) {
+                NSString *lower = [line.lowercaseString stringByReplacingOccurrencesOfString:@"ı" withString:@"i"];
+                BOOL mentioned = [lower containsString:@" ai"] || [lower hasPrefix:@"ai "] ||
+                                 [lower containsString:@"bot"] || [lower containsString:@"grok"] ||
+                                 [lower containsString:@"few1n ai"];
+                if (mentioned) few1n_replyToRoomAiPrompt(line);
+            }
+        }
+        g_lastChatCount = size;
+    } @catch (...) {}
+}
+
+// ===== v114.38: HOOKSUZ SIFRE OTOMATIK DOLDURMA (sideload icin il2cpp polling) =====
+//
+// Sideload'da h_roomConnect olu -> sifreli odaya girerken cached sifre inputa
+// yazilmiyordu. Cozum: passwordPanel (GameObject) aktif oldugunda, baglanilacak
+// oda (lobby.jdt = RoomInfo) icin cached sifreyi RoomListLine'dan bul ve inputlara yaz.
+// Yine sadece g_hooksDead iken calisir (jailbreak'te h_roomConnect zaten yapiyor).
+static void* g_pwdFilledForRoom = NULL;
+static void few1n_pollPasswordPrefill(void) {
+    if (!g_hooksDead) return;
+    if (!isBypassPasswordEnabled) { g_pwdFilledForRoom = NULL; return; }
+    if (!lobbyGetInst || !tmp_set_text) return;
+    void* lobby = NULL;
+    @try { lobby = lobbyGetInst(); } @catch (...) { return; }
+    if (!ptrOk(lobby)) return;
+    @try {
+        // Sifre paneli acik mi? (kapaliyken doldurma -> gereksiz yazma yok)
+        void* panel = *(void**)((uintptr_t)lobby + OFFR_LOBBY_PWDPANEL);
+        if (!unityAlive(panel)) { g_pwdFilledForRoom = NULL; return; }
+        if (g_mGoActiveInHierarchy && i_runtime_invoke) {
+            void* box = i_runtime_invoke(g_mGoActiveInHierarchy, panel, NULL, NULL);
+            bool active = box && *(unsigned char*)((uintptr_t)box + 0x10);
+            if (!active) { g_pwdFilledForRoom = NULL; return; }
+        }
+        void* pendRoom = *(void**)((uintptr_t)lobby + OFFR_LOBBY_PENDROOM);  // jdt (RoomInfo)
+        if (!ptrOk(pendRoom)) return;
+        if (pendRoom == g_pwdFilledForRoom) return;                         // bu oda icin zaten dolduruldu
+        // pendRoom'a ait RoomListLine'i bul -> cached sifresini oku
+        if (!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+        void* a[1]; a[0] = g_roomLineType;
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return;
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+        if (cnt < 0 || cnt > 256) return;
+        void** lines = (void**)((uintptr_t)arr + 0x20);
+        void* pwdStr = NULL;
+        for (int i = 0; i < cnt; i++) {
+            void* ln = lines[i]; if (!unityAlive(ln)) continue;
+            void* rinfo = *(void**)((uintptr_t)ln + OFFR_RL_ROOMINFO);
+            if (rinfo == pendRoom) {
+                pwdStr = *(void**)((uintptr_t)ln + OFFR_RL_PASSWORD);
+                if (!ptrOk(pwdStr) || readStr(pwdStr).length == 0)
+                    pwdStr = *(void**)((uintptr_t)ln + 0x50);
+                break;
+            }
+        }
+        if (!ptrOk(pwdStr) || readStr(pwdStr).length == 0) {
+            void* riPwd = *(void**)((uintptr_t)pendRoom + 0x58);
+            if (ptrOk(riPwd) && readStr(riPwd).length > 0) pwdStr = riPwd;
+        }
+        if ((!ptrOk(pwdStr) || readStr(pwdStr).length == 0) && rinfo_getName && g_knownRoomPasswords) {
+            NSString *rn = readStr(rinfo_getName(pendRoom));
+            if (rn.length > 0 && g_knownRoomPasswords[rn].length > 0) pwdStr = mkStr(g_knownRoomPasswords[rn]);
+        }
+        if (!ptrOk(pwdStr)) return;
+        NSString *pw = readStr(pwdStr);
+        if (pw.length == 0) return;                     // sifresiz oda -> doldurma
+        void* pOnConnect = *(void**)((uintptr_t)lobby + OFFR_LOBBY_PWD_CONN);
+        if (ptrOk(pOnConnect)) w_tmp_input_set_text(pOnConnect, pwdStr);   // v114.60: TMP_InputField (crash fix)
+        void* pInput = *(void**)((uintptr_t)lobby + OFFR_LOBBY_PWD);
+        if (ptrOk(pInput)) w_tmp_input_set_text(pInput, pwdStr);           // v114.60: TMP_InputField (crash fix)
+        g_pwdFilledForRoom = pendRoom;
+        FLog([NSString stringWithFormat:@"🔓 Hooksuz sifre otomatik dolduruldu (%@)", pw]);
+    } @catch (...) {}
+}
+
 // ===== ODA ISMI RICH TEXT ACIGI + ZORLA RENKLI (CLIENT-SIDE) =====
 static bool isColorRoomForce = false;  // TUM oda isimlerini renkli yap (client-side)
 static bool isMapTextOverrideEnabled = false;
@@ -4232,6 +6222,9 @@ static int g_lastRoomLineFrame = 0;
 
 static void(*lobbySetScene)(void*, void*) = NULL;
 static void(*pn_setAutomaticallySyncScene)(bool) = NULL;
+static void(*pn_setMessageQueueRunning)(bool) = NULL;   // v116.3: LoadLevel 'Baglaniyor' takilma fix
+static bool(*pn_getMessageQueueRunning)(void) = NULL;   // v116.3: kuyruk durumu teshis
+static void(*pn_newSceneLoaded)(void) = NULL;           // v116.5: sahne-yukleme tamamlama (Baglaniyor coz)
 static void(*unity_loadSceneStr)(void*) = NULL;
 static void* (*mapList_getInstance)(void) = NULL;   // MapList.ely() -> MapList instance (0x54B3630)
 static void(*photonMgrEnp)(void*, bool) = NULL;     // PhotonManager.enp(string, bool) - static sahne yukleyici (0x54B5260)
@@ -4307,28 +6300,25 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
         } @catch (...) {}
     }
 
-    // v114.41: Şifreli odanın şifresini hafızaya kaydet (g_knownRoomPasswords)
-    if (e) {
+    if (o_roomLineSetup) o_roomLineSetup(self, a, b, c, d, e, f);
+
+    // 1.4.4: Setup parametresi 'e' (5. arguman = password string) ve self+OFFR_RL_PASSWORD'u önbelleğe al
+    if (self) {
         @try {
-            NSString *pwStr = readStr(e);
-            if (pwStr.length > 0) {
-                NSString *nmStr = nil;
-                if (f && rinfo_getName) {
-                    void* ns = rinfo_getName(f);
-                    if (ns) nmStr = readStr(ns);
-                }
-                if (nmStr.length == 0 && a) nmStr = readStr(a);
-                if (nmStr.length > 0) {
-                    if (!g_knownRoomPasswords) g_knownRoomPasswords = [[NSMutableDictionary alloc] init];
-                    @synchronized(g_knownRoomPasswords) {
-                        g_knownRoomPasswords[nmStr] = pwStr;
-                    }
-                }
+            if (!g_knownRoomPasswords) g_knownRoomPasswords = [NSMutableDictionary new];
+            NSString *rmName = nil;
+            if (f && rinfo_getName) rmName = readStr(rinfo_getName(f));
+            if ((!rmName || rmName.length == 0) && ptrOk(a)) rmName = readStr(a);
+            NSString *pwd = ptrOk(e) ? readStr(e) : nil;
+            if (!pwd || pwd.length == 0) {
+                void* pField = *(void**)((uintptr_t)self + OFFR_RL_PASSWORD);
+                if (ptrOk(pField)) pwd = readStr(pField);
+            }
+            if (rmName.length > 0 && pwd.length > 0) {
+                g_knownRoomPasswords[rmName] = pwd;
             }
         } @catch (...) {}
     }
-
-    if (o_roomLineSetup) o_roomLineSetup(self, a, b, c, d, e, f);
 
     if (self) {
         @try {
@@ -4336,9 +6326,9 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
             // MonoBehaviour_Fields base = 0x18, sonra: RoomNameText @+0x18, MapNameText @+0x20, PlayerCountText @+0x28
             // v114.18: 1.4.3 dump'ta HR_UI_RoomListLine'a LockImage @0x38 eklendi;
             // TMP_Text field'lari 8 byte kaydi. Named define uzerinden okuyoruz.
-            void* nameText  = *(void**)((uintptr_t)self + OFF_ROOMLINE_NAME_TEXT);        // RoomNameText @0x20
-            void* mapText   = *(void**)((uintptr_t)self + OFF_ROOMLINE_MAP_TEXT);         // MapNameText @0x28
-            void* pCountText= *(void**)((uintptr_t)self + OFF_ROOMLINE_PLAYERCOUNT_TEXT); // PlayerCountText @0x30
+            void* nameText  = *(void**)((uintptr_t)self + OFFR_RL_NAMETEXT);        // RoomNameText @0x20
+            void* mapText   = *(void**)((uintptr_t)self + OFFR_RL_MAPTEXT);         // MapNameText @0x28
+            void* pCountText= *(void**)((uintptr_t)self + OFFR_RL_PLAYERCOUNT); // PlayerCountText @0x30
 
             // v90: tmp_set_richText direkt pointer kaldirildi — offset yanlis olabilir, crash sebep.
             // Sadece il2cpp invoke uzerinden (guvenli yol).
@@ -4491,15 +6481,14 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)sendMatrixMsg;
 - (void)sendGlitchMsg;
 - (void)createNormalRoom;
-- (void)tapUnlockCars;
 - (void)createAdvancedCustomRoom;
 - (void)setRoomMax;
 - (void)speedSliderChanged:(UISlider*)sl;
 - (void)speedReset;
 - (void)changeMapInRoom;
+- (void)tapMapRejoinDelay;
 - (void)changeMapV70Classic;
 - (void)toggleMasterClaim;
-- (void)cloneCarPicker;
 - (void)askSceneNameThen:(int)method;
 - (void)runMapMethod:(int)method scene:(NSString*)inp;
 - (void)mapMethod1;
@@ -4515,6 +6504,8 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)tapRoomPassword;
 - (void)completeAllDailyTasks;
 - (void)tapAutoMaster;
+- (void)tapAntiKick;             // v114.46
+- (void)tapBypass;               // v114.64 (sifre oto-doldur toggle)
 - (void)tapGameSpeed;
 - (void)tapFakeOnline;
 - (void)pickRoomMax:(UIButton*)b;
@@ -4522,12 +6513,12 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)reflowMenu;
 - (void)nativeKickAll;
 - (void)nativeKickByName;
-- (void)nativeKickPick;
 - (void)normalVoteKickPick;
 - (void)tapVoteKickFullYes;
 - (void)forceVoteKickFullYes;
 - (void)voteKickDiagnostics;
-- (void)targetBombCrashPick;
+- (void)nativeKickPick;
+- (void)manageBans;
 - (void)showPlayerIDs;
 - (void)editAiApiKey;
 - (void)tapAiChatMode;
@@ -4535,9 +6526,6 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)pickAiColorFor:(BOOL)forName;
 - (void)showHackerAiInfo;
 - (void)tapBrakeGlow;
-- (void)tapDetachParts;
-- (void)tapTeleportAllToMe;
-- (void)tapHijackCar;
 - (void)startGizliTimerIfNeeded;
 - (void)tapNameTrack;
 - (void)fireNameTrack;
@@ -4550,15 +6538,51 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)dpUp:(UIButton*)b;
 - (void)tapAutoGreet;
 - (void)editGreet;
+- (void)editPlate;
+- (void)spinServerPlate;
+- (void)setServerPlate;
+- (void)hijackPlatePick;         // v114.63
+- (void)launchPlayerPick;        // v114.66
+- (void)simpleAlert:(NSString*)t msg:(NSString*)m;                                        // v114.68
+- (void)pickOtherPlayer:(NSString*)title emoji:(NSString*)emoji handler:(void(^)(void* player, int actor, NSString* nick))cb; // v114.68
+- (void)pullPlayerPick;          // v114.68
+- (void)massLaunch;              // v114.68
+- (void)massPull;                // v114.90 (herkesi bana cek)
+- (void)griefSavePos;            // v114.68
+- (void)teleportToSavedPick;     // v114.68
+- (void)lockLaunchPick;          // v114.68
+- (void)freezePlayerPick;        // v114.92 (dondur/kilitle)
+- (void)massGatherSaved;         // v114.92 (herkesi kayitli konuma topla)
+- (void)followPlayerPick;        // v114.93 (oto-takip)
+- (void)swapPlayerPick;          // v114.93 (yer degistir)
+- (void)massFreezeToggle;        // v114.94 (herkesi dondur)
+- (void)yoyoPlayerPick;          // v114.94 (firlatip-getir)
+- (void)changeNamePick;          // v114.95 (baskasinin ismini degistir)
+- (void)massNameChange;          // v115.0 (herkesin ismini degistir)
+- (void)injectPropertyPick;      // v115.0 (photon property enjektoru)
+- (void)kickAllPlayers;          // v115.0 (mass kick — menuye eklendi)
+- (void)forceWinPick;            // v114.68
+- (void)copyCarPick;             // v114.69
+- (void)stealCarPick;            // v114.70
+- (void)becomeRealMasterMap;     // v114.72
+- (void)mapMethodPick;           // v114.73 (eski Y1-Y8 yontem secici)
+- (void)mapListY5;               // v114.74 (Y5 calisan — basit liste)
+- (void)y5LoadIdx:(int)idx label:(NSString*)title;   // v114.88 (Y5 yukle + gir-cik)
+// v114.48: officialPlateEveryone (Resmi Plaka/goy) KALDIRILDI — oyunu cokertiyordu.
+- (void)instantWin;              // v114.42
+- (void)trafficStrike;           // v114.42
+- (void)cycleWheels;             // v114.43
+- (void)cycleTire;               // v114.43
+- (void)officialNicknameEveryone;// v114.44
+- (void)setRimColor;
+- (void)setChromeMenu;
+- (void)setGlassMenu;
+- (void)setStanceMenu;
+- (void)finishTeleport;
 - (void)joinRoomByName;
 - (void)pickRoomsServerHide;
 - (void)present:(UIAlertController*)ac;
 - (void)askAiDirect;
-// v114.24: Yeni troll saldiri butonlari
-- (void)targetSkyLaunch;
-- (void)targetTrafficRocket;
-- (void)targetPlateChange;
-- (void)targetRaceFinish;
 @end
 
 static int g_bruteForceIdx = 0;
@@ -4597,7 +6621,7 @@ static void (*o_createRoomBtn)(void*) = NULL;
 static void h_createRoomBtn(void* self) {
     fCreateBtn++;
     @try {
-        void* nameInput = *(void**)((uintptr_t)self + 0x48);   // roomNameInput
+        void* nameInput = *(void**)((uintptr_t)self + OFFR_LOBBY_ROOMNAME);   // roomNameInput
         NSString *typed = (nameInput && tmp_get_text) ? readStr(tmp_get_text(nameInput)) : @"";
         // SADECE rich text isimlerde bypass yap (normal odalar oyunun akisini kullansin -> harita korunur)
         BOOL isRich = ([typed rangeOfString:@"<"].location != NSNotFound);
@@ -4610,10 +6634,10 @@ static void h_createRoomBtn(void* self) {
             void* ns = mkStr(uniq);
             void* opts = i_object_new(g_roomOptionsClass);
             if (ns && opts) {
-                *(bool*)((uintptr_t)opts + 0x10) = true;
-                *(bool*)((uintptr_t)opts + 0x11) = true;
-                *(int*) ((uintptr_t)opts + 0x14) = roomMaxPlayers;   // MAX oyuncu (oyun 10 sinirini as)
-                *(int*) ((uintptr_t)opts + 0x1C) = roomSpamTTL;
+                *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;
+                *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;
+                *(int*) ((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;   // MAX oyuncu (oyun 10 sinirini as)
+                *(int*) ((uintptr_t)opts + OFFR_ROPT_EMPTYTTL) = roomSpamTTL;
                 pn_createRoom(ns, opts, NULL, NULL);
                 FLog(@"Oda kuruldu (direkt pn_createRoom, dogrulama atlandi)");
                 return;   // orijinali CAGIRMA -> reddi atla
@@ -4621,13 +6645,6 @@ static void h_createRoomBtn(void* self) {
         }
     } @catch (...) {}
     if (o_createRoomBtn) o_createRoomBtn(self);   // yedek: normal akis
-}
-
-// ===== MONEY =====
-static void (*o_addMoney)(void*, int) = NULL;
-static void h_addMoney(void* self, int amount) {
-    if (isAutoMoneyEnabled && amount > 0) amount = customMoneyAmount;
-    if (o_addMoney) o_addMoney(self, amount);
 }
 
 // ===== CAS IL2CPP REKLAM HOOKS (CANLI REKLAM BOZUCU) =====
@@ -4683,17 +6700,21 @@ static void h_casRewardPresent(void* self, void* method) {
 // =============================================================
 //  UI
 // =============================================================
-// ==== BEYAZ ARKA PLAN / BUZ MAVISI NEON TEMA ====
-#define C_BG     [UIColor colorWithRed:0.97 green:0.99 blue:1.0 alpha:0.97]   // beyaz panel
-#define C_CARD   [UIColor colorWithRed:0.20 green:0.55 blue:0.75 alpha:0.07]  // hafif buz karti
-#define C_ON     [UIColor colorWithRed:0.0 green:0.55 blue:0.85 alpha:1.0]    // canli buz mavisi (acik)
-#define C_OFF    [UIColor colorWithRed:0.70 green:0.76 blue:0.82 alpha:1.0]   // gri (kapali)
-#define C_RED    [UIColor colorWithRed:0.90 green:0.20 blue:0.35 alpha:1.0]
-#define C_ACCENT [UIColor colorWithRed:0.0 green:0.60 blue:0.90 alpha:1.0]    // buz mavisi vurgu
-#define C_GOLD   [UIColor colorWithRed:0.0 green:0.45 blue:0.70 alpha:1.0]    // koyu buz mavisi
-#define C_CYAN   [UIColor colorWithRed:0.10 green:0.62 blue:0.92 alpha:1.0]
-#define C_TEXT   [UIColor colorWithRed:0.06 green:0.12 blue:0.20 alpha:1.0]   // koyu lacivert metin
-#define C_SUB    [UIColor colorWithRed:0.30 green:0.42 blue:0.52 alpha:0.85]  // gri-mavi alt metin
+// ==== v114.31 KOYU / NEON TEMA (modern mod menu görünümü) ====
+// Koyu cam panel + neon cyan/mor vurgular. Tüm menü bu paletten türer;
+// selector/key mantığı değişmedi, yalnız görsel.
+#define C_BG     [UIColor colorWithRed:0.055 green:0.065 blue:0.10 alpha:0.97] // koyu cam panel
+#define C_CARD   [UIColor colorWithRed:0.11 green:0.13 blue:0.18 alpha:1.0]    // koyu slate kart
+#define C_CARD2  [UIColor colorWithRed:0.09 green:0.11 blue:0.16 alpha:1.0]    // biraz daha koyu
+#define C_ON     [UIColor colorWithRed:0.0 green:0.90 blue:1.0 alpha:1.0]      // neon cyan (acik)
+#define C_OFF    [UIColor colorWithRed:0.24 green:0.27 blue:0.34 alpha:1.0]    // koyu gri (kapali)
+#define C_RED    [UIColor colorWithRed:1.0 green:0.30 blue:0.42 alpha:1.0]     // neon kirmizi/pembe
+#define C_ACCENT [UIColor colorWithRed:0.45 green:0.55 blue:1.0 alpha:1.0]     // periwinkle vurgu
+#define C_GOLD   [UIColor colorWithRed:1.0 green:0.80 blue:0.25 alpha:1.0]     // altin (koyu üstünde parlar)
+#define C_CYAN   [UIColor colorWithRed:0.0 green:0.92 blue:1.0 alpha:1.0]      // parlak cyan (glow)
+#define C_TEXT   [UIColor colorWithRed:0.93 green:0.96 blue:0.99 alpha:1.0]    // acik metin
+#define C_SUB    [UIColor colorWithRed:0.58 green:0.65 blue:0.76 alpha:0.92]   // gri-mavi alt metin
+#define C_BORDER [UIColor colorWithRed:0.0 green:0.90 blue:1.0 alpha:0.16]     // cyan ince kenar
 
 // =============================================================
 //  GIF -> ASCII  (cihaz uzerinde, harici API YOK - ImageIO + CoreGraphics)
@@ -4821,7 +6842,7 @@ static UIViewController* few1n_topVC(void) {
 
 - (void)build {
     UIWindow *w = getKeyWindow();
-    if (!w || w.bounds.size.width < 100 || w.bounds.size.height < 100) {
+    if (!w) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             if (!self.panel) [self build];
         });
@@ -4870,14 +6891,14 @@ static UIViewController* few1n_topVC(void) {
     self.panel.backgroundColor = C_BG;
     self.panel.layer.cornerRadius = 28;
     self.panel.layer.borderWidth = 1.5;
-    self.panel.layer.borderColor = [UIColor colorWithRed:0.0 green:0.60 blue:0.90 alpha:0.35].CGColor;
+    self.panel.layer.borderColor = [UIColor colorWithRed:0.0 green:0.90 blue:1.0 alpha:0.30].CGColor;
     self.panel.layer.shadowColor = C_CYAN.CGColor;
-    self.panel.layer.shadowRadius = 25; self.panel.layer.shadowOpacity = 0.4;
+    self.panel.layer.shadowRadius = 30; self.panel.layer.shadowOpacity = 0.55;
     self.panel.layer.shadowOffset = CGSizeMake(0,0);
     self.panel.clipsToBounds = YES;
     self.panel.hidden = YES; self.panel.alpha = 0;
     self.panel.transform = CGAffineTransformMakeScale(0.85, 0.85);
-    UIVisualEffectView *blurV = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleExtraLight]];
+    UIVisualEffectView *blurV = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
     blurV.frame = self.panel.bounds;
     blurV.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.panel insertSubview:blurV atIndex:0];
@@ -4885,13 +6906,18 @@ static UIViewController* few1n_topVC(void) {
 
     // HEADER - canli mavi baslik bandi (beyaz metin uzerinde parlar)
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0,0,pw,64)];
-    header.backgroundColor = [UIColor colorWithRed:0.0 green:0.48 blue:0.85 alpha:1.0];
+    header.backgroundColor = [UIColor colorWithRed:0.07 green:0.09 blue:0.15 alpha:1.0];
     CAGradientLayer *hgrad = [CAGradientLayer layer];
     hgrad.frame = CGRectMake(0,0,pw,64);
-    hgrad.colors = @[(id)[UIColor colorWithRed:0.05 green:0.62 blue:0.96 alpha:1.0].CGColor,
-                     (id)[UIColor colorWithRed:0.0 green:0.40 blue:0.80 alpha:1.0].CGColor];
+    hgrad.colors = @[(id)[UIColor colorWithRed:0.10 green:0.16 blue:0.30 alpha:1.0].CGColor,
+                     (id)[UIColor colorWithRed:0.05 green:0.07 blue:0.13 alpha:1.0].CGColor];
     hgrad.startPoint = CGPointMake(0,0); hgrad.endPoint = CGPointMake(1,1);
     [header.layer insertSublayer:hgrad atIndex:0];
+    // alt kenara ince neon cizgi (header ile içeriği ayirir)
+    CALayer *hline = [CALayer layer];
+    hline.frame = CGRectMake(0,63,pw,1);
+    hline.backgroundColor = [UIColor colorWithRed:0.0 green:0.90 blue:1.0 alpha:0.45].CGColor;
+    [header.layer addSublayer:hline];
     // parlak nokta rozeti
     UILabel *dotIcon = [[UILabel alloc] initWithFrame:CGRectMake(16,18,22,26)];
     dotIcon.text = @"\U0001F3CE"; dotIcon.font = [UIFont systemFontOfSize:18];
@@ -4901,8 +6927,8 @@ static UIViewController* few1n_topVC(void) {
     title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
     [header addSubview:title];
     UILabel *ver = [[UILabel alloc] initWithFrame:CGRectMake(42,37,pw-90,16)];
-    ver.text = [NSString stringWithFormat:@"v114.42  •  Base 0x%lX", (unsigned long)global_base];
-    ver.textColor = [UIColor colorWithWhite:1 alpha:0.82];
+    ver.text = [NSString stringWithFormat:@"v" @FEW1N_STR(FEW1N_VERSION) @"  •  Base 0x%lX", (unsigned long)global_base];
+    ver.textColor = [UIColor colorWithRed:0.0 green:0.92 blue:1.0 alpha:0.90];
     ver.font = [UIFont fontWithName:@"Menlo-Bold" size:8] ?: [UIFont systemFontOfSize:8 weight:UIFontWeightBold];
     [header addSubview:ver];
     UIButton *cls = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -4933,10 +6959,10 @@ static UIViewController* few1n_topVC(void) {
     {
         // YENI: slider 0.1x - 10x (0.1 adim); butonlar kaldirildi
         UIView *sr = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,66)];
-        sr.backgroundColor = [UIColor colorWithRed:0.93 green:0.96 blue:0.99 alpha:1.0];
+        sr.backgroundColor = C_CARD;
         sr.layer.cornerRadius = 12;
         sr.layer.borderWidth = 1.0;
-        sr.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:0.85 alpha:0.12].CGColor;
+        sr.layer.borderColor = C_BORDER.CGColor;
         UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(12,4,pw-48-40,18)];
         lbl.tag = 991; lbl.textColor = C_TEXT;
         lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
@@ -4968,7 +6994,6 @@ static UIViewController* few1n_topVC(void) {
     y += 22;
 
     y = [self header:@"\U0001F3CE  ARAC" atY:y];
-    y = [self toggle:@"🏎️  TÜM ARAÇLAR AÇIK (Free Garage)" sub:@"Garajdaki tüm kilitli araçları anında bedelsiz açar" key:@"unlockcars" atY:y action:@selector(tapUnlockCars)];
     y = [self toggle:@"🧊  Drift Modu (Kusursuz Kayma)" sub:@"il2cpp fizik ile yan kayma koruması" key:@"drift" atY:y action:@selector(tapDrift)];
     y = [self toggle:@"🚗  Hız Sabitleyici (Cruise Control)" sub:@"Gaza basmadan belirlenen hızda git" key:@"cruise" atY:y action:@selector(tapCruise)];
     y = [self actionRow:@"✏️  Sabit Hız Ayarla (km/h)" color:C_CYAN atY:y action:@selector(editCruiseSpeed)];
@@ -4989,18 +7014,48 @@ static UIViewController* few1n_topVC(void) {
 
     // Gizli il2cpp özellikleri (field API - versiyon-dayanikli)
     y = [self toggle:@"💨  SONSUZ NOS" sub:@"RCCP_Nos.amount = 100 sürekli" key:@"infnos" atY:y action:@selector(tapInfNos)];
+    y = [self toggle:@"🚀  NOS SÜPER GÜÇ" sub:@"Nitro bitmez + 8x itiş gücü (torqueMultiplier)" key:@"nossuper" atY:y action:@selector(tapNosSuper)];
     y = [self toggle:@"⛽  SONSUZ YAKIT" sub:@"RCCP_FuelTank fill=999 + consumption=0" key:@"inffuel" atY:y action:@selector(tapInfFuel)];
     y = [self toggle:@"🚀  MAX RPM (Turbo)" sub:@"RCCP_Engine override + engineRPM=9000" key:@"maxrpm" atY:y action:@selector(tapMaxRpm)];
     y = [self toggle:@"🛡️  HASAR YOK V2 (il2cpp)" sub:@"RCCP_Damage maximumDamage=0 + deformMult=0" key:@"nodamagev2" atY:y action:@selector(tapNoDamageV2)];
     y = [self toggle:@"🔥  Motor Ölmez" sub:@"RCCP_Engine.engineRunning = true" key:@"immortalengine" atY:y action:@selector(tapImmortalEngine)];
     y = [self toggle:@"🚗  Trafik Dursun" sub:@"HR_TrafficCar.maximumSpeed = 0" key:@"notraffic" atY:y action:@selector(tapNoTraffic)];
+    y = [self actionRow:@"🚦  Trafik Yoğunluğu (Boş / Normal / Kalabalık)" color:C_ON atY:y action:@selector(setTrafficDensity)];
+    y = [self actionRow:@"🏆  Combo/Skor Şişir (yarışta bas)" color:C_GOLD atY:y action:@selector(boostScore)];
+    self.plateBtn = [self actionButtonRow:&y];
+    [self.plateBtn addTarget:self action:@selector(editPlate) forControlEvents:UIControlEventTouchUpInside];
+    y = [self actionRow:@"Sunucudan Rastgele Plaka Al" color:C_ON atY:y action:@selector(spinServerPlate)];
+    y = [self actionRow:@"🔰  Özel Plaka — HERKESTE Göster (yaz + yayınla)" color:C_GOLD atY:y action:@selector(setServerPlate)];
+    y = [self actionRow:@"🎭  Başkasının Plakası (SADECE SENDE — herkeste olmaz)" color:C_ON atY:y action:@selector(hijackPlatePick)];
+    y = [self actionRow:@"🏷️  Başkasının İsmini Değiştir (Seç — deneysel)" color:C_RED atY:y action:@selector(changeNamePick)];   // v114.95
+    y = [self actionRow:@"🚀  Oyuncuyu Zıplat/Fırlat (Seç — zıpla/fırlat/uzaya)" color:C_RED atY:y action:@selector(launchPlayerPick)];
+    y = [self actionRow:@"🧲  Oyuncuyu Sana Çek (yanına ışınla)" color:C_RED atY:y action:@selector(pullPlayerPick)];
+    y = [self actionRow:@"🧲  Herkesi Bana Çek (Mass — tek tuş)" color:C_RED atY:y action:@selector(massPull)];   // v114.90
+    y = [self actionRow:@"❄️  Oyuncuyu Dondur / Yerinde Kilitle" color:C_RED atY:y action:@selector(freezePlayerPick)];   // v114.92
+    y = [self actionRow:@"🧲  Herkesi Kayıtlı Konuma Topla" color:C_RED atY:y action:@selector(massGatherSaved)];   // v114.92
+    y = [self actionRow:@"🎯  Oyuncuyu Oto-Takip (yanında tut)" color:C_RED atY:y action:@selector(followPlayerPick)];   // v114.93
+    y = [self actionRow:@"🔄  Oyuncuyla Yer Değiştir" color:C_RED atY:y action:@selector(swapPlayerPick)];   // v114.93
+    y = [self actionRow:@"🧊  Herkesi Dondur (tüm oda — toggle)" color:C_RED atY:y action:@selector(massFreezeToggle)];   // v114.94
+    y = [self actionRow:@"🎢  Oyuncuyu Fırlatıp-Getir (yo-yo)" color:C_RED atY:y action:@selector(yoyoPlayerPick)];   // v114.94
+    y = [self actionRow:@"🌪️  Herkesi Fırlat (Mass — tek tuş)" color:C_RED atY:y action:@selector(massLaunch)];
+    y = [self actionRow:@"📍  Konum Kaydet (buraya ışınlamak için)" color:C_GOLD atY:y action:@selector(griefSavePos)];
+    y = [self actionRow:@"🎯  Oyuncuyu Kaydedilen Konuma Işınla (Seç)" color:C_RED atY:y action:@selector(teleportToSavedPick)];
+    y = [self actionRow:@"🔒  Sürekli Fırlat / Kilit (Seç — aç/kapa)" color:C_RED atY:y action:@selector(lockLaunchPick)];
+    y = [self actionRow:@"🏁  Oyuncuyu Zorla Kazandır (Seç — deneysel)" color:C_RED atY:y action:@selector(forceWinPick)];
+    y = [self actionRow:@"🎭  Aracı Çal/Klonla (ONUN aracı SENDE olsun)" color:C_GOLD atY:y action:@selector(stealCarPick)];
+    y = [self actionRow:@"🚗  Aracını Ona Ver (SENİN aracın ONDA olsun)" color:C_GOLD atY:y action:@selector(copyCarPick)];
+    y = [self actionRow:@"🏷️  Sunucu İsmi Değiştir (herkes görür)" color:C_GOLD atY:y action:@selector(officialNicknameEveryone)];
+    y = [self actionRow:@"🏆  Anında Kazan (yarışı bitir + ödül)" color:C_ON atY:y action:@selector(instantWin)];
+    y = [self actionRow:@"🚧  Trafik Fırlat (önüne trafik aracı — deneysel)" color:C_RED atY:y action:@selector(trafficStrike)];
+    // v114.61: 'Oyuncunun Aracını Ele Geçir' SILINDI (calismiyor - kullanici istegi)
+    y = [self actionRow:@"🛞  Jant Modeli Değiştir (tuner — herkeste)" color:C_ON atY:y action:@selector(cycleWheels)];
+    y = [self actionRow:@"🛢️  Lastik Değiştir (tuner — herkeste)" color:C_ON atY:y action:@selector(cycleTire)];
+
     // v102: 6 yeni ozellik
     y = [self toggle:@"✨  Emissive Parlak Boya" sub:@"Aracın materyallerini HDR sarı-turuncu parlak yapar" key:@"emissive" atY:y action:@selector(tapEmissivePaint)];
     y = [self toggle:@"🔥  Egzoz Alev Sürekli" sub:@"RCCP_Exhaust.flameOnCutOff=true" key:@"exhaustflame" atY:y action:@selector(tapExhaustFlame)];
     y = [self toggle:@"📺  Vidyo İsim Modu" sub:@"Rich text oyuncu isimlerini vidyo yap" key:@"vidyonames" atY:y action:@selector(tapVidyoNames)];
-    y = [self actionRow:@"🔧  Parça Sök & Fırlat (kapı/spoyler koparsın)" color:C_RED atY:y action:@selector(tapDetachParts)];
-    y = [self actionRow:@"🚀  Herkesi Sana Teleport Et" color:C_ON atY:y action:@selector(tapTeleportAllToMe)];
-    y = [self actionRow:@"🎮  Yabancı Aracı Ele Geçir (isMine=true)" color:C_GOLD atY:y action:@selector(tapHijackCar)];
+    // v114.61: 'Parça Sök & Fırlat' + 'Herkesi Sana Teleport' + 'Yabancı Aracı Ele Geçir' SILINDI (calismiyor)
     y = [self actionRow:@"✏️  Selektor Hizi Ayarla" color:C_CYAN atY:y action:@selector(editSelektorSpeed)];
     y = [self actionRow:@"\U0001F53C  ZIPLA (bas)" color:C_ON atY:y action:@selector(jumpTap)];
     y = [self actionRow:@"\U0001F680  Hiz Patlamasi (boost)" color:C_ON atY:y action:@selector(boostTap)];
@@ -5010,7 +7065,7 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"\U0001F4CD  Konum Kaydet" color:C_GOLD atY:y action:@selector(saveTeleportPos)];
     y = [self actionRow:@"\U0001F680  Kayitli Konuma Isinlan" color:C_GOLD atY:y action:@selector(teleportSaved)];
     y = [self actionRow:@"\U0001F3AF  Oyuncuya Isinlan (yanina git)" color:C_ON atY:y action:@selector(teleportToPlayer)];
-    y = [self actionRow:@"\U0001F9F2  Oyuncuyu Yanima Cek (RPC Isinla)" color:C_ON atY:y action:@selector(bringPlayerToMe)];
+    // v114.61: 'Oyuncuyu Yanima Cek (RPC)' SILINDI (calismiyor)
 
     y = [self header:@"\U0001F4AC  CHAT" atY:y];
     y = [self actionRow:@"💬  AI'ye Dogrudan Soru Sor (Pencereden)" color:C_GOLD atY:y action:@selector(askAiDirect)];
@@ -5101,6 +7156,7 @@ static UIViewController* few1n_topVC(void) {
 
     y = [self header:@"\U0001F511  ODA" atY:y];
     y = [self actionRow:@"🚪  Canlı Odalara Gir (Dolu Oda Bypass & Liste)" color:C_ON atY:y action:@selector(joinRoomByName)];
+    y = [self toggle:@"🔓  Şifreli Oda Oto-Doldur" sub:@"Şifreli odaya girerken şifreyi otomatik doldur. Kapatırsan elle girersin (crash olursa kapat)." key:@"bypass" atY:y action:@selector(tapBypass)];
     y = [self actionRow:@"🌐  TOPLU SUNUCU GİZLE (gir→master→gizle→çık)" color:C_RED atY:y action:@selector(pickRoomsServerHide)];
     y = [self actionRow:@"🏡  Gelişmiş Özel Oda Kur (Çöl, Saat, Drift, 31 Kişi)" color:C_ON atY:y action:@selector(createAdvancedCustomRoom)];
     y = [self actionRow:@"🏠  Normal Oda Kur (isim yaz — deneysel)" color:C_ON atY:y action:@selector(createNormalRoom)];
@@ -5127,10 +7183,12 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"👑  Oda Master Ol" color:C_GOLD atY:y action:@selector(tapRoomMaster)];
     y = [self actionRow:[NSString stringWithFormat:@"⚙️  Master Claim %@ (v70 modu)", isMasterClaimDisabled ? @"KAPALI ✅" : @"ACIK ⚠️"] color:C_CYAN atY:y action:@selector(toggleMasterClaim)];
     y = [self toggle:@"🤖  Otomatik Master" sub:@"Master gidince aninda geri al" key:@"automaster" atY:y action:@selector(tapAutoMaster)];
+    y = [self toggle:@"🛡️  Anti-Kick" sub:@"Kicklenirsen odaya otomatik geri gir + master ol" key:@"antikick" atY:y action:@selector(tapAntiKick)];
     y = [self actionRow:@"⏱️  Oyun Hızı (TimeScale)" color:C_CYAN atY:y action:@selector(tapGameSpeed)];
     y = [self actionRow:@"👥  Fake Çevrimici Sayısı (Lobi Görseli)" color:C_CYAN atY:y action:@selector(tapFakeOnline)];
-    y = [self actionRow:@"🗺️  Odadayken Harita Değiştir (v233 minimal + master zorla)" color:C_ON atY:y action:@selector(changeMapInRoom)];
-    y = [self actionRow:@"🚗  Kişi Aracı Klonla (deneysel race glitch)" color:C_GOLD atY:y action:@selector(cloneCarPicker)];
+    y = [self actionRow:@"👑  GERÇEK Master Ol (harita için ÖNCE bas)" color:C_GOLD atY:y action:@selector(becomeRealMasterMap)];   // v114.89: geri geldi
+    y = [self actionRow:@"🗺️  Harita Değiştir (Y5 — çalışan)" color:C_GOLD atY:y action:@selector(mapListY5)];   // v114.87: sade Y5
+    // v114.61: 'Kişi Aracı Klonla' SILINDI (calismiyor)
     y = [self actionRow:@"🌤️  Hava Durumu & Zaman Seç (Aktarmasız Canlı)" color:C_ON atY:y action:@selector(changeWeatherOnly)];
     // Oda ismi degistirmek icin tek gercek yol: 🔄 Odayi Yeniden Olustur (asagida)
     y = [self actionRow:@"👥  Odadayken Max Oyuncu Değiştir (2-100)" color:C_GOLD atY:y action:@selector(changeMaxPlayersInRoom)];
@@ -5139,27 +7197,30 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"🔒  Odayı Kilitle / Aç (IsOpen Toggle)" color:C_GOLD atY:y action:@selector(tapRoomLock)];
     y = [self actionRow:@"👁️  Odayı Gizle / Göster (IsVisible Toggle)" color:C_GOLD atY:y action:@selector(tapRoomHide)];
     y = [self actionRow:@"\U0001F511  Oda Sifresi Koy / Kaldir" color:C_GOLD atY:y action:@selector(tapRoomPassword)];
-    y = [self actionRow:@"\U0001F4A5  ODAYI KAPAT (Herkesi At & Odayi Sonlandir)" color:C_RED atY:y action:@selector(nukeRoom)];
-    y = [self actionRow:@"💥  Odadaki Herkesi At (Mass Kick)" color:C_RED atY:y action:@selector(tapRoomKickAll)];
+    // v114.61: 'ODAYI KAPAT' + 'Odadaki Herkesi At (Mass Kick)' SILINDI (calismiyor)
+    y = [self actionRow:@"🗳️  Normal Oylama Başlat (0sn Beklemesiz)" color:C_ON atY:y action:@selector(normalVoteKickPick)];
+    y = [self toggle:@"🗳️  Oylamayı Full Evet Yap (Oto 99+)" sub:@"Açıkken tüm oylamaları 99 EVET yapar ve onaylar" key:@"votekickyes" atY:y action:@selector(tapVoteKickFullYes)];
+    y = [self actionRow:@"⚡  Aktif Oylamayı Anında 99 Evet Geçir" color:C_GOLD atY:y action:@selector(forceVoteKickFullYes)];
+    y = [self actionRow:@"🛡️  VoteKick Durumu (1.4.4 Kontrol)" color:C_CYAN atY:y action:@selector(voteKickDiagnostics)];
     y = [self actionRow:@"🎯  Belirli Oyuncuyu At (Sec ve Kick)" color:C_RED atY:y action:@selector(nativeKickPick)];
-    y = [self actionRow:@"🗳️  Normal Oylama Başlat (Oyuncu Seç)" color:C_CYAN atY:y action:@selector(normalVoteKickPick)];
-    y = [self toggle:@"🗳️  Oylama Full Evet" sub:@"Aktif oylamayı 99 Evet yapar ve kilitler" key:@"votekickyes" atY:y action:@selector(tapVoteKickFullYes)];
-    y = [self actionRow:@"⚡  Aktif Oylamayı 99 Evet Yap" color:C_CYAN atY:y action:@selector(forceVoteKickFullYes)];
-    y = [self actionRow:@"🛡️  VoteKick / Anti-VoteKick Durumu" color:C_CYAN atY:y action:@selector(voteKickDiagnostics)];
-    y = [self actionRow:@"💣  HEDEFLİ BOMBA + CRASH (Sec)" color:C_RED atY:y action:@selector(targetBombCrashPick)];
-    // v114.24: Yeni troll saldırı butonları
-    y = [self actionRow:@"🚀  Gökyüzüne Fırlat (Oyuncu Seç)" color:C_RED atY:y action:@selector(targetSkyLaunch)];
-    y = [self actionRow:@"🚛  Önüne Trafik Kamyonu At (Seç)" color:C_RED atY:y action:@selector(targetTrafficRocket)];
-    y = [self actionRow:@"🔖  Plakasını Değiştir / İfşa (Seç)" color:C_RED atY:y action:@selector(targetPlateChange)];
-    y = [self actionRow:@"🏁  Yarışını Bitir (Seç)" color:C_RED atY:y action:@selector(targetRaceFinish)];
+    y = [self actionRow:@"⚔️  Herkesi At (Mass Kick — master iken)" color:C_RED atY:y action:@selector(kickAllPlayers)];   // v115.0
+    y = [self actionRow:@"🏷️  Herkesin İsmini Değiştir" color:C_RED atY:y action:@selector(massNameChange)];   // v115.0
+    y = [self actionRow:@"🧬  Photon Property Enjektörü (Seç — deneysel)" color:C_RED atY:y action:@selector(injectPropertyPick)];   // v115.0
+    y = [self actionRow:@"🚫  Ban Listesi (geri geleni otomatik at)" color:C_RED atY:y action:@selector(manageBans)];
+    // v114.61: 'HEDEFLİ BOMBA + CRASH' SILINDI (calismiyor)
     y = [self actionRow:@"🆔  Oyuncu ID Listesi (ActorNumber + UserId)" color:C_ON atY:y action:@selector(showPlayerIDs)];
     y = [self toggle:@"🕵️  İsim Değişikliği Takibi (Auto)" sub:@"ActorNumber -> NickName eşleşmesini izler, değişirse alert" key:@"nametrack" atY:y action:@selector(tapNameTrack)];
     y = [self actionRow:@"✏️  Nickname ile At (Elle yaz)" color:C_GOLD atY:y action:@selector(nativeKickByName)];
     y = [self actionRow:@"💣  Oda Patlatma (Odadakileri Düşür)" color:C_RED atY:y action:@selector(tapRoomExplode)];
-    y = [self actionRow:@"🎨  Odadaki Araç Rengini Değiştir (Tüm Araçları Boya)" color:C_GOLD atY:y action:@selector(pickCarPaintColor)];
+    // v114.61: 'Tüm Araçları Boya' + 'Kendi Rengin HERKESTE (PaintTuner yayını)' SILINDI (calismiyor)
+    y = [self actionRow:@"💿  Jant Rengi — HERKESTE" color:C_GOLD atY:y action:@selector(setRimColor)];
+    y = [self actionRow:@"✨  Krom Aç/Kapa — HERKESTE" color:C_GOLD atY:y action:@selector(setChromeMenu)];
+    y = [self actionRow:@"🪟  Cam Koyuluğu — HERKESTE" color:C_GOLD atY:y action:@selector(setGlassMenu)];
+    y = [self actionRow:@"🏎️  Stance / Kamber — HERKESTE" color:C_GOLD atY:y action:@selector(setStanceMenu)];
+    // v114.61: 'Gövde Parça HERKESTE' SILINDI (calismiyor)
+    y = [self actionRow:@"🏁  Bitiş Çizgisine Işınlan (deneysel)" color:C_ON atY:y action:@selector(finishTeleport)];
     y = [self actionRow:@"🎨  Renkli Oda Kur (Dinamik Stil Paneli)" color:C_GOLD atY:y action:@selector(createColoredRoom)];
-    y = [self actionRow:@"🧪  Exploit Ile Oda Kur (30 Yontem)" color:C_RED atY:y action:@selector(exploitCreateRoom)];
-    y = [self actionRow:@"🏠  Düz Özel İsimli Oda Kur" color:C_CYAN atY:y action:@selector(createOneRoom)];
+    // v114.61: 'Exploit Ile Oda Kur (30 Yontem)' + 'Düz Özel İsimli Oda Kur' SILINDI (calismiyor)
     y = [self actionRow:@"\U0001F4A5  300 ODA AC (tek tus, 0.02sn)" color:C_RED atY:y action:@selector(spam300Rooms)];
     y = [self toggle:@"\U0001F4E5  Fake Oda Spam" sub:@"Kalici odalar birikir" key:@"roomspam" atY:y action:@selector(tapRoomSpam)];
     y = [self toggle:@"\U0001F504  Surekli Mod" sub:@"Kapatana kadar spam" key:@"roomcont" atY:y action:@selector(tapRoomContinuous)];
@@ -5210,9 +7271,10 @@ static UIViewController* few1n_topVC(void) {
 
     self.contentView.frame = CGRectMake(0,0,pw,y);
     self.scrollView.contentSize = CGSizeMake(pw,y);
-    for (int i = 0; i < 24; i++) g_secOpen[i] = false;  // TUM BOLUMLER VARSAYILAN KAPALI (v114.25-8 gibi kesin stabil)
+    for (int i = 0; i < 24; i++) g_secOpen[i] = false;  // TUM BOLUMLER VARSAYILAN KAPALI (tiklayinca acilir)
     [self reflowMenu];     // ACCORDION: bolumleri katla/ac
     [w addSubview:self.panel];
+    [self refreshUI];
 
     if (tickTimer) { [tickTimer invalidate]; tickTimer = nil; }
     tickTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self selector:@selector(tick) userInfo:nil repeats:YES];
@@ -5299,12 +7361,12 @@ static UIViewController* few1n_topVC(void) {
 - (CGFloat)toggle:(NSString*)tl sub:(NSString*)sub key:(NSString*)key atY:(CGFloat)y action:(SEL)action {
     CGFloat pw = self.panel.bounds.size.width;
     UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,56)];
-    card.backgroundColor = [UIColor colorWithRed:0.97 green:0.985 blue:1.0 alpha:1.0];
+    card.backgroundColor = C_CARD;
     card.layer.cornerRadius = 14;
     card.layer.borderWidth = 1.0;
-    card.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:0.85 alpha:0.14].CGColor;
-    card.layer.shadowColor = [UIColor colorWithRed:0.0 green:0.35 blue:0.65 alpha:1.0].CGColor;
-    card.layer.shadowRadius = 5; card.layer.shadowOpacity = 0.10;
+    card.layer.borderColor = C_BORDER.CGColor;
+    card.layer.shadowColor = C_CYAN.CGColor;
+    card.layer.shadowRadius = 6; card.layer.shadowOpacity = 0.12;
     card.layer.shadowOffset = CGSizeMake(0,2);
     UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(16,8,pw-100,22)];
     t.text = tl; t.textColor = C_TEXT;
@@ -5333,12 +7395,12 @@ static UIViewController* few1n_topVC(void) {
 - (CGFloat)actionRow:(NSString*)text color:(UIColor*)color atY:(CGFloat)y action:(SEL)action {
     CGFloat pw = self.panel.bounds.size.width;
     UIView *row = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
-    row.backgroundColor = [UIColor colorWithRed:0.97 green:0.985 blue:1.0 alpha:1.0];
+    row.backgroundColor = C_CARD;
     row.layer.cornerRadius = 12;
     row.layer.borderWidth = 1.0;
-    row.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:0.85 alpha:0.12].CGColor;
-    row.layer.shadowColor = [UIColor colorWithRed:0.0 green:0.35 blue:0.65 alpha:1.0].CGColor;
-    row.layer.shadowRadius = 4; row.layer.shadowOpacity = 0.08;
+    row.layer.borderColor = C_BORDER.CGColor;
+    row.layer.shadowColor = C_CYAN.CGColor;
+    row.layer.shadowRadius = 5; row.layer.shadowOpacity = 0.10;
     row.layer.shadowOffset = CGSizeMake(0,2);
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     b.frame = CGRectMake(0,0,pw-24,44);
@@ -5459,6 +7521,7 @@ static UIViewController* few1n_topVC(void) {
     // v95 FIX: 4 buton EKSIK KALDI refreshUI'da — basınca iç state değişiyordu ama pill güncellenmiyordu
     // Kullanıcı "açılmıyor" sanıyordu. Şimdi eklendi.
     [self setToggle:@"automaster"     on:isAutoMasterEnabled];
+    [self setToggle:@"antikick"       on:isAntiKickEnabled];
     [self setToggle:@"brakeglow"      on:isBrakeGlowEnabled];  // eski favori anahtari
     [self setToggle:@"brakeglowdob"   on:isBrakeGlowDobEnabled];
     [self setToggle:@"brakeglowmin"   on:isBrakeGlowMinTempEnabled];
@@ -5472,6 +7535,7 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"nodamagev2"     on:isNoDamageV2Enabled];
     [self setToggle:@"immortalengine" on:isEngineImmortalEnabled];
     [self setToggle:@"notraffic"      on:isNoTrafficEnabled];
+    [self setToggle:@"nossuper"       on:isNosSuperEnabled];
     [self setToggle:@"emissive"       on:isEmissivePaintEnabled];
     [self setToggle:@"exhaustflame"   on:isExhaustFlameOnEnabled];
     [self setToggle:@"vidyonames"     on:isVidyoNamesEnabled];
@@ -5500,15 +7564,16 @@ static UIViewController* few1n_topVC(void) {
     [self.moneyBtn setTitleColor:C_GOLD forState:UIControlStateNormal];
 
     if (isCustomPlateEnabled)
-        [self.plateBtn setTitle:[NSString stringWithFormat:@"\U0001F4DD Plaka: %s ✅", customPlateText] forState:UIControlStateNormal];
+        [self.plateBtn setTitle:[NSString stringWithFormat:@"\U0001F4DD Yerel Plaka: %s", customPlateText] forState:UIControlStateNormal];
     else
-        [self.plateBtn setTitle:@"\U0001F4DD Ozel Plaka Ayarla" forState:UIControlStateNormal];
+        [self.plateBtn setTitle:@"\U0001F4DD Yerel Plaka Onizlemesi" forState:UIControlStateNormal];
     [self.plateBtn setTitleColor:isCustomPlateEnabled ? C_ON : C_GOLD forState:UIControlStateNormal];
 }
 
 - (void)frameTick {
     enforceScale();          // her ekran frame'inde timeScale'i zorla
-    few1n_tickVoteKickFullYes(); // 1.4.4: 60fps oylama evet kilitleme + odaya girince 60sn/180sn oylama bekleme kilitlerini sıfırlama
+    few1n_tickVoteKickFullYes(); // 1.4.4: 0sn oylama kilidi sifirla + oylamayi oto 99 EVET yap
+    few1n_enableChatRichText();  // 1.4.4: chat richText + <noparse> temizle
     // ===== OTOMATIK KARSILAMA: odaya YENI girince (false->true kenari) mesaj at =====
     // Optimizasyon: sadece ozellik ACIKKEN poll et (kapaliyken her frame cagri yok)
     if (isAutoGreetEnabled && pn_getInRoom) {
@@ -5536,9 +7601,9 @@ static UIViewController* few1n_topVC(void) {
             Vec3 fwd; bool haveFwd = few1n_fwd(g_rb, &fwd);
             float thr = 0.0f, brk = 0.0f, str = 0.0f;
             if (unityAlive(g_myRccp)) {
-                thr = *(float*)((uintptr_t)g_myRccp + 0x168);   // throttleInput_V
-                brk = *(float*)((uintptr_t)g_myRccp + 0x16C);   // brakeInput_V (geri)
-                str = *(float*)((uintptr_t)g_myRccp + 0x170);   // steerInput_V
+                thr = *(float*)((uintptr_t)g_myRccp + OFFR_RCCP_THROTTLE);   // throttleInput_V
+                brk = *(float*)((uintptr_t)g_myRccp + OFFR_RCCP_BRAKE);   // brakeInput_V (geri)
+                str = *(float*)((uintptr_t)g_myRccp + OFFR_RCCP_STEER);   // steerInput_V
             }
             float drive = thr - brk;   // gaz ileri, fren geri (-1..1)
             // OTOMATIK GAZ: fren basili degilse otomatik ileri git -> parmak sadece direksiyonda
@@ -5595,7 +7660,7 @@ static UIViewController* few1n_topVC(void) {
         @try {
             if (g_myRccp) {
                 bool hornState = (hornTick % 10 < 5);  // 100ms ritmik cal
-                *(bool*)((uintptr_t)g_myRccp + 0x1A0) = hornState; // indicatorsAllLights / Horn signal
+                *(bool*)((uintptr_t)g_myRccp + OFFR_RCCP_INDICATORS) = hornState; // indicatorsAllLights / Horn signal
             }
         } @catch (...) {}
     }
@@ -5603,15 +7668,15 @@ static UIViewController* few1n_topVC(void) {
     // ===== POP & BANGS (EGZOZ ALEV & PATLAMA EFEKTI) =====
     if (isPopBangsEnabled && unityAlive(g_rb) && g_myRccp) {
         @try {
-            float rpm = *(float*)((uintptr_t)g_myRccp + 0x114); // engineRPM
+            float rpm = *(float*)((uintptr_t)g_myRccp + OFFR_RCCP_ENGINERPM); // engineRPM
             if (rpm > 3500.0f) {
                 static int pTick = 0; pTick++;
                 if (pTick % 4 == 0) {
-                    *(bool*)((uintptr_t)g_myRccp + 0x19C) = true;  // lowBeam
-                    *(bool*)((uintptr_t)g_myRccp + 0x19D) = true;  // highBeam
+                    *(bool*)((uintptr_t)g_myRccp + OFFR_RCCP_LOWBEAM) = true;  // lowBeam
+                    *(bool*)((uintptr_t)g_myRccp + OFFR_RCCP_HIGHBEAM) = true;  // highBeam
                 } else if (pTick % 4 == 2) {
-                    *(bool*)((uintptr_t)g_myRccp + 0x19C) = false;
-                    *(bool*)((uintptr_t)g_myRccp + 0x19D) = false;
+                    *(bool*)((uintptr_t)g_myRccp + OFFR_RCCP_LOWBEAM) = false;
+                    *(bool*)((uintptr_t)g_myRccp + OFFR_RCCP_HIGHBEAM) = false;
                 }
             }
         } @catch (...) {}
@@ -5621,10 +7686,10 @@ static UIViewController* few1n_topVC(void) {
     if (isRevLimiterEnabled && unityAlive(g_rb) && g_myRccp) {
         @try {
             static int rTick = 0; rTick++;
-            float maxRpm = *(float*)((uintptr_t)g_myRccp + 0x11C); // maxEngineRPM
+            float maxRpm = *(float*)((uintptr_t)g_myRccp + OFFR_RCCP_MAXRPM); // maxEngineRPM
             if (maxRpm < 6000.0f) maxRpm = 9000.0f;
             float targetRpm = (rTick % 6 < 3) ? maxRpm : (maxRpm * 0.88f);
-            *(float*)((uintptr_t)g_myRccp + 0x114) = targetRpm; // engineRPM -> Online oyunculara kesici sesi gider
+            *(float*)((uintptr_t)g_myRccp + OFFR_RCCP_ENGINERPM) = targetRpm; // engineRPM -> Online oyunculara kesici sesi gider
         } @catch (...) {}
     }
     if (isCruiseEnabled && unityAlive(g_rb)) {
@@ -5774,7 +7839,7 @@ static UIViewController* few1n_topVC(void) {
                 for (int i = 0; i < cnt && g_espCount < 128; i++) {
                     void* car = cars[i];
                     if (!unityAlive(car)) continue;
-                    void* rb = *(void**)((uintptr_t)car + 0x48);
+                    void* rb = *(void**)((uintptr_t)car + OFFR_CDS_RIGIDBODY);
                     if (!unityAlive(rb) || rb == g_rb) continue;
                     Vec3 wp = {0,0,0}; rbGetPosIl(rb, &wp);
                     Vec3 sp = {0,0,0};
@@ -5890,18 +7955,13 @@ static UIViewController* few1n_topVC(void) {
             int k = 0;
             for (int i = 0; i < cnt; i++) {
                 void* p = ps[i]; if (!ptrOk(p)) continue;
-                // Kombine kick helper'imiz ile at (Master + CloseConn + PhysX + VoteKick)
-                few1n_kickPlayer(p);
-                // Ayrica oyunun lobi manager kick RPC'sini de gonder
                 void* nmeStr = ply_getNickName ? ply_getNickName(p) : NULL;
-                if (ptrOk(nmeStr)) {
-                    *(void**)((uintptr_t)mgr + 0x108) = nmeStr;   // hedef ismi ipg (+0x108) alanina yaz
-                    void* exc = NULL;
-                    @try { i_runtime_invoke(g_mDummyKick, mgr, NULL, &exc); } @catch (...) {}
-                }
-                k++;
+                if (!ptrOk(nmeStr)) continue;
+                *(void**)((uintptr_t)mgr + OFFR_DUMMY_KICKNAME) = nmeStr;   // hedef ismi ipg (+0x108) alanina yaz
+                void* exc = NULL;
+                @try { i_runtime_invoke(g_mDummyKick, mgr, NULL, &exc); k++; } @catch (...) {}
             }
-            FLog([NSString stringWithFormat:@"💥 Odadaki %d oyuncuya Mass Kick (CloseConn + Lobby + PhysX + VoteKick) gönderildi!", k]);
+            FLog([NSString stringWithFormat:@"%d oyuncuya KickPlayerRPC gonderildi -> GERCEKTEN dusmeli (oyunun kendi kick'i)", k]);
         } @catch (...) { FLog(@"Gercek kick hatasi"); }
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
@@ -5926,7 +7986,7 @@ static UIViewController* few1n_topVC(void) {
             if (!unityAlive(mgr)) { FLog(@"Lobi instance gecersiz"); return; }
             void* ns = mkStr(nm);
             if (!ns) return;
-            *(void**)((uintptr_t)mgr + 0x108) = ns;
+            *(void**)((uintptr_t)mgr + OFFR_DUMMY_KICKNAME) = ns;
             @try { i_runtime_invoke(g_mDummyKick, mgr, NULL, NULL); } @catch (...) {}
             FLog([NSString stringWithFormat:@"'%@' icin KickPlayerRPC gonderildi -> dusmeli", nm]);
         } @catch (...) { FLog(@"Gercek kick hatasi"); }
@@ -5942,7 +8002,7 @@ static UIViewController* few1n_topVC(void) {
     @try {
         void* ns = mkStr(nm);
         if (!ns) return NO;
-        *(void**)((uintptr_t)mgr + 0x108) = ns;   // hedef ismi ipg (+0x108)
+        *(void**)((uintptr_t)mgr + OFFR_DUMMY_KICKNAME) = ns;   // hedef ismi ipg (+0x108)
         // KickPlayer icinde RPC panel erisiminden ONCE gider; panel null olsa bile
         // olusan exception'i exc'ye yakalariz (crash yok, RPC yine de gitmis olur).
         void* exc = NULL;
@@ -5950,104 +8010,128 @@ static UIViewController* few1n_topVC(void) {
         return YES;
     } @catch (...) { return NO; }
 }
-
-// Normal VoteKick: Oyunun kendi oylama başlatma metodunu çağırır (1.4.4)
-- (void)normalVoteKickPick {
-    few1n_ensureVoteKick();
-    if (!pn_getInRoom || !pn_getInRoom()) {
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"VoteKick" message:@"Önce bir odaya gir." preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:a]; return;
-    }
-    void* vk = few1n_findVoteKickInstance();
-    if (!g_voteKickClass || !g_mVoteKickStart || !ptrOk(vk)) {
-        [self voteKickDiagnostics]; return;
-    }
-    void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
-    BOOL all = NO;
-    if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); all = YES; }
-    if (!ptrOk(pa)) {
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"VoteKick" message:@"Oyuncu listesi alınamadı." preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:a]; return;
-    }
-    int count = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
-    if (count < 1 || count > 64) {
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"VoteKick" message:@"Odada oylanacak başka oyuncu bulunamadı." preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:a]; return;
-    }
-    void** players = (void**)((uintptr_t)pa + 0x20);
-    void* me = (all && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ Normal VoteKick" message:@"Oyun içi normal oylama başlatılır. Sonuç oyuncuların oyuna ve sunucu kurallarına bağlıdır." preferredStyle:UIAlertControllerStyleActionSheet];
-    for (int i = 0; i < count && i < 32; i++) {
-        void* player = players[i];
-        if (!ptrOk(player) || (me && me == player)) continue;
-        void* nameObj = (ply_getNickName) ? ply_getNickName(player) : NULL;
-        NSString *name = ptrOk(nameObj) ? (readStr(nameObj) ?: @"Oyuncu") : @"Oyuncu";
-        NSString *display = stripRichTextTags(name) ?: name;
-        [a addAction:[UIAlertAction actionWithTitle:display style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            if (!ptrOk(player) || !ptrOk(vk) || !g_mVoteKickStart) return;
-            @try {
-                // v114.42: Odaya girer girmez beklemeden oylama başlatmak için Master al ve 60sn/180sn kilitleri sıfırla
-                few1n_claimMaster();
-                few1n_resetVoteKickCooldowns(vk);
-                void* args[1] = { player };
-                void* exc = NULL;
-                i_runtime_invoke(g_mVoteKickStart, vk, args, &exc);
-                FLog(exc ? @"VoteKick başlatma çağrısı hata döndürdü" : @"Normal VoteKick başlatma çağrısı gönderildi (0sn bekleme)");
-                // v114.38: Oylama başlar başlamaz Evet sayısını anında full yap ve kilitle
-                g_voteKickFullYes = true;
-                [self setToggle:@"votekickyes" on:g_voteKickFullYes];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    void* curVk = few1n_findVoteKickInstance();
-                    if (ptrOk(curVk)) {
-                        if (!(*(bool*)((uintptr_t)curVk + 0x38)) && ptrOk(player)) {
-                            few1n_forceStartVoteKickDirect(curVk, player);
-                        }
-                        few1n_makeVoteKickFullYes();
-                    }
-                });
-            } @catch (...) { FLog(@"Normal VoteKick çağrısı exception"); }
+// Odadaki oyuncularu LISTELE, secilen(ler)i at
+// v91: SIFIRDAN YAZILMIS KICK — Master ol → 3 kick metodunu sirayla dene → tuttugun kadar guclu
+- (void)manageBans {
+    few1n_loadBans();
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚫 Ban Listesi"
+        message:[NSString stringWithFormat:@"Banli isimler odaya girince otomatik atilir (kendi odanda, gercek master iken).\n\nOtomatik zorlama: %@\nBanli: %lu kisi", isAutoBanEnabled ? @"AÇIK" : @"KAPALI", (unsigned long)g_banNicks.count]
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:(isAutoBanEnabled ? @"⏸️ Otomatik Zorlamayı Kapat" : @"▶️ Otomatik Zorlamayı Aç") style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        isAutoBanEnabled = !isAutoBanEnabled;
+        FLog(isAutoBanEnabled ? @"🚫 Ban zorlama ACIK" : @"🚫 Ban zorlama KAPALI");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"✏️ Elle İsim Banla" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *in = [UIAlertController alertControllerWithTitle:@"✏️ İsim Banla" message:@"Banlanacak nick:" preferredStyle:UIAlertControllerStyleAlert];
+        [in addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"nick"; }];
+        [in addAction:[UIAlertAction actionWithTitle:@"Banla" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a2){
+            NSString *t = in.textFields.firstObject.text;
+            if (t.length > 0) { few1n_addBan(t); FLog([NSString stringWithFormat:@"🚫 '%@' elle banlandi", t]); }
+        }]];
+        [in addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        [self present:in];
+    }]];
+    // Mevcut banli isimleri listele -> dokununca kaldir
+    for (NSString *b in [g_banNicks copy]) {
+        [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"❌ Kaldır: %@", b] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [g_banNicks removeObject:b]; few1n_saveBans();
+            FLog([NSString stringWithFormat:@"🚫 '%@' ban listesinden cikarildi", b]);
         }]];
     }
-    [a addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-    [self present:a];
+    if (g_banNicks.count > 0) {
+        [ac addAction:[UIAlertAction actionWithTitle:@"🗑️ Tümünü Temizle" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+            [g_banNicks removeAllObjects]; few1n_saveBans(); FLog(@"🚫 Ban listesi temizlendi");
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, self.panel.bounds.size.height/2, 1, 1); }
+    [self present:ac];
 }
 
 - (void)tapVoteKickFullYes {
     g_voteKickFullYes = !g_voteKickFullYes;
-    [self setToggle:@"votekickyes" on:g_voteKickFullYes];
-    if (g_voteKickFullYes) {
-        few1n_makeVoteKickFullYes();
-    }
+    saveBool(@"votekickyes", g_voteKickFullYes);
+    FLog([NSString stringWithFormat:@"🗳️ Oylamayi Full Evet Yap: %@", g_voteKickFullYes ? @"ACIK (99 EVET)" : @"KAPALI"]);
+    if (g_voteKickFullYes) few1n_makeVoteKickFullYes();
+    [self refreshUI];
 }
 
 - (void)forceVoteKickFullYes {
-    g_voteKickFullYes = true; // 1.4.4: Sürekli aktif tut (kilitle)
-    [self setToggle:@"votekickyes" on:g_voteKickFullYes];
     bool ok = few1n_makeVoteKickFullYes();
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🗳️ VoteKick Full Evet"
-        message:ok ? @"Aktif oylama 99 EVET olarak ayarlandı ve onaylandı! ✓" : @"Şu anda aktif bir oylama bulunamadı veya oylama kapalı."
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:ok ? @"🗳️ Oylama 99 Evet Yapıldı!" : @"⚠️ Aktif Oylama Yok"
+        message:ok ? @"Mevcut oylama 99 EVET / 0 HAYIR olarak ayarlandı ve VoteKickEndRPC(1) gönderildi." : @"Şu an odada aktif bir VoteKick oylaması bulunamadı veya odada değilsin."
         preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-    [self present:a];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:ac];
+}
+
+- (void)normalVoteKickPick {
+    if (!pn_getInRoom || !pn_getInRoom()) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🗳️ Normal Oylama Başlat" message:@"Odada olmalısın." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e]; return;
+    }
+    void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : (pn_getPlayerList ? pn_getPlayerList() : NULL);
+    if (!ptrOk(pa)) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🗳️ Normal Oylama" message:@"Oyuncu listesi alınamadı." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e]; return;
+    }
+    int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+    void** ps = (void**)((uintptr_t)pa + 0x20);
+    void* me = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🗳️ Normal Oylama Başlat (0sn Beklemesiz)"
+        message:@"Odaya yeni girsen bile 60sn/180sn bekleme kilidini sıfırlar ve seçtiğin oyuncuya anında oylama başlatır:"
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    int added = 0;
+    for (int i = 0; i < cnt && i < 32; i++) {
+        void* p = ps[i]; if (!ptrOk(p) || (me && p == me)) continue;
+        NSString *nm = (ply_getNickName && ptrOk(ply_getNickName(p))) ? readStr(ply_getNickName(p)) : [NSString stringWithFormat:@"Oyuncu %d", i+1];
+        NSString *clean = stripRichTextTags(nm) ?: nm;
+        void* pTarget = p;
+        NSString *nmCopy = [clean copy];
+        [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🗳️ %@ (Oylama Aç)", clean] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            bool ok = few1n_forceStartVoteKickDirect(pTarget, g_voteKickFullYes);
+            FLog([NSString stringWithFormat:@"🗳️ '%@' icin beklemesiz oylama baslatildi: %@", nmCopy, ok ? @"OK ✓" : @"FAIL"]);
+        }]];
+        added++;
+    }
+    if (added == 0) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🗳️ Normal Oylama" message:@"Odada başka oyuncu yok." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e]; return;
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) {
+        ac.popoverPresentationController.sourceView = self.panel;
+        ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
+    }
+    [self present:ac];
 }
 
 - (void)voteKickDiagnostics {
-    few1n_ensureVoteKick();
-    void* inst = few1n_findVoteKickInstance();
-    NSString *msg = [NSString stringWithFormat:@"VoteKick sınıfı: %@\nNormal oylama metodu: %@\nOylama instance: %@\n\n1.4.4 VoteKick altyapısı hazır.",
-        g_voteKickClass ? @"Bulundu ✓" : @"Bulunamadı ✗",
-        g_mVoteKickStart ? @"Bulundu ✓" : @"Bulunamadı ✗",
-        inst ? @"Bulundu ✓" : @"Bulunamadı ✗"];
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🛡️ VoteKick Durumu" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-    [self present:a];
+    void* vk = few1n_findVoteKickInstance();
+    NSMutableString *msg = [NSMutableString string];
+    [msg appendFormat:@"• VoteKick Sınıfı: %@\n", g_voteKickClass ? @"BULUNDU ✓" : @"YOK ✗"];
+    [msg appendFormat:@"• VoteKick Instance: %@\n", unityAlive(vk) ? [NSString stringWithFormat:@"AKTİF (%p) ✓", vk] : @"YOK (Odaya gir)"];
+    [msg appendFormat:@"• Oto 99 Evet Modu: %@\n", g_voteKickFullYes ? @"AÇIK ✅" : @"KAPALI ❌"];
+    [msg appendFormat:@"• 0sn Beklemesiz Oylama: AKTİF ✅\n"];
+    [msg appendFormat:@"• Kick/Oylama/Rapor Koruması: AKTİF 🛡️\n"];
+    if (unityAlive(vk)) {
+        @try {
+            int yes = *(int*)((uintptr_t)vk + 0x30);
+            int no  = *(int*)((uintptr_t)vk + 0x34);
+            float rem = *(float*)((uintptr_t)vk + 0x50);
+            float cdRoom = *(float*)((uintptr_t)vk + 0x58);
+            bool act = *(bool*)((uintptr_t)vk + 0x5C);
+            [msg appendFormat:@"\n📊 Anlık Oylama: %@\nEVET: %d | HAYIR: %d | Süre: %.1fs\nOda Giriş Sayacı: %.0fs (Kilitsiz)", act ? @"DEVAM EDİYOR" : @"Yok", yes, no, rem, cdRoom];
+        } @catch (...) {}
+    }
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🛡️ 1.4.4 VoteKick & Koruma" message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:ac];
 }
 
-// Odadaki oyuncularu LISTELE, secilen(ler)i at
-// v91: SIFIRDAN YAZILMIS KICK — Master ol → 3 kick metodunu sirayla dene → tuttugun kadar guclu
 - (void)nativeKickPick {
     if (!pn_getInRoom || !pn_getInRoom()) {
         UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🎯 Kick" message:@"Odada olmalisin." preferredStyle:UIAlertControllerStyleAlert];
@@ -6095,14 +8179,10 @@ static UIViewController* few1n_topVC(void) {
 
             [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🔨 %@", nmClean.length > 0 ? nmClean : nm]
                 style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
-                FLog([NSString stringWithFormat:@"🎯 Anında Kick tetiklendi: '%@'", nmCopy]);
-                few1n_forceEnableKick();
-                few1n_claimMaster();
-                // 1.4.4: ANINDA FORCE KICK (Hiç beklemeden tüm vektörlerle direkt vur!)
-                few1n_kickPlayer(pTarget);
+                FLog([NSString stringWithFormat:@"🎯 Kick basladi: '%@'", nmCopy]);
 
-                // Arka planda master garantisi ile tekrar et
-                __block int masterAttempts = 1;
+                // v97: MASTER GARANTI ZINCIRI - 3 kez dene, gerçekten oldun mu kontrol et
+                __block int masterAttempts = 0;
                 void (^tryClaimMaster)(void) = ^{
                     few1n_claimMaster();
                     masterAttempts++;
@@ -6140,7 +8220,7 @@ static UIViewController* few1n_topVC(void) {
                         if (unityAlive(mgr) && g_mDummyKick && i_runtime_invoke) {
                             void* nsStr = mkStr(nmCopy);
                             if (nsStr) {
-                                *(void**)((uintptr_t)mgr + 0x108) = nsStr;
+                                *(void**)((uintptr_t)mgr + OFFR_DUMMY_KICKNAME) = nsStr;
                                 @try {
                                     i_runtime_invoke(g_mDummyKick, mgr, NULL, NULL);
                                     successCount++;
@@ -6172,11 +8252,45 @@ static UIViewController* few1n_topVC(void) {
 
                     FLog([NSString stringWithFormat:@"🎯 KICK BITTI '%@' → %d/3 metod tetiklendi", nmCopy, successCount]);
 
-                    UIAlertController *r = [UIAlertController alertControllerWithTitle:@"🔨 Kick Gonderildi"
-                        message:[NSString stringWithFormat:@"'%@'\n\n%d/3 metod tetiklendi.\n\nOyuncu dusmediyse:\n1) Sen MASTER olmayabilirsin — once 👑 Oda Master Ol butonu\n2) Hedef mod'lu client kullaniyor olabilir (kick reddeder)\n3) Baska bir odada dene", nmCopy, successCount]
-                        preferredStyle:UIAlertControllerStyleAlert];
-                    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-                    [self present:r];
+                    // v114.36: GERCEK DOGRULAMA — 2.5sn sonra hedef hala odada mi?
+                    // Lokal masterClientId yamasi "master=EVET / CloseConnection BASARILI"
+                    // yalanini uretiyor; sunucu gercek master degilsen kick'i reddediyor.
+                    // Tek dogru olcum: hedef oyuncu listeden gercekten dustu mu.
+                    int tgtActor = (ply_getActorNumber && pTarget) ? ply_getActorNumber(pTarget) : -1;
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        BOOL stillHere = NO;
+                        @try {
+                            if (tgtActor > 0 && pn_getPlayerListOthers && i_runtime_invoke) {
+                                void* pa = pn_getPlayerListOthers();
+                                if (ptrOk(pa)) {
+                                    int c = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+                                    void** ps2 = (void**)((uintptr_t)pa + 0x20);
+                                    for (int k = 0; k < c && k < 64; k++) {
+                                        void* pp = ps2[k]; if (!ptrOk(pp)) continue;
+                                        if (ply_getActorNumber && ply_getActorNumber(pp) == tgtActor) { stillHere = YES; break; }
+                                    }
+                                }
+                            }
+                        } @catch (...) {}
+                        NSString *title, *msg;
+                        if (!stillHere) {
+                            title = @"✅ Atıldı";
+                            msg = [NSString stringWithFormat:@"'%@' odadan düştü. Kick gerçekten çalıştı.", nmCopy];
+                            FLog([NSString stringWithFormat:@"✅ '%@' GERCEKTEN dustu (actor=%d)", nmCopy, tgtActor]);
+                        } else {
+                            title = @"❌ Atılamadı (sunucu reddetti)";
+                            msg = [NSString stringWithFormat:@"'%@' HALA odada.\n\nSebep: sen GERÇEK oda master'ı değilsin. Mod 'master=EVET' gösterse bile bu lokal bir yanılsama — sunucu senin master olmadığını biliyor ve kick'i reddediyor.\n\n✅ ÇÖZÜM: KENDİ odanı kur (otomatik gerçek master olursun), oradaki toksik oyuncuları kesin atarsın. Başkasının odasında kick mümkün değil.", nmCopy];
+                            FLog([NSString stringWithFormat:@"❌ '%@' HALA odada (actor=%d) — sunucu kick'i reddetti (gercek master degilsin)", nmCopy, tgtActor]);
+                        }
+                        UIAlertController *r = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+                        NSString *banNm = [nmCopy copy];
+                        [r addAction:[UIAlertAction actionWithTitle:@"🚫 Kalıcı Banla (geri gelirse otomatik at)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *ba){
+                            few1n_addBan(banNm);
+                            FLog([NSString stringWithFormat:@"🚫 '%@' ban listesine eklendi", banNm]);
+                        }]];
+                        [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+                        [self present:r];
+                    });
                 });
             }]];
         }
@@ -6202,8 +8316,7 @@ static UIViewController* few1n_topVC(void) {
         NSMutableArray *rooms = [NSMutableArray array];   // @[gorunenAd, gercekAd]
         for (int i = 0; i < cnt; i++) {
             void* ln = lines[i]; if (!unityAlive(ln)) continue;
-            void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
-            if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
+            void* rinfo = *(void**)((uintptr_t)ln + OFFR_RL_ROOMINFO);
             NSString *real = (ptrOk(rinfo) && rinfo_getName) ? readStr(rinfo_getName(rinfo)) : @"";
             if (real.length == 0) continue;
             NSString *disp = [real stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -6261,107 +8374,65 @@ static UIViewController* few1n_topVC(void) {
 }
 
 - (void)showRoomPasswords {
-    if (!g_mFindObjectsPlural && i_class_from_name && i_class_get_method_from_name) {
-        void* oc = few1n_classAnyImage("UnityEngine", "Object");
-        if (oc) g_mFindObjectsPlural = i_class_get_method_from_name(oc, "FindObjectsOfType", 1);
-    }
-    if (!g_roomLineType) {
-        void* rc = few1n_classAnyImage("", "HR_UI_RoomListLine");
-        if (rc) g_roomLineType = few1n_typeObjOf(rc);
-    }
-    if ((!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke) && (!g_knownRoomPasswords || g_knownRoomPasswords.count == 0)) {
-        FLog(@"Sifre kirici hazir degil (oda listesine gir)");
-        return;
-    }
+    if (!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke) { FLog(@"Sifre kirici hazir degil (oda listesine gir)"); return; }
     @try {
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F513 Oda Sifreleri"
+        void* a[1]; a[0] = g_roomLineType;
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? (int)(*(uintptr_t*)((uintptr_t)arr + 0x18)) : 0;
+        if (cnt < 0 || cnt > 128) cnt = 0;
+        void** lines = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F513 Oda Sifreleri (1.4.4)"
                                                                    message:@"Sifreli odalarin sifresi:" preferredStyle:UIAlertControllerStyleAlert];
         NSMutableString *list = [NSMutableString string];
         NSMutableSet *seenRooms = [NSMutableSet set];
         int shown = 0;
-        int totalValidRooms = 0;
-
-        // 1. Canli sahnedeki HR_UI_RoomListLine nesnelerinden tara
-        if (g_roomLineType && g_mFindObjectsPlural && i_runtime_invoke) {
-            void* a[1]; a[0] = g_roomLineType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-            if (ptrOk(arr)) {
-                int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-                if (cnt > 0 && cnt < 256) {
-                    void** lines = (void**)((uintptr_t)arr + 0x20);
-                    for (int i = 0; i < cnt; i++) {
-                        void* ln = lines[i]; if (!unityAlive(ln)) continue;
-                        totalValidRooms++;
-
-                        // 1.4.4: password @ 0x58 (OFF_ROOMLINE_PASSWORD), roomInfo @ 0x60 (OFF_ROOMLINE_ROOMINFO)
-                        NSString *pw = nil;
-                        void* rawPw = *(void**)((uintptr_t)ln + OFF_ROOMLINE_PASSWORD);
-                        if (ptrOk(rawPw)) pw = readStr(rawPw);
-                        if (pw.length == 0) {
-                            void* oldPw = *(void**)((uintptr_t)ln + 0x50);
-                            if (ptrOk(oldPw)) {
-                                NSString *s = readStr(oldPw);
-                                if (s.length > 0 && ![s containsString:@" "]) pw = s;
-                            }
-                        }
-
-                        // Oda Ismi
-                        NSString *nm = nil;
-                        void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
-                        if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
-                        if (ptrOk(rinfo) && rinfo_getName) {
-                            NSString *rn = readStr(rinfo_getName(rinfo));
-                            if (rn.length > 0) nm = rn;
-                        }
-                        if (nm.length == 0) {
-                            void* nameText = *(void**)((uintptr_t)ln + OFF_ROOMLINE_NAME_TEXT);
-                            if (nameText && tmp_get_text) {
-                                NSString *tn = readStr(tmp_get_text(nameText));
-                                if (tn.length > 0) nm = stripRichTextTags(tn);
-                            }
-                        }
-                        if (nm.length == 0) {
-                            void* rawJfh = *(void**)((uintptr_t)ln + 0x50);
-                            if (ptrOk(rawJfh)) nm = readStr(rawJfh);
-                        }
-                        if (nm.length == 0) nm = [NSString stringWithFormat:@"Oda #%d", i + 1];
-
-                        if (pw.length > 0 && ![seenRooms containsObject:nm]) {
-                            [seenRooms addObject:nm];
-                            [list appendFormat:@"\U0001F512 %@\n     sifre: %@\n\n", nm, pw];
-                            shown++;
-                        }
-                    }
+        for (int i = 0; i < cnt && lines; i++) {
+            void* ln = lines[i]; if (!unityAlive(ln)) continue;
+            // 1.4.4: password @ OFFR_RL_PASSWORD (0x58), fallback 0x50
+            void* pwPtr = *(void**)((uintptr_t)ln + OFFR_RL_PASSWORD);
+            NSString *pw = ptrOk(pwPtr) ? readStr(pwPtr) : nil;
+            if (!pw || pw.length == 0) {
+                void* pwOld = *(void**)((uintptr_t)ln + 0x50);
+                if (ptrOk(pwOld)) pw = readStr(pwOld);
+            }
+            NSString *nm = @"?";
+            void* rinfo = *(void**)((uintptr_t)ln + OFFR_RL_ROOMINFO);
+            if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
+            if (ptrOk(rinfo) && rinfo_getName) {
+                NSString *rn = readStr(rinfo_getName(rinfo));
+                if (rn.length > 0) nm = rn;
+            }
+            if ([nm isEqualToString:@"?"] || nm.length == 0) {
+                void* nameTxt = *(void**)((uintptr_t)ln + OFFR_RL_NAMETEXT);
+                if (ptrOk(nameTxt) && tmp_get_text) {
+                    NSString *tn = readStr(tmp_get_text(nameTxt));
+                    if (tn.length > 0) nm = tn;
+                }
+            }
+            if ((!pw || pw.length == 0) && ptrOk(rinfo)) {
+                void* riPw = *(void**)((uintptr_t)rinfo + 0x58);
+                if (ptrOk(riPw)) pw = readStr(riPw);
+            }
+            if ((!pw || pw.length == 0) && nm.length > 0 && g_knownRoomPasswords[nm]) {
+                pw = g_knownRoomPasswords[nm];
+            }
+            if (pw.length > 0) {
+                if (nm.length > 0) [seenRooms addObject:nm];
+                [list appendFormat:@"\U0001F512 %@\n     sifre: %@\n\n", nm, pw];
+                shown++;
+            }
+        }
+        if (g_knownRoomPasswords.count > 0) {
+            for (NSString *k in g_knownRoomPasswords) {
+                if (![seenRooms containsObject:k] && g_knownRoomPasswords[k].length > 0) {
+                    [list appendFormat:@"\U0001F512 %@ (onbellek)\n     sifre: %@\n\n", k, g_knownRoomPasswords[k]];
+                    shown++;
                 }
             }
         }
-
-        // 2. Setup (eqn) hook'undan toplanan hafizadaki sifreleri de ekle
-        if (g_knownRoomPasswords) {
-            @synchronized(g_knownRoomPasswords) {
-                for (NSString *rName in g_knownRoomPasswords) {
-                    if (![seenRooms containsObject:rName]) {
-                        NSString *p = g_knownRoomPasswords[rName];
-                        if (p.length > 0) {
-                            [seenRooms addObject:rName];
-                            [list appendFormat:@"\U0001F512 %@\n     sifre: %@\n\n", rName, p];
-                            shown++;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (shown > 0) {
-            ac.message = list;
-        } else if (totalValidRooms > 0) {
-            ac.message = [NSString stringWithFormat:@"%d oda bulundu ama hicbiri sifreli degil (hepsi sifresiz/acik).", totalValidRooms];
-        } else {
-            ac.message = @"Sifreli oda yok (ya da liste henuz yuklenmedi).";
-        }
+        ac.message = shown ? list : @"Sifreli oda yok (ya da liste bos). Lobi ekraninda odalarin yuklenmesini bekle.";
         [ac addAction:[UIAlertAction actionWithTitle:@"Panoya Kopyala" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            [UIPasteboard generalPasteboard].string = shown ? list : @"";
-            FLog(@"Sifreler panoya kopyalandi");
+            [UIPasteboard generalPasteboard].string = list; FLog(@"Sifreler panoya kopyalandi");
         }]];
         [ac addAction:[UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:nil]];
         [self present:ac];
@@ -6435,102 +8506,21 @@ static UIViewController* few1n_topVC(void) {
     } @catch (...) { FLog(@"Isinlanma hatasi"); }
 }
 
-- (void)bringPlayerToMe {
-    if (!unityAlive(g_rb)) { FLog(@"Once arabana bin"); return; }
-    @try {
-        Vec3 myPos = {0,0,0}; rbGetPosIl(g_rb, &myPos);
-        NSMutableArray *rows = [NSMutableArray array];   // @[nm, dist, pvPtr]
-
-        if (g_photonViewType && g_isMineOff > 0 && g_pvOwnerOff > 0 && g_mFindObjectsPlural && i_runtime_invoke) {
-            void* a[1]; a[0] = g_photonViewType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-            if (ptrOk(arr)) {
-                int n = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-                if (n > 0 && n <= 512) {
-                    void** pvs = (void**)((uintptr_t)arr + 0x20);
-                    NSMutableArray *seen = [NSMutableArray array];
-                    for (int i = 0; i < n; i++) {
-                        void* pv = pvs[i]; if (!unityAlive(pv)) continue;
-                        bool mine = *(bool*)((uintptr_t)pv + g_isMineOff);
-                        if (mine) continue;
-                        void* owner = *(void**)((uintptr_t)pv + g_pvOwnerOff);
-                        if (!ptrOk(owner)) continue;
-                        NSValue *ov = [NSValue valueWithPointer:owner];
-                        if ([seen containsObject:ov]) continue;
-                        Vec3 p; if (!few1n_objPos(pv, &p)) continue;
-                        [seen addObject:ov];
-                        NSString *nm = (ply_getNickName) ? readStr(ply_getNickName(owner)) : nil;
-                        if (nm.length == 0) nm = @"(isimsiz)";
-                        float dx=p.x-myPos.x, dy=p.y-myPos.y, dz=p.z-myPos.z;
-                        float dist = sqrtf(dx*dx+dy*dy+dz*dz);
-                        [rows addObject:@[nm, @(dist), [NSValue valueWithPointer:pv]]];
-                    }
-                }
-            }
-        }
-
-        if (rows.count == 0) { FLog(@"Baska oyuncu yok (yarista/odada dene)"); return; }
-        [rows sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b){ return [a[1] compare:b[1]]; }];
-
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F9F2 Oyuncuyu Yanima Cek"
-                                                                   message:[NSString stringWithFormat:@"%lu oyuncu - yanina isinlamak istedigini sec", (unsigned long)rows.count] preferredStyle:UIAlertControllerStyleAlert];
-        for (NSArray *r in rows) {
-            NSString *nm = r[0];
-            float dist = [r[1] floatValue];
-            void* pv = [r[2] pointerValue];
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"\U0001F697 %@ (%.0fm)", nm, dist]
-                style:UIAlertActionStyleDefault handler:^(UIAlertAction *act){
-                if (!unityAlive(g_rb)) return;
-                Vec3 curMyPos = {0,0,0}; rbGetPosIl(g_rb, &curMyPos);
-                Vec3 targetPos = { curMyPos.x + 3.0f, curMyPos.y + 0.5f, curMyPos.z + 3.0f };
-                Quaternion rotZero = { 0.0f, 0.0f, 0.0f, 1.0f };
-
-                // 1) Yerel Rigidbody konumunu ayarla
-                void* targetRb = NULL;
-                if (ptrOk(pv) && g_rbTypeObj && g_mGetCompInParent && i_runtime_invoke) {
-                    void* args[2]; args[0] = g_rbTypeObj; bool inc = true; args[1] = &inc;
-                    targetRb = i_runtime_invoke(g_mGetCompInParent, pv, args, NULL);
-                }
-                if (ptrOk(targetRb)) {
-                    rbSetPosIl(targetRb, &targetPos);
-                    Vec3 zero = {0,0,0}; rbSetVelIl(targetRb, &zero);
-                }
-
-                // 2) RPC Teleport cagrilari
-                int rpcCount = 0;
-                if (g_carPhotonSyncTypeObj && g_mGetCompInParent && i_runtime_invoke && cps_TeleportCar_RPC) {
-                    void* args[2]; args[0] = g_carPhotonSyncTypeObj; bool inc = true; args[1] = &inc;
-                    void* cps = i_runtime_invoke(g_mGetCompInParent, pv, args, NULL);
-                    if (ptrOk(cps)) {
-                        cps_TeleportCar_RPC(cps, targetPos, rotZero, NULL);
-                        rpcCount++;
-                    }
-                }
-                if (hrph_TeleportPlayerRPC) {
-                    void* hrph = NULL;
-                    if (g_hrPhotonHandlerTypeObj && g_mFindObjectOfType && i_runtime_invoke) {
-                        void* args[1]; args[0] = g_hrPhotonHandlerTypeObj;
-                        hrph = i_runtime_invoke(g_mFindObjectOfType, NULL, args, NULL);
-                    }
-                    if (ptrOk(hrph)) {
-                        hrph_TeleportPlayerRPC(hrph, targetPos, NULL);
-                        rpcCount++;
-                    }
-                }
-                FLog([NSString stringWithFormat:@"'%@' yanina isinlandirildi! (%d RPC atildi)", nm, rpcCount]);
-            }]];
-        }
-        [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-        [self present:ac];
-    } @catch (...) { FLog(@"Isinlama hatasi"); }
-}
-
 - (void)tick {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
-    few1n_enableChatRichText(); // 1.4.4 Chat richText her tick'te acik tut (renk tag'lerinin kod gibi gorunmesini onle)
-    few1n_tickVoteKickFullYes(); // 1.4.4 Oylama aktifse evet sayısını otomatik full yap
+    few1n_forceNos();    // v114.28: NOS super guc acikken her frame max nitro
+    few1n_enforceBans(); // v114.37: banli oyuncular geri gelirse otomatik tekrar at
+    few1n_pollIncomingChat();   // v114.38: hooksuz gelen-chat AI oto-cevap (sadece sideload/g_hooksDead)
+    few1n_pollPasswordPrefill();// v114.38: hooksuz sifre otomatik doldurma (sadece sideload/g_hooksDead)
+    few1n_antiKickTick();       // v114.46: Anti-Kick — kicklenirsen otomatik geri gir + master ol
+    few1n_lockLaunchTick();     // v114.68: Surekli Firlat kilidi (hedefi ~0.5sn'de bir havaya at)
+    few1n_freezeTick();         // v114.92: Dondur/Kilitle (hedefi yerinde tut)
+    few1n_followTick();         // v114.93: Oto-Takip (hedefi senin yanina cek)
+    few1n_massFreezeTick();     // v114.94: Herkesi Dondur (tum odayi kilitle)
+    few1n_yoyoTick();           // v114.94: Firlatip-Getir (yo-yo)
+    few1n_forceRoomRichText();  // v114.47: hooksuz renkli oda ismi (richText zorla, sideload)
     // v92: BALATA SICAK TUT + HASAR YOK frame update GERI ALINDI — dokunmatik/input bug sebep olabilir
     // Toggle'lar UI'da duruyor ama etkisiz (placeholder). Bug root cause'u bulunca gercek fix gelecek.
     // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
@@ -6892,7 +8882,7 @@ static UIViewController* few1n_topVC(void) {
         NSString *t = ac.textFields.firstObject.text;
         if (t.length == 0) { FLog(@"Bos mesaj"); return; }
         NSString *styled = (mode==0) ? matrixWrapChat(t) : glitchWrapChat(t);
-        @try { void* mgr = chatGetInst(); void* s = mkStr(styled); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; } } @catch (...) { g_modSendingRichText = false; }
+        @try { void* mgr = chatGetInst(); void* s = mkStr(styled); if (mgr && s) chatSend(mgr, s); } @catch (...) {}
         FLog(mode==0 ? @"Matrix mesaji gonderildi ✓" : @"Glitch mesaji gonderildi ✓");
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
@@ -6902,7 +8892,6 @@ static UIViewController* few1n_topVC(void) {
 - (void)sendGlitchMsg { [self promptStyledSend:1]; }
 // Istedigin mesaji, sectigin renkte gonder (herkes gorur - exploit'in kullandigi richText)
 - (void)sendColoredChat {
-    few1n_enableChatRichText();
     if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Renkli Mesaj Gonder"
         message:@"Yazdigin mesaj SENIN rengin ile gider (herkes gorur)" preferredStyle:UIAlertControllerStyleAlert];
@@ -6910,19 +8899,9 @@ static UIViewController* few1n_topVC(void) {
     [ac addAction:[UIAlertAction actionWithTitle:@"Gonder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         NSString *t = ac.textFields.firstObject.text;
         if (t.length == 0) return;
-        few1n_enableChatRichText();
         NSString *col = [NSString stringWithUTF8String:spamColorHex];
         NSString *msg = [NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", col, t];
-        @try {
-            void* mgr = chatGetInst();
-            void* s = mkStr(msg);
-            if (mgr && s) {
-                g_modSendingRichText = true;
-                chatSend(mgr, s);
-                g_modSendingRichText = false;
-            }
-        } @catch (...) { g_modSendingRichText = false; }
-        few1n_enableChatRichText();
+        @try { void* mgr = chatGetInst(); void* s = mkStr(msg); if (mgr && s) chatSend(mgr, s); } @catch (...) {}
         FLog([NSString stringWithFormat:@"Renkli mesaj gonderildi (#%@)", col]);
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
@@ -6930,7 +8909,6 @@ static UIViewController* few1n_topVC(void) {
 }
 // TUM ODA CHATINI senin sectigin renge boya (kapatilmamis renk tag'i -> tum mesajlar boyanir)
 - (void)colorAllChat {
-    few1n_enableChatRichText();
     if (!chatGetInst || !chatSend) { FLog(@"Chat hazir degil - odaya gir"); return; }
     NSString *col = [NSString stringWithUTF8String:spamColorHex];
     @try {
@@ -6938,9 +8916,8 @@ static UIViewController* few1n_topVC(void) {
         // TEMIZ kapatilmamis renk etiketi -> sonraki TUM mesajlar bu renkte olur.
         // Oyun renk etiketini render ediyor (filtre yok), o yuzden kod YAZISI gorunmez, sadece renk.
         NSString *msg = [NSString stringWithFormat:@"<color=#%@>", col];
-        void* s = mkStr(msg); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
+        void* s = mkStr(msg); if (mgr && s) chatSend(mgr, s);
     } @catch (...) {}
-    few1n_enableChatRichText();
     FLog([NSString stringWithFormat:@"Oda chati #%@ rengine boyandi (herkes gorur)", col]);
 }
 - (void)sendChatTemplate {
@@ -6951,7 +8928,7 @@ static UIViewController* few1n_topVC(void) {
     for (int i = 0; i < (int)templates.count; i++) {
         NSString *t = templates[i];
         [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%d. %@", i+1, t] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            @try { void* mgr = chatGetInst(); void* s = mkStr(t); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; } } @catch (...) { g_modSendingRichText = false; }
+            @try { void* mgr = chatGetInst(); void* s = mkStr(t); if (mgr && s) chatSend(mgr, s); } @catch (...) {}
             FLog([NSString stringWithFormat:@"Chat sablonu gonderildi: %d", i+1]);
         }]];
     }
@@ -6977,8 +8954,8 @@ static UIViewController* few1n_topVC(void) {
         else if (spamStyle == 7) msg = [NSString stringWithFormat:@"<size=200%%>%@</size>", base];                    // BUYUK yazi (renksiz)
         else                     msg = base;
         void* s = mkStr(msg);
-        if (s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
-    } @catch (...) { g_modSendingRichText = false; }
+        if (s) chatSend(mgr, s);
+    } @catch (...) {}
 }
 
 - (void)pickSpamStyle:(UIButton*)b {
@@ -7042,7 +9019,7 @@ static NSString* rainbowWrap(NSString* text, int idx) {
         NSString *msg = lyricsColorCycle ? rainbowWrap(line, g_colorIdx++) : line;
         void* mgr = chatGetInst();
         void* s = mkStr(msg);
-        if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
+        if (mgr && s) chatSend(mgr, s);
     } @catch (...) {}
 }
 - (void)tapLyrics {
@@ -7340,7 +9317,7 @@ static NSString* rainbowWrap(NSString* text, int idx) {
         void* mgr = chatGetInst();
         if (!mgr) return;
         void* s = mkStr(frame);
-        if (s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
+        if (s) chatSend(mgr, s);
     } @catch (...) {}
 }
 - (void)tapAsciiColor { asciiColorCycle = !asciiColorCycle; saveBool(@"asciiColor", asciiColorCycle); [self refreshUI]; }
@@ -7592,12 +9569,6 @@ static NSString* rainbowWrap(NSString* text, int idx) {
 }
 
 // v100: yeni gizli ozellik tap handler'lari
-- (void)tapUnlockCars {
-    isUnlockAllCarsEnabled = !isUnlockAllCarsEnabled;
-    saveBool(@"unlockcars", isUnlockAllCarsEnabled);
-    FLog(isUnlockAllCarsEnabled ? @"🏎️ TÜM ARAÇLAR AÇIK AKTİF (Garaj kilitleri kaldırıldı)" : @"🏎️ Araç kilidi kapalı");
-    [self refreshUI];
-}
 - (void)tapInfNos {
     isInfiniteNosEnabled = !isInfiniteNosEnabled;
     saveBool(@"infnos", isInfiniteNosEnabled);
@@ -7634,6 +9605,40 @@ static NSString* rainbowWrap(NSString* text, int idx) {
     FLog(isNoTrafficEnabled ? [NSString stringWithFormat:@"🚗 TRAFİK DURSUN AKTIF (HR_TrafficCar class=%p)", g_hrTrafficCarTypeObj] : @"🚗 Trafik normal");
     [self startGizliTimerIfNeeded]; [self refreshUI];
 }
+- (void)tapNosSuper {
+    isNosSuperEnabled = !isNosSuperEnabled;
+    saveBool(@"nossuper", isNosSuperEnabled);
+    FLog(isNosSuperEnabled ? @"🚀 NOS SÜPER GÜÇ AKTIF (nitro bitmez + 8x itiş)" : @"🚀 NOS normal");
+    [self startGizliTimerIfNeeded]; [self refreshUI];
+}
+- (void)setTrafficDensity {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚦 Trafik Yoğunluğu"
+        message:@"Yoldaki trafik araç sayısı." preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌵 Boş Yol (trafik yok)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setTrafficDensity(0); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🚗 Normal" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setTrafficDensity(1); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🚙 Çok Kalabalık" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setTrafficDensity(2); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, self.panel.bounds.size.height/2, 1, 1); }
+    [self present:ac];
+}
+- (void)boostScore {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🏆 Combo/Skor Şişir"
+        message:@"Freeroam skorunu ve combo'yu yükseltir. Aracın sahada (yarışta) olmalı." preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Skor (örn 999999)"; tf.keyboardType = UIKeyboardTypeNumberPad; tf.text = @"999999"; }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Combo (örn 100)"; tf.keyboardType = UIKeyboardTypeNumberPad; tf.text = @"100"; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        int sc = [ac.textFields[0].text intValue];
+        int cb = [ac.textFields[1].text intValue];
+        bool ok = few1n_boostScore(sc, cb);
+        if (!ok) {
+            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"⚠️" message:@"Araç sahada değil. Bir yarışa/freeroam'a gir, sonra tekrar dene." preferredStyle:UIAlertControllerStyleAlert];
+            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+            [self present:e];
+        }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
 
 // v102 tap fonksiyonlari
 - (void)tapEmissivePaint {
@@ -7648,75 +9653,6 @@ static NSString* rainbowWrap(NSString* text, int idx) {
     saveBool(@"exhaustflame", isExhaustFlameOnEnabled);
     FLog(isExhaustFlameOnEnabled ? [NSString stringWithFormat:@"🔥 Egzoz Alev Surekli AKTIF (class=%p offset=%d)", g_rccpExhaustTypeObj, g_offExhaustFlameCutoff] : @"🔥 Egzoz normal");
     [self startGizliTimerIfNeeded]; [self refreshUI];
-}
-- (void)tapDetachParts {
-    // Anlik action: tum RCCP_DetachablePart'larin strength'ini 0 yap - herhangi bir vurma anında kopar
-    if (!g_rccpDetachTypeObj || g_offDetachStrength <= 0) { FLog(@"🔧 DetachablePart class YOK"); return; }
-    @try {
-        void* a[1]; a[0] = g_rccpDetachTypeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-        if (!ptrOk(arr)) { FLog(@"🔧 Detach: obje yok"); return; }
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-        if (cnt <= 0 || cnt > 128) { FLog(@"🔧 Detach: sayı anormal"); return; }
-        void** items = (void**)((uintptr_t)arr + 0x20);
-        int changed = 0;
-        for (int i = 0; i < cnt; i++) {
-            void* it = items[i]; if (!unityAlive(it)) continue;
-            *(float*)((uintptr_t)it + g_offDetachStrength) = 0.0f;
-            if (g_offDetachIsDetachable > 0) *(bool*)((uintptr_t)it + g_offDetachIsDetachable) = true;
-            changed++;
-        }
-        FLog([NSString stringWithFormat:@"🔧 %d parca strength=0 (ilk carpmada koparlar)", changed]);
-        UIAlertController *r = [UIAlertController alertControllerWithTitle:@"🔧 Parca Sok+Firlat" message:[NSString stringWithFormat:@"%d parca zayiflatildi. Simdi araba carparsa kapı/spoyler uçar.", changed] preferredStyle:UIAlertControllerStyleAlert];
-        [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]]; [self present:r];
-    } @catch (...) { FLog(@"🔧 Detach: exception"); }
-}
-- (void)tapTeleportAllToMe {
-    // Herkesi bana teleport - yabanci araclarin Rigidbody pozisyonunu benim pozisyonuma set et
-    if (!unityAlive(g_rb)) { FLog(@"🚀 TeleportAll: benim aracim YOK"); return; }
-    if (!g_carPhotonSyncTypeObj || !cps_TeleportCar_RPC) { FLog(@"🚀 TeleportAll: CarPhotonSync/RPC YOK"); return; }
-    @try {
-        Vec3 myPos; rbGetPosIl(g_rb, &myPos);
-        void* a[1]; a[0] = g_carPhotonSyncTypeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-        if (!ptrOk(arr)) return;
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-        if (cnt <= 0 || cnt > 32) return;
-        void** items = (void**)((uintptr_t)arr + 0x20);
-        int sent = 0;
-        Quaternion q = {0, 0, 0, 1};
-        for (int i = 0; i < cnt; i++) {
-            void* cps = items[i]; if (!unityAlive(cps)) continue;
-            // hedef pozisyon: kendi pozisyonumdan 3m ileri offset (uzak arac benim üstüme gelmesin diye)
-            Vec3 target = { myPos.x + (float)(i-cnt/2)*2.5f, myPos.y + 1.0f, myPos.z + 3.0f };
-            cps_TeleportCar_RPC(cps, target, q, NULL);
-            sent++;
-        }
-        FLog([NSString stringWithFormat:@"🚀 %d araca teleport RPC gonderildi (%.1f, %.1f, %.1f)", sent, myPos.x, myPos.y, myPos.z]);
-        UIAlertController *r = [UIAlertController alertControllerWithTitle:@"🚀 Herkesi Sana Teleport" message:[NSString stringWithFormat:@"%d araca RPC gonderildi. Yaninda toplanmalilar.", sent] preferredStyle:UIAlertControllerStyleAlert];
-        [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]]; [self present:r];
-    } @catch (...) { FLog(@"🚀 TeleportAll: exception"); }
-}
-- (void)tapHijackCar {
-    // Yabanci HR_PhotonSync'lerin isMine'ini true yap (client-side ownership)
-    if (!g_hrPhotonSyncTypeObj || g_offPhotonIsMine <= 0) { FLog(@"🎮 Hijack: HR_PhotonSync/isMine YOK"); return; }
-    @try {
-        void* a[1]; a[0] = g_hrPhotonSyncTypeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-        if (!ptrOk(arr)) return;
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-        if (cnt <= 0 || cnt > 32) return;
-        void** items = (void**)((uintptr_t)arr + 0x20);
-        int changed = 0;
-        for (int i = 0; i < cnt; i++) {
-            void* it = items[i]; if (!unityAlive(it)) continue;
-            *(bool*)((uintptr_t)it + g_offPhotonIsMine) = true;
-            changed++;
-        }
-        FLog([NSString stringWithFormat:@"🎮 %d HR_PhotonSync isMine=true (client-side hijack)", changed]);
-        UIAlertController *r = [UIAlertController alertControllerWithTitle:@"🎮 Ele Geçir" message:[NSString stringWithFormat:@"%d aracın isMine=true set edildi. Sunucuda gerçek ownership değişmez ama yerel sync bozulur.", changed] preferredStyle:UIAlertControllerStyleAlert];
-        [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]]; [self present:r];
-    } @catch (...) { FLog(@"🎮 Hijack: exception"); }
 }
 - (void)tapVidyoNames {
     isVidyoNamesEnabled = !isVidyoNamesEnabled;
@@ -8051,10 +9987,10 @@ static NSString* rainbowWrap(NSString* text, int idx) {
             @try {
                 void* opts = i_object_new(g_roomOptionsClass);
                 if (!opts) { FLog(@"❌ recreate: RoomOptions instantiate FAIL"); return; }
-                *(bool*)((uintptr_t)opts + 0x10) = true;   // IsVisible
-                *(bool*)((uintptr_t)opts + 0x11) = true;   // IsOpen
-                *(int*) ((uintptr_t)opts + 0x14) = roomMaxPlayers > 0 ? roomMaxPlayers : 31;
-                *(int*) ((uintptr_t)opts + 0x1C) = 0;
+                *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;   // IsVisible
+                *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;   // IsOpen
+                *(int*) ((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers > 0 ? roomMaxPlayers : 31;
+                *(int*) ((uintptr_t)opts + OFFR_ROPT_EMPTYTTL) = 0;
                 void* ns = mkStr(newName);
                 if (ns) {
                     pn_createRoom(ns, opts, NULL, NULL);
@@ -8137,646 +10073,6 @@ static NSString* rainbowWrap(NSString* text, int idx) {
 - (void)fireGizliCheats { few1n_applyGizliCheats(); }
 
 // v101: HEDEFLİ BOMBA + CRASH - oyuncu sec, 2 metod paralel dene
-- (void)targetBombCrashPick {
-    if (!pn_getInRoom || !pn_getInRoom()) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"💣 Hedefli Bomba" message:@"Odada olmalısın." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    if (!ply_getNickName) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"💣 Hedefli Bomba" message:@"ply_getNickName NULL - Photon hazir degil" preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]]; [self present:e]; return;
-    }
-    @try {
-        // v107: pn_getPlayerListOthers NULL fallback -> pn_getPlayerList + self filter
-        void* pa = NULL;
-        if (pn_getPlayerListOthers) pa = pn_getPlayerListOthers();
-        BOOL useAllList = NO;
-        if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); useAllList = YES; }
-        if (!ptrOk(pa)) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"💣 Hedefli Bomba" message:@"Player list NULL - Photon ikisi de basarisiz" preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]]; [self present:e]; return;
-        }
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
-        void* me = (useAllList && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
-        if (cnt <= 0 || cnt > 64) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"💣 Hedefli Bomba" message:[NSString stringWithFormat:@"Odada baska oyuncu yok. (cnt=%d)", cnt] preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        void** ps = (void**)((uintptr_t)pa + 0x20);
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"💣 Hedefli Bomba + Crash"
-            message:[NSString stringWithFormat:@"Odada %d oyuncu.\nSec → HR_Bomb swap + CarPhotonSync NaN inject 5x", cnt]
-            preferredStyle:UIAlertControllerStyleActionSheet];
-        for (int i = 0; i < cnt && i < 32; i++) {
-            void* p = ps[i]; if (!ptrOk(p)) continue;
-            if (me && p == me) continue;   // v107: kendisini skip et
-            void* nsObj = ply_getNickName(p);
-            NSString *nm = ptrOk(nsObj) ? (readStr(nsObj) ?: @"") : @"";
-            if (nm.length == 0) nm = [NSString stringWithFormat:@"actor%d", i];
-            NSString *nmClean = stripRichTextTags(nm) ?: nm;
-            NSString *nmCopy = [nm copy];
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎯 %@", nmClean]
-                style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-                // v114.4: MANUEL METOD SECIMI - hedef secildikten sonra hangi saldirinin uygulanacagini kullanici sec
-                UIAlertController *pick = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"🎯 '%@'", nmCopy]
-                    message:@"Hangi saldiri?" preferredStyle:UIAlertControllerStyleAlert];
-                // A) Sadece Bomb
-                [pick addAction:[UIAlertAction actionWithTitle:@"💣 SADECE BOMBA (HR_Bomb swap)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *aa){
-                    FLog([NSString stringWithFormat:@"💣 SADECE BOMBA: '%@'", nmCopy]);
-                    int m = 0;
-                    @try {
-                        if (g_hrBombTypeObj && g_mFindObjectsPlural && i_runtime_invoke && g_playerHandlerType) {
-                            void* aP[1]; aP[0] = g_playerHandlerType;
-                            void* phs = i_runtime_invoke(g_mFindObjectsPlural, NULL, aP, NULL);
-                            void* targetPH = NULL;
-                            if (ptrOk(phs)) {
-                                int pcnt = (int)(*(uintptr_t*)((uintptr_t)phs + 0x18));
-                                if (pcnt > 0 && pcnt < 32) {
-                                    void** phArr = (void**)((uintptr_t)phs + 0x20);
-                                    for (int k = 0; k < pcnt; k++) {
-                                        void* ph = phArr[k]; if (!unityAlive(ph)) continue;
-                                        // v114.21 fix: VehicleName @0x30 (0x28 = Rigidbody, önceki sürüm silent-fail eden yanlış field'ı okuyordu)
-                                        NSString *phName = readStr(*(void**)((uintptr_t)ph + 0x30));
-                                        if (phName && [phName rangeOfString:nmCopy options:NSCaseInsensitiveSearch].location != NSNotFound) { targetPH = ph; break; }
-                                    }
-                                }
-                            }
-                            void* aB[1]; aB[0] = g_hrBombTypeObj;
-                            void* bombs = i_runtime_invoke(g_mFindObjectsPlural, NULL, aB, NULL);
-                            if (ptrOk(bombs) && targetPH) {
-                                int bc = (int)(*(uintptr_t*)((uintptr_t)bombs + 0x18));
-                                if (bc > 0 && bc < 32) {
-                                    void** bArr = (void**)((uintptr_t)bombs + 0x20);
-                                    // v114.21 fix: HR_Bomb.iqo (owner PlayerHandler) @0x20 (0x18 UnityEngine.Object.m_CachedPtr'ye yaziyor)
-                                    for (int k = 0; k < bc; k++) { void* b = bArr[k]; if (unityAlive(b)) { *(void**)((uintptr_t)b + 0x20) = targetPH; m++; } }
-                                }
-                            }
-                        }
-                    } @catch (...) {}
-                    UIAlertController *r = [UIAlertController alertControllerWithTitle:@"💣 Bomba" message:[NSString stringWithFormat:@"'%@' - %d HR_Bomb hedeflendi", nmCopy, m] preferredStyle:UIAlertControllerStyleAlert];
-                    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]]; [self present:r];
-                }]];
-                // B) Sadece Crash
-                [pick addAction:[UIAlertAction actionWithTitle:@"💥 SADECE CRASH (NaN teleport 5x)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *aa){
-                    FLog([NSString stringWithFormat:@"💥 SADECE CRASH: '%@'", nmCopy]);
-                    for (int shot = 0; shot < 5; shot++) {
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(shot * 0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                            @try {
-                                if (g_carPhotonSyncTypeObj && cps_TeleportCar_RPC && g_mFindObjectsPlural && i_runtime_invoke) {
-                                    void* aC[1]; aC[0] = g_carPhotonSyncTypeObj;
-                                    void* cars = i_runtime_invoke(g_mFindObjectsPlural, NULL, aC, NULL);
-                                    if (ptrOk(cars)) {
-                                        int cc = (int)(*(uintptr_t*)((uintptr_t)cars + 0x18));
-                                        if (cc > 0 && cc < 32) {
-                                            void** cArr = (void**)((uintptr_t)cars + 0x20);
-                                            for (int k = 0; k < cc; k++) {
-                                                void* cps = cArr[k]; if (!unityAlive(cps)) continue;
-                                                Vec3 crashV = {9999999.0f, 9999999.0f, 9999999.0f};
-                                                Quaternion crashQ = {99999.0f, 99999.0f, 99999.0f, 99999.0f};
-                                                cps_TeleportCar_RPC(cps, crashV, crashQ, NULL);
-                                            }
-                                        }
-                                    }
-                                }
-                            } @catch (...) {}
-                        });
-                    }
-                    UIAlertController *r = [UIAlertController alertControllerWithTitle:@"💥 Crash" message:[NSString stringWithFormat:@"'%@' - 5x NaN inject gonderildi (1sn icinde)", nmCopy] preferredStyle:UIAlertControllerStyleAlert];
-                    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]]; [self present:r];
-                }]];
-                // C) İkisini birden
-                [pick addAction:[UIAlertAction actionWithTitle:@"🔥 İKİSİ BİRDEN (Bomb + Crash)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *aa){
-                FLog([NSString stringWithFormat:@"🔥 İKİSİ: '%@' - Bomb + Crash paralel", nmCopy]);
-                int m = 0;
-                @try {
-                    if (g_hrBombTypeObj && g_mFindObjectsPlural && i_runtime_invoke && g_playerHandlerType) {
-                        // hedefin playerHandler'ini bul: FindObjectsOfType<HR_PlayerHandler>() ve nickname eslesme
-                        void* aP[1]; aP[0] = g_playerHandlerType;
-                        void* phs = i_runtime_invoke(g_mFindObjectsPlural, NULL, aP, NULL);
-                        void* targetPH = NULL;
-                        if (ptrOk(phs)) {
-                            int pcnt = (int)(*(uintptr_t*)((uintptr_t)phs + 0x18));
-                            if (pcnt > 0 && pcnt < 32) {
-                                void** phArr = (void**)((uintptr_t)phs + 0x20);
-                                for (int k = 0; k < pcnt; k++) {
-                                    void* ph = phArr[k]; if (!unityAlive(ph)) continue;
-                                    // v114.21 fix: VehicleName @0x30 (0x28 = Rigidbody, sessiz-fail eden field)
-                                    NSString *phName = readStr(*(void**)((uintptr_t)ph + 0x30));
-                                    if (phName && [phName rangeOfString:nmCopy options:NSCaseInsensitiveSearch].location != NSNotFound) { targetPH = ph; break; }
-                                }
-                            }
-                        }
-                        // HR_Bomb instance'lari
-                        void* aB[1]; aB[0] = g_hrBombTypeObj;
-                        void* bombs = i_runtime_invoke(g_mFindObjectsPlural, NULL, aB, NULL);
-                        if (ptrOk(bombs) && targetPH) {
-                            int bc = (int)(*(uintptr_t*)((uintptr_t)bombs + 0x18));
-                            if (bc > 0 && bc < 32) {
-                                void** bArr = (void**)((uintptr_t)bombs + 0x20);
-                                for (int k = 0; k < bc; k++) {
-                                    void* b = bArr[k]; if (!unityAlive(b)) continue;
-                                    *(void**)((uintptr_t)b + 0x20) = targetPH;   // v114.21 fix: HR_Bomb.iqo owner @0x20
-                                    m++;
-                                }
-                                FLog([NSString stringWithFormat:@"  ✓ Metod A: %d HR_Bomb PlayerHandler swap edildi", m]);
-                            }
-                        } else FLog(@"  - Metod A: HR_Bomb yok veya hedef PH bulunamadi");
-                    } else FLog(@"  - Metod A: g_hrBombTypeObj/playerHandlerType YOK");
-                } @catch (...) { FLog(@"  ✗ Metod A: exception"); }
-                // Metod B: CarPhotonSync ile NaN koordinat inject (5x rate-limited)
-                for (int shot = 0; shot < 5; shot++) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(shot * 0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        @try {
-                            if (g_carPhotonSyncTypeObj && cps_TeleportCar_RPC && g_mFindObjectsPlural && i_runtime_invoke) {
-                                void* aC[1]; aC[0] = g_carPhotonSyncTypeObj;
-                                void* cars = i_runtime_invoke(g_mFindObjectsPlural, NULL, aC, NULL);
-                                if (ptrOk(cars)) {
-                                    int cc = (int)(*(uintptr_t*)((uintptr_t)cars + 0x18));
-                                    if (cc > 0 && cc < 32) {
-                                        void** cArr = (void**)((uintptr_t)cars + 0x20);
-                                        for (int k = 0; k < cc; k++) {
-                                            void* cps = cArr[k]; if (!unityAlive(cps)) continue;
-                                            Vec3 crashV = {9999999.0f, 9999999.0f, 9999999.0f};
-                                            Quaternion crashQ = {99999.0f, 99999.0f, 99999.0f, 99999.0f};
-                                            cps_TeleportCar_RPC(cps, crashV, crashQ, NULL);
-                                        }
-                                    }
-                                }
-                            }
-                        } @catch (...) {}
-                    });
-                }
-                FLog(@"  ✓ Metod B: 5x NaN teleport RPC gonderildi (0.2s araliklarla)");
-                UIAlertController *r = [UIAlertController alertControllerWithTitle:@"🔥 İKİSİ BİRDEN"
-                    message:[NSString stringWithFormat:@"'%@'\n\nBomba: %d swap\nCrash: 5x NaN inject", nmCopy, m]
-                    preferredStyle:UIAlertControllerStyleAlert];
-                [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-                [self present:r];
-                }]];
-                [pick addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-                [self present:pick];
-            }]];
-        }
-        [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-        if (ac.popoverPresentationController) {
-            ac.popoverPresentationController.sourceView = self.panel;
-            ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
-        }
-        [self present:ac];
-    } @catch (...) { FLog(@"💣 targetBombCrashPick exception"); }
-}
-
-// ============================================================================
-// v114.24: GÖKYÜZÜNE FIRLATMA (Sky Launch / Yeet) — hedef oyuncunun arabasını Y+500'e fırlatır
-// ============================================================================
-- (void)targetSkyLaunch {
-    if (!pn_getInRoom || !pn_getInRoom()) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Sky Launch" message:@"Odada olmalısın." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    if (!ply_getNickName || !ply_getActorNumber) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Sky Launch" message:@"Photon pointer'ları hazır değil." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    @try {
-        void* pa = NULL;
-        if (pn_getPlayerListOthers) pa = pn_getPlayerListOthers();
-        BOOL useAllList = NO;
-        if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); useAllList = YES; }
-        if (!ptrOk(pa)) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Sky Launch" message:@"Player list NULL" preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
-        if (cnt <= 0 || cnt > 64) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Sky Launch" message:@"Odada başka oyuncu yok." preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        void** ps = (void**)((uintptr_t)pa + 0x20);
-        void* me = (useAllList && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
-
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚀 Gökyüzüne Fırlat"
-            message:@"Hedef oyuncuyu seç → Arabası Y+500'e fırlatılır!"
-            preferredStyle:UIAlertControllerStyleActionSheet];
-
-        for (int i = 0; i < cnt && i < 32; i++) {
-            void* p = ps[i]; if (!ptrOk(p)) continue;
-            if (me && p == me) continue;
-            void* nsObj = ply_getNickName(p);
-            NSString *nm = ptrOk(nsObj) ? (readStr(nsObj) ?: @"") : @"";
-            if (nm.length == 0) nm = [NSString stringWithFormat:@"actor%d", i];
-            NSString *nmClean = stripRichTextTags(nm) ?: nm;
-            int tActor = ply_getActorNumber(p);
-
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🚀 %@", nmClean]
-                style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
-                FLog([NSString stringWithFormat:@"🚀 Sky Launch hedef: '%@' (Actor=%d)", nmClean, tActor]);
-                @try {
-                    if (!g_photonViewType || g_pvOwnerOff <= 0 || !g_mFindObjectsPlural || !i_runtime_invoke || !g_carPhotonSyncTypeObj || !g_mGetCompInParent || !cps_TeleportCar_RPC) {
-                        FLog(@"🚀 Sky Launch: Gerekli pointer(lar) hazır değil");
-                        return;
-                    }
-                    void* b2[1]; b2[0] = g_photonViewType;
-                    void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, b2, NULL);
-                    if (!ptrOk(arr)) { FLog(@"🚀 Sky Launch: PhotonView array NULL"); return; }
-                    int pvCnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-                    void** pvs = (void**)((uintptr_t)arr + 0x20);
-                    bool sent = false;
-                    for (int j = 0; j < pvCnt && j < 128; j++) {
-                        void* pv = pvs[j]; if (!unityAlive(pv)) continue;
-                        void* owner = *(void**)((uintptr_t)pv + g_pvOwnerOff);
-                        if (!ptrOk(owner)) continue;
-                        int ownerActor = ply_getActorNumber(owner);
-                        if (ownerActor == tActor) {
-                            void* args2[2]; args2[0] = g_carPhotonSyncTypeObj; bool inc = true; args2[1] = &inc;
-                            void* cps = i_runtime_invoke(g_mGetCompInParent, pv, args2, NULL);
-                            if (ptrOk(cps)) {
-                                // Hedefin mevcut pozisyonunu al (Rigidbody/Transform üzerinden yaklaşık)
-                                // Basit yol: y=500 yeterli, x ve z sıfır olsa da oyuncu aynı yerde yukari kalkar
-                                Vec3 skyPos = {0.0f, 500.0f, 0.0f};
-                                Quaternion identQ = {0.0f, 0.0f, 0.0f, 1.0f};
-                                cps_TeleportCar_RPC(cps, skyPos, identQ, NULL);
-                                sent = true;
-                                FLog([NSString stringWithFormat:@"🚀 Sky Launch RPC gönderildi → '%@'", nmClean]);
-                            }
-                        }
-                    }
-                    if (!sent) FLog([NSString stringWithFormat:@"🚀 Sky Launch: '%@' nin PhotonView/CPS bulunamadı", nmClean]);
-                } @catch (...) { FLog(@"🚀 Sky Launch exception"); }
-            }]];
-        }
-        [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-        if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-            ac.popoverPresentationController.sourceView = self.panel;
-            ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
-        }
-        [self present:ac];
-    } @catch (...) { FLog(@"🚀 targetSkyLaunch exception"); }
-}
-
-// ============================================================================
-// v114.24: TRAFİK KAMYONU FIRLATMA — hedefin önüne karşı yönden hızlı kamyon spawn eder
-// ============================================================================
-- (void)targetTrafficRocket {
-    if (!pn_getInRoom || !pn_getInRoom()) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚛 Trafik Füzesi" message:@"Odada olmalısın." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    if (!g_trafficPoolingTypeObj || !g_mSimpleSpawnRPC || !i_runtime_invoke) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚛 Trafik Füzesi" message:@"HR_TrafficPooling veya SimpleSpawnRPC bulunamadı. Il2cpp init eksik." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    if (!ply_getNickName || !ply_getActorNumber) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚛 Trafik Füzesi" message:@"Photon pointer'ları hazır değil." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    @try {
-        void* pa = NULL;
-        if (pn_getPlayerListOthers) pa = pn_getPlayerListOthers();
-        BOOL useAllList = NO;
-        if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); useAllList = YES; }
-        if (!ptrOk(pa)) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚛 Trafik Füzesi" message:@"Player list NULL" preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
-        if (cnt <= 0 || cnt > 64) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚛 Trafik Füzesi" message:@"Odada başka oyuncu yok." preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        void** ps = (void**)((uintptr_t)pa + 0x20);
-        void* me = (useAllList && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
-
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚛 Trafik Füzesi"
-            message:@"Hedef seç → Karşı yönden 200km/h kamyon fırlatılır!"
-            preferredStyle:UIAlertControllerStyleActionSheet];
-
-        for (int i = 0; i < cnt && i < 32; i++) {
-            void* p = ps[i]; if (!ptrOk(p)) continue;
-            if (me && p == me) continue;
-            void* nsObj = ply_getNickName(p);
-            NSString *nm = ptrOk(nsObj) ? (readStr(nsObj) ?: @"") : @"";
-            if (nm.length == 0) nm = [NSString stringWithFormat:@"actor%d", i];
-            NSString *nmClean = stripRichTextTags(nm) ?: nm;
-            int tActor = ply_getActorNumber(p);
-
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🚛 %@", nmClean]
-                style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
-                FLog([NSString stringWithFormat:@"🚛 Trafik Füzesi hedef: '%@' (Actor=%d)", nmClean, tActor]);
-                @try {
-                    // Hedefin PhotonView'ini bul → pozisyon al → SimpleSpawnRPC çağır
-                    if (!g_photonViewType || g_pvOwnerOff <= 0 || !g_mFindObjectsPlural) {
-                        FLog(@"🚛 Trafik Füzesi: PhotonView pointer eksik");
-                        return;
-                    }
-                    // 1. TrafficPooling instance'ini bul
-                    void* tpInst = NULL;
-                    if (g_mFindObjectOfType) {
-                        void* tpArgs[1]; tpArgs[0] = g_trafficPoolingTypeObj;
-                        tpInst = i_runtime_invoke(g_mFindObjectOfType, NULL, tpArgs, NULL);
-                    }
-                    if (!ptrOk(tpInst)) {
-                        FLog(@"🚛 Trafik Füzesi: HR_TrafficPooling instance bulunamadı");
-                        return;
-                    }
-
-                    // 2. Hedefin pozisyonunu bul (PhotonView → Transform → Position)
-                    Vec3 targetPos = {0, 0, 100}; // fallback
-                    void* b2[1]; b2[0] = g_photonViewType;
-                    void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, b2, NULL);
-                    if (ptrOk(arr)) {
-                        int pvCnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-                        void** pvs = (void**)((uintptr_t)arr + 0x20);
-                        for (int j = 0; j < pvCnt && j < 128; j++) {
-                            void* pv = pvs[j]; if (!unityAlive(pv)) continue;
-                            void* owner = *(void**)((uintptr_t)pv + g_pvOwnerOff);
-                            if (!ptrOk(owner)) continue;
-                            int ownerActor = ply_getActorNumber(owner);
-                            if (ownerActor == tActor && g_mCompGetTransform && g_mTransGetPos) {
-                                void* tf = i_runtime_invoke(g_mCompGetTransform, pv, NULL, NULL);
-                                if (ptrOk(tf)) {
-                                    Vec3 *pp = (Vec3*)i_runtime_invoke(g_mTransGetPos, tf, NULL, NULL);
-                                    if (pp) { targetPos = *pp; }
-                                }
-                                break;
-                            }
-                        }
-                    }
-
-                    // 3. SimpleSpawnRPC(slot, carIndex, paint, start, startMs, opposite, carSpeed)
-                    // carIndex=5 (kamyon), opposite=true, carSpeed=200
-                    int slot = 0;
-                    uint8_t carIndex = 5;    // kamyon tipi (büyük araç)
-                    uint8_t paint = 0;
-                    Vec3 spawnPos = {targetPos.x, targetPos.y, targetPos.z + 15.0f}; // 15m önüne
-                    int startMs = 0;         // oyun zamanı (0 = şimdi)
-                    bool opposite = true;    // karşı yön
-                    float carSpeed = 200.0f; // çok hızlı
-
-                    void* rpcArgs[7] = { &slot, &carIndex, &paint, &spawnPos, &startMs, &opposite, &carSpeed };
-                    i_runtime_invoke(g_mSimpleSpawnRPC, tpInst, rpcArgs, NULL);
-                    FLog([NSString stringWithFormat:@"🚛 Trafik Füzesi RPC gönderildi → pos(%.0f,%.0f,%.0f) → '%@'", spawnPos.x, spawnPos.y, spawnPos.z, nmClean]);
-                } @catch (...) { FLog(@"🚛 Trafik Füzesi exception"); }
-            }]];
-        }
-        [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-        if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-            ac.popoverPresentationController.sourceView = self.panel;
-            ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
-        }
-        [self present:ac];
-    } @catch (...) { FLog(@"🚛 targetTrafficRocket exception"); }
-}
-
-// ============================================================================
-// v114.24: PLAKA DEĞİŞTİRME / İFŞA — hedef oyuncunun plaka yazısını uzaktan değiştirir
-// ============================================================================
-- (void)targetPlateChange {
-    if (!pn_getInRoom || !pn_getInRoom()) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🔖 Plaka İfşa" message:@"Odada olmalısın." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    if (!g_plateTypeObj || !o_plateChange) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🔖 Plaka İfşa" message:@"PlateVariant hook hazır değil." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    if (!ply_getNickName || !ply_getActorNumber) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🔖 Plaka İfşa" message:@"Photon pointer'ları hazır değil." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    @try {
-        void* pa = NULL;
-        if (pn_getPlayerListOthers) pa = pn_getPlayerListOthers();
-        BOOL useAllList = NO;
-        if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); useAllList = YES; }
-        if (!ptrOk(pa)) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🔖 Plaka İfşa" message:@"Player list NULL" preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
-        if (cnt <= 0 || cnt > 64) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🔖 Plaka İfşa" message:@"Odada başka oyuncu yok." preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        void** ps = (void**)((uintptr_t)pa + 0x20);
-        void* me = (useAllList && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
-
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🔖 Plaka Değiştir / İfşa"
-            message:@"Hedef seç → Plaka yazısını istediğin metinle değiştir!"
-            preferredStyle:UIAlertControllerStyleActionSheet];
-
-        for (int i = 0; i < cnt && i < 32; i++) {
-            void* p = ps[i]; if (!ptrOk(p)) continue;
-            if (me && p == me) continue;
-            void* nsObj = ply_getNickName(p);
-            NSString *nm = ptrOk(nsObj) ? (readStr(nsObj) ?: @"") : @"";
-            if (nm.length == 0) nm = [NSString stringWithFormat:@"actor%d", i];
-            NSString *nmClean = stripRichTextTags(nm) ?: nm;
-            int tActor = ply_getActorNumber(p);
-
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🔖 %@", nmClean]
-                style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
-                // Plaka metni girişi al
-                UIAlertController *input = [UIAlertController alertControllerWithTitle:@"🔖 Plaka Metni"
-                    message:[NSString stringWithFormat:@"'%@' için yeni plaka yazısı gir:", nmClean]
-                    preferredStyle:UIAlertControllerStyleAlert];
-                [input addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-                    tf.placeholder = @"FEW1N";
-                    tf.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
-                }];
-                [input addAction:[UIAlertAction actionWithTitle:@"Değiştir" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *ok){
-                    NSString *plateText = input.textFields.firstObject.text ?: @"FEW1N";
-                    if (plateText.length == 0) plateText = @"FEW1N";
-                    FLog([NSString stringWithFormat:@"🔖 Plaka İfşa hedef: '%@' → plaka='%@'", nmClean, plateText]);
-                    @try {
-                        if (!g_photonViewType || g_pvOwnerOff <= 0 || !g_mFindObjectsPlural || !i_runtime_invoke || !g_mGetCompInParent) {
-                            FLog(@"🔖 Plaka İfşa: Pointer eksik");
-                            return;
-                        }
-                        void* b2[1]; b2[0] = g_photonViewType;
-                        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, b2, NULL);
-                        if (!ptrOk(arr)) { FLog(@"🔖 Plaka İfşa: PhotonView array NULL"); return; }
-                        int pvCnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-                        void** pvs = (void**)((uintptr_t)arr + 0x20);
-                        bool done = false;
-                        for (int j = 0; j < pvCnt && j < 128; j++) {
-                            void* pv = pvs[j]; if (!unityAlive(pv)) continue;
-                            void* owner = *(void**)((uintptr_t)pv + g_pvOwnerOff);
-                            if (!ptrOk(owner)) continue;
-                            int ownerActor = ply_getActorNumber(owner);
-                            if (ownerActor == tActor) {
-                                // PlateVariant component'ini bul
-                                void* pvArgs[2]; pvArgs[0] = g_plateTypeObj; bool inc = true; pvArgs[1] = &inc;
-                                void* plate = i_runtime_invoke(g_mGetCompInParent, pv, pvArgs, NULL);
-                                if (ptrOk(plate)) {
-                                    // PlateHolder struct: c@0x0=color, t@0x8=text
-                                    struct PlateHolder holder;
-                                    holder.c = mkStr(@"FFFFFF"); // beyaz renk
-                                    holder.t = mkStr([NSString stringWithFormat:@"%@", plateText]);
-                                    o_plateChange(plate, holder);
-                                    done = true;
-                                    FLog([NSString stringWithFormat:@"🔖 Plaka değiştirildi! '%@' → '%@'", nmClean, plateText]);
-                                }
-                            }
-                        }
-                        if (!done) FLog([NSString stringWithFormat:@"🔖 '%@' nin PlateVariant bulunamadı", nmClean]);
-                    } @catch (...) { FLog(@"🔖 Plaka İfşa exception"); }
-                }]];
-                [input addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-                [self present:input];
-            }]];
-        }
-        [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-        if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-            ac.popoverPresentationController.sourceView = self.panel;
-            ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
-        }
-        [self present:ac];
-    } @catch (...) { FLog(@"🔖 targetPlateChange exception"); }
-}
-
-// ============================================================================
-// v114.24: YARIŞI BİTİRME — hedef oyuncunun yarışını NetworkPlayerWonRPC ile bitirir
-// ============================================================================
-- (void)targetRaceFinish {
-    if (!pn_getInRoom || !pn_getInRoom()) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🏁 Yarış Bitir" message:@"Odada olmalısın." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    if (!g_hrPhotonHandlerTypeObj || !g_mNetworkPlayerWonRPC || !i_runtime_invoke) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🏁 Yarış Bitir" message:@"HR_PhotonHandler veya NetworkPlayerWonRPC bulunamadı." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    if (!ply_getNickName || !ply_getActorNumber) {
-        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🏁 Yarış Bitir" message:@"Photon pointer'ları hazır değil." preferredStyle:UIAlertControllerStyleAlert];
-        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:e]; return;
-    }
-    @try {
-        void* pa = NULL;
-        if (pn_getPlayerListOthers) pa = pn_getPlayerListOthers();
-        BOOL useAllList = NO;
-        if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); useAllList = YES; }
-        if (!ptrOk(pa)) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🏁 Yarış Bitir" message:@"Player list NULL" preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
-        if (cnt <= 0 || cnt > 64) {
-            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🏁 Yarış Bitir" message:@"Odada başka oyuncu yok." preferredStyle:UIAlertControllerStyleAlert];
-            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-            [self present:e]; return;
-        }
-        void** ps = (void**)((uintptr_t)pa + 0x20);
-        void* me = (useAllList && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
-
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🏁 Yarışı Bitir"
-            message:@"Hedef seç → Oyuncunun yarışı 'kazandı' olarak bitirilir!"
-            preferredStyle:UIAlertControllerStyleActionSheet];
-
-        for (int i = 0; i < cnt && i < 32; i++) {
-            void* p = ps[i]; if (!ptrOk(p)) continue;
-            if (me && p == me) continue;
-            void* nsObj = ply_getNickName(p);
-            NSString *nm = ptrOk(nsObj) ? (readStr(nsObj) ?: @"") : @"";
-            if (nm.length == 0) nm = [NSString stringWithFormat:@"actor%d", i];
-            NSString *nmClean = stripRichTextTags(nm) ?: nm;
-            int tActor = ply_getActorNumber(p);
-
-            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🏁 %@", nmClean]
-                style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
-                FLog([NSString stringWithFormat:@"🏁 Yarış Bitir hedef: '%@' (Actor=%d)", nmClean, tActor]);
-                @try {
-                    if (!g_photonViewType || g_pvOwnerOff <= 0 || !g_mFindObjectsPlural) {
-                        FLog(@"🏁 Yarış Bitir: PhotonView pointer eksik");
-                        return;
-                    }
-                    // 1. HR_PhotonHandler instance'ini bul
-                    void* hrphInst = NULL;
-                    if (g_mFindObjectOfType) {
-                        void* fArgs[1]; fArgs[0] = g_hrPhotonHandlerTypeObj;
-                        hrphInst = i_runtime_invoke(g_mFindObjectOfType, NULL, fArgs, NULL);
-                    }
-                    if (!ptrOk(hrphInst)) {
-                        FLog(@"🏁 Yarış Bitir: HR_PhotonHandler instance bulunamadı");
-                        return;
-                    }
-
-                    // 2. Hedefin PhotonView'inin ViewID'sini bul
-                    // PhotonView.ViewID = ilk int field (genelde offset 0x1C veya runtime resolve)
-                    void* b2[1]; b2[0] = g_photonViewType;
-                    void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, b2, NULL);
-                    if (!ptrOk(arr)) { FLog(@"🏁 PhotonView array NULL"); return; }
-                    int pvCnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-                    void** pvs = (void**)((uintptr_t)arr + 0x20);
-                    bool sent = false;
-                    for (int j = 0; j < pvCnt && j < 128; j++) {
-                        void* pv = pvs[j]; if (!unityAlive(pv)) continue;
-                        void* owner = *(void**)((uintptr_t)pv + g_pvOwnerOff);
-                        if (!ptrOk(owner)) continue;
-                        int ownerActor = ply_getActorNumber(owner);
-                        if (ownerActor == tActor) {
-                            // ViewID: PhotonView obfuscated field'lardan oku
-                            // Photon.Pun.PhotonView.ViewID property - genelde Owner'dan 0x10 önce offset
-                            // veya safeResolve ile method çağır
-                            // Basit yol: ViewID genelde offset 0x1C (int32)
-                            // Ama güvenilir yol: i_runtime_invoke ile get_ViewID çağır
-                            static void* mGetViewID = NULL;
-                            if (!mGetViewID) {
-                                void* pvClass = few1n_classAnyImage("Photon.Pun", "PhotonView");
-                                if (pvClass && i_class_get_method_from_name) {
-                                    mGetViewID = i_class_get_method_from_name(pvClass, "get_ViewID", 0);
-                                }
-                            }
-                            int viewID = 0;
-                            if (mGetViewID) {
-                                void* ret = i_runtime_invoke(mGetViewID, pv, NULL, NULL);
-                                if (ret) viewID = *(int*)ret;
-                            }
-                            if (viewID <= 0) {
-                                // Fallback: offset okuma (0x1C genelde ViewID)
-                                viewID = *(int*)((uintptr_t)pv + 0x1C);
-                            }
-                            if (viewID > 0) {
-                                // NetworkPlayerWonRPC(int viewID) çağır
-                                void* rpcArgs[1] = { &viewID };
-                                i_runtime_invoke(g_mNetworkPlayerWonRPC, hrphInst, rpcArgs, NULL);
-                                sent = true;
-                                FLog([NSString stringWithFormat:@"🏁 NetworkPlayerWonRPC gönderildi → viewID=%d '%@'", viewID, nmClean]);
-                            }
-                            break; // ilk eşleşen yeter
-                        }
-                    }
-                    if (!sent) FLog([NSString stringWithFormat:@"🏁 '%@' nin ViewID bulunamadı", nmClean]);
-                } @catch (...) { FLog(@"🏁 Yarış Bitir exception"); }
-            }]];
-        }
-        [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-        if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-            ac.popoverPresentationController.sourceView = self.panel;
-            ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
-        }
-        [self present:ac];
-    } @catch (...) { FLog(@"🏁 targetRaceFinish exception"); }
-}
 - (void)tapInfiniteNos {
     FLog(@"💨 NOS toggle kaldirildi (v90)");
     [self refreshUI];
@@ -8797,7 +10093,7 @@ static NSString* rainbowWrap(NSString* text, int idx) {
         void* mgr = chatGetInst();
         if (!mgr) return;
         void* s = mkStr(frame);
-        if (s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
+        if (s) chatSend(mgr, s);
     } @catch (...) {}
 }
 
@@ -9037,10 +10333,10 @@ static NSString* rainbowWrap(NSString* text, int idx) {
         if (pn_createRoom && i_object_new && g_roomOptionsClass) {
             void* opts = i_object_new(g_roomOptionsClass);
             if (opts) {
-                *(bool*)((uintptr_t)opts + 0x10) = true;     // isVisible
-                *(bool*)((uintptr_t)opts + 0x11) = true;     // isOpen
-                *(int*) ((uintptr_t)opts + 0x14) = roomMaxPlayers;   // MaxPlayers (10 sinirini as)
-                *(int*) ((uintptr_t)opts + 0x1C) = roomSpamTTL;   // EmptyRoomTtl (ayarlanabilir)
+                *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;     // isVisible
+                *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;     // isOpen
+                *(int*) ((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;   // MaxPlayers (10 sinirini as)
+                *(int*) ((uintptr_t)opts + OFFR_ROPT_EMPTYTTL) = roomSpamTTL;   // EmptyRoomTtl (ayarlanabilir)
                 pn_createRoom(nameStr, opts, NULL, NULL);
                 return;
             }
@@ -9050,7 +10346,7 @@ static NSString* rainbowWrap(NSString* text, int idx) {
             void* lobby = lobbyGetInst();
             if (!lobby) return;
             if (tmp_set_text) {
-                void* nameInput = *(void**)((uintptr_t)lobby + 0x48);   // roomNameInput
+                void* nameInput = *(void**)((uintptr_t)lobby + OFFR_LOBBY_ROOMNAME);   // roomNameInput
                 if (nameInput) tmp_set_text(nameInput, nameStr);
             }
             lobby_createRoom(lobby);
@@ -9143,10 +10439,10 @@ static NSString* rainbowWrap(NSString* text, int idx) {
                                     void* nameStr = mkStr(uniq);
                                     void* opts = i_object_new(g_roomOptionsClass);
                                     if (nameStr && opts) {
-                                        *(bool*)((uintptr_t)opts + 0x10) = true;            // isVisible
-                                        *(bool*)((uintptr_t)opts + 0x11) = true;            // isOpen
-                                        *(int*) ((uintptr_t)opts + 0x14) = roomMaxPlayers;  // 31 Kişi
-                                        *(int*) ((uintptr_t)opts + 0x1C) = 0;
+                                        *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;            // isVisible
+                                        *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;            // isOpen
+                                        *(int*) ((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;  // 31 Kişi
+                                        *(int*) ((uintptr_t)opts + OFFR_ROPT_EMPTYTTL) = 0;
 
                                         bool ok = pn_createRoom(nameStr, opts, NULL, NULL);
                                         if (ok) {
@@ -9193,10 +10489,10 @@ static NSString* rainbowWrap(NSString* text, int idx) {
                     void* nameStr = mkStr(uniq);
                     void* opts = i_object_new(g_roomOptionsClass);
                     if (nameStr && opts) {
-                        *(bool*)((uintptr_t)opts + 0x10) = true;
-                        *(bool*)((uintptr_t)opts + 0x11) = true;
-                        *(int*) ((uintptr_t)opts + 0x14) = roomMaxPlayers;
-                        *(int*) ((uintptr_t)opts + 0x1C) = 0;
+                        *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;
+                        *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;
+                        *(int*) ((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;
+                        *(int*) ((uintptr_t)opts + OFFR_ROPT_EMPTYTTL) = 0;
                         if (pn_createRoom(nameStr, opts, NULL, NULL)) {
                             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                                 if ([customVal rangeOfCharacterFromSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]].location == NSNotFound) {
@@ -9258,10 +10554,10 @@ static NSString* rainbowWrap(NSString* text, int idx) {
             void* nameStr = mkStr(uniq);
             void* opts = i_object_new(g_roomOptionsClass);
             if (nameStr && opts) {
-                *(bool*)((uintptr_t)opts + 0x10) = true;            // isVisible
-                *(bool*)((uintptr_t)opts + 0x11) = true;            // isOpen
-                *(int*) ((uintptr_t)opts + 0x14) = roomMaxPlayers;  // 10 sinirini as
-                *(int*) ((uintptr_t)opts + 0x1C) = 0;               // normal oda (spam TTL yok)
+                *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;            // isVisible
+                *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;            // isOpen
+                *(int*) ((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;  // 10 sinirini as
+                *(int*) ((uintptr_t)opts + OFFR_ROPT_EMPTYTTL) = 0;               // normal oda (spam TTL yok)
                 bool ok = pn_createRoom(nameStr, opts, NULL, NULL);
                 FLog(ok ? [NSString stringWithFormat:@"✓ Oda kurma istegi GONDERILDI: '%@' (%d kisilik). Birazdan odaya girmelisin.", nm, roomMaxPlayers]
                         : @"❌ CreateRoom REDDETTI. Sebep genelde: zaten odadasin YA DA oda listesi/lobi ekraninda degilsin. Ana menu > oda listesinde dene.");
@@ -9293,14 +10589,14 @@ static NSArray<NSString*>* few1n_readMapNames(void) {
         if (!mapList_getInstance) return names;
         void* ml = mapList_getInstance();
         if (!ptrOk(ml)) return names;
-        void* arr = *(void**)((uintptr_t)ml + 0x18);   // MapList.maps[]
+        void* arr = *(void**)((uintptr_t)ml + OFFR_MAPLIST_MAPS);   // MapList.maps[]
         if (!ptrOk(arr)) return names;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));   // il2cpp array length
         if (cnt <= 0 || cnt > 64) return names;
         uintptr_t data = (uintptr_t)arr + 0x20;                 // eleman verisi
         for (int i = 0; i < cnt; i++) {
             @try {
-                void* refName = *(void**)(data + i * 0x20 + 0x0);   // Map.referenceName
+                void* refName = *(void**)(data + i * OFFR_MAP_STRIDE);   // Map.referenceName @ struct+0
                 if (ptrOk(refName)) {
                     NSString *s = readStr(refName);
                     if (s && s.length > 0) [names addObject:s];
@@ -9311,44 +10607,168 @@ static NSArray<NSString*>* few1n_readMapNames(void) {
     return names;
 }
 
+// v115.7: BUILD sahne yolunu index ile oku — UnityEngine.SceneManagement.SceneUtility
+// .GetScenePathByBuildIndex(int). LoadLevel(int) build index kullaniyor; boylece hangi
+// index hangi sahne, KESIN olarak runtime'dan ogrenilir (deneme-yanilma yok).
+static NSString* few1n_scenePathByBuildIndex(int idx) {
+    static void* mGet = NULL; static bool tried = false;
+    if (!tried) { tried = true;
+        void* cls = few1n_classAnyImage("UnityEngine.SceneManagement", "SceneUtility");
+        if (!cls) cls = few1n_classAnyImage("", "SceneUtility");
+        if (cls && i_class_get_method_from_name) mGet = i_class_get_method_from_name(cls, "GetScenePathByBuildIndex", 1);
+        FLog([NSString stringWithFormat:@"🗺️ SceneUtility.GetScenePathByBuildIndex=%p", mGet]);
+    }
+    if (!mGet || !i_runtime_invoke) return nil;
+    @try { void* a[1] = { &idx }; void* s = i_runtime_invoke(mGet, NULL, a, NULL); return readStr(s); } @catch (...) {}
+    return nil;
+}
+// isim -> build index. Build sahne listesini tarar, dosya adini isimle eslestirir.
+static int few1n_buildIndexForName(NSString* name) {
+    if (!name || name.length == 0) return -1;
+    NSString *target = name.lowercaseString;
+    for (int i = 0; i < 80; i++) {
+        NSString *path = few1n_scenePathByBuildIndex(i);
+        if (!path || path.length == 0) { if (i > 2) break; else continue; }   // liste bitti
+        NSString *base = path.lastPathComponent.stringByDeletingPathExtension.lowercaseString;
+        if ([base isEqualToString:target]) return i;   // birebir isim eslesme -> kesin index
+    }
+    return -1;
+}
+
+// v116.5: HR_LoadingScreen.SetState(false) — gorunen 'Baglaniyor'/yukleme overlay'ini DOGRUDAN
+// kapat. Dump: singleton getter ejg() -> instance; SetState(bool) overlay'i gosterir/gizler.
+// NewSceneLoaded kok bayragi temizler, bu da gorunen ekrani garanti kapatir (LateUpdate gecikmesine karsi).
+static bool few1n_hideLoadingScreen(void) {
+    static void* cls = NULL; static void* mGet = NULL; static void* mSet = NULL;
+    if (!i_runtime_invoke || !i_class_get_method_from_name) return false;
+    // Cache SADECE basarida — ilk cagride sinif henuz yuklenmemis olabilir, o yuzden bulanadek tekrar dene.
+    if (!cls || !mGet || !mSet) {
+        void* c = few1n_classAnyImage(NULL, "HR_LoadingScreen");
+        if (c) {
+            void* g = i_class_get_method_from_name(c, "ejg", 0);        // static instance getter (iwe)
+            void* s = i_class_get_method_from_name(c, "SetState", 1);
+            if (g && s) { cls = c; mGet = g; mSet = s; }
+        }
+        if (!cls || !mGet || !mSet) { FLog(@"🖼️ HR_LoadingScreen henuz bulunamadi (cls/ejg/SetState)"); return false; }
+    }
+    @try {
+        void* inst = i_runtime_invoke(mGet, NULL, NULL, NULL);   // static -> HR_LoadingScreen instance
+        if (!ptrOk(inst)) return false;
+        bool no = false; void* args[1] = { &no };
+        bool cr = false; few1n_guardedInvoke(mSet, inst, args, &cr);   // SetState(false), crash-guard'li
+        if (!cr) FLog(@"🖼️ HR_LoadingScreen.SetState(false) — yukleme ekrani kapatildi");
+        return !cr;
+    } @catch (...) { return false; }
+}
+// v116.5: LoadLevel sonrasi 'Baglaniyor'da takilmayi COZ — gir-cik YERINE oyunun/PUN'un kendi
+// tamamlama adimlarini ELLE tetikle (kullanici: "gir cik bir ise yaramiyor, baska yontem").
+// LoadLevel mesaj kuyrugunu durdurup loadingLevelAndPausedNetwork=true yapar; bunlari geri
+// temizleyen PhotonNetwork.NewSceneLoaded() bu oyunda tetiklenmiyor -> ekran ancak biri girince
+// aciliyor. NewSceneLoaded'i ELLE cagirinca oyuncu girince olanin AYNISI olur; ayrica gorunen
+// HR_LoadingScreen overlay'i dogrudan kapatilir. Kademeli tekrar: sahne async yuklendigi icin.
+static void few1n_forceSceneLoadComplete(void) {
+    NSArray<NSNumber*> *delays = @[@1.5, @2.5, @4.0, @6.0];
+    for (NSNumber *d in delays) {
+        few1n_after(d.doubleValue, ^{
+            // 1) Kuyrugu ac (destek — v116.3)
+            if (pn_setMessageQueueRunning) { @try { pn_setMessageQueueRunning(true); } @catch (...) {} }
+            // 2) ANA fix: PUN tamamlama adimi (loadingLevelAndPausedNetwork=false + kuyruk=true).
+            //    Idempotent: yukleme yoksa NewSceneLoaded icinde no-op.
+            if (pn_newSceneLoaded) { @try { pn_newSceneLoaded(); } @catch (...) {}
+                FLog([NSString stringWithFormat:@"🔓 NewSceneLoaded() cagrildi (%.1fs) — 'Baglaniyor' cozuluyor", d.doubleValue]); }
+            // 3) Gorunen overlay'i garanti kapat
+            few1n_hideLoadingScreen();
+        });
+    }
+}
 // ===== v83: v77 CALISAN VERSIYON — master claim + photonMgrEnp + LoadLevel fallback =====
 static void few1n_loadMap(NSString *scene, int idx) {
-    (void)idx;
+    (void)idx;   // v114.84: artik SADECE isim yolu (ese) — LoadLevel(int) kaldirildi
     if (!scene || scene.length == 0) { FLog(@"[MAP] scene bos"); return; }
     few1n_claimMaster();
     NSString *sceneCopy = [scene copy];
+    NSString *rnCopy = (g_lastRoomName[0]) ? [NSString stringWithUTF8String:g_lastRoomName] : nil;   // v114.76: cik-gir icin
+    // v115.4: g_lastRoomName BOSSA canli oda adini oku — gir-cik'in sarti, bossa cik-gir
+    // hic tetiklenmiyordu (log: ese gitti ama sahne degismedi, gir-cik yok). Bu kritik.
+    if (rnCopy.length == 0 && pn_getCurrentRoom && rinfo_getName) {
+        @try { void* room = pn_getCurrentRoom(); if (ptrOk(room)) { NSString *live = readStr(rinfo_getName(room));
+            if (live.length > 0) { rnCopy = live; strncpy(g_lastRoomName, live.UTF8String, sizeof(g_lastRoomName)-1); g_lastRoomName[sizeof(g_lastRoomName)-1]='\0'; } } } @catch (...) {}
+    }
+    // v115.5: MASTER durumu teshisi — harita degisimi PUN'da MASTER-only. Gercek master
+    // degilsen sunucu ese/LoadLevel'i yok sayar (gir-cik ile alakasi yok - kullanici hakli).
+    bool amMaster = few1n_amRealMaster();
+    FLog([NSString stringWithFormat:@"🗺️ few1n_loadMap: scene='%@' rnCopy='%@' rejoinMode=%d GERCEK-MASTER=%@",
+        sceneCopy, rnCopy ?: @"(BOS!)", g_rejoinMode, amMaster ? @"EVET ✅" : @"HAYIR ❌ (harita degismez!)"]);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @try {
-            bool amMaster = false;
-            if (pn_getLocalPlayer && ply_getIsMaster) {
-                void* me = pn_getLocalPlayer();
-                if (me) amMaster = ply_getIsMaster(me);
+            if (pn_setAutomaticallySyncScene) {
+                @try { pn_setAutomaticallySyncScene(true); FLog(@"🗺️ automaticallySyncScene=true"); } @catch (...) {}
             }
-            if (!amMaster) FLog(@"⚠️ Master gorunmuyorum — yine de deneniyor");
-            if (photonMgrEnp) {
-                void* s = mkStr(sceneCopy);
-                if (s) {
-                    photonMgrEnp(s, false);
-                    FLog([NSString stringWithFormat:@"🗺️ [v233] PhotonManager.enp('%@') gonderildi", sceneCopy]);
+            // v114.53: ESKI (v114.5) COKLU-YONTEM yaklasimi geri getirildi. v114.50'de
+            // tek yonteme indirmistim, calismadi. Baglama gore (lobi vs oda-ici) hangisi
+            // gecerliyse OYUN calistirir; hepsi @try korumali, gecersiz olan sessizce atlanir.
+            // 1) Gercek lobi: MapSelection.SelectMap + StartGameButton (lobi/scene-secim ekrani)
+            if (mapSel_selectMap && lobbyStartGame && lobbyGetInst) {
+                void* lobby = lobbyGetInst();
+                if (ptrOk(lobby)) {
+                    void* mapSel = *(void**)((uintptr_t)lobby + OFFR_LOBBY_MAPSEL);
+                    if (ptrOk(mapSel)) {
+                        void* s = mkStr(sceneCopy);
+                        if (s) {
+                            @try { mapSel_selectMap(mapSel, s); } @catch (...) {}
+                            FLog(@"🗺️ [v253] SelectMap gonderildi (gercek lobi)");
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                @try { lobbyStartGame(lobby); FLog(@"🗺️ [v253] StartGameButton (gercek lobi)"); } @catch (...) {}
+                            });
+                        }
+                    } else FLog(@"🗺️ [v253] gercek lobi mapSelection null (oda icindesin -> Dummy denenecek)");
                 }
-            } else {
-                FLog(@"❌ photonMgrEnp NULL — offset yenilenmeli"); return;
             }
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                NSString *cur = (pn_getActiveSceneName) ? readStr(pn_getActiveSceneName()) : @"?";
-                if (cur && [cur.lowercaseString containsString:sceneCopy.lowercaseString]) {
-                    FLog(@"✅ [v233] Sahne degisti — basarili"); return;
+            // 2) Gercek lobi: SetScene(scene) — eski Y3 yontemi
+            if (lobbySetScene && lobbyGetInst) {
+                void* lobby = lobbyGetInst();
+                if (ptrOk(lobby)) { void* s = mkStr(sceneCopy); if (s) { @try { lobbySetScene(lobby, s); FLog(@"🗺️ [v253] SetScene gonderildi"); } @catch (...) {} } }
+            }
+            // 3) Dummy lobi (ODA-ICI bekleme ekrani): StartGameButton
+            if (lobbyDummyStartGame) {
+                void* dummy = few1n_findLobbyMgr();
+                if (ptrOk(dummy)) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        @try { lobbyDummyStartGame(dummy); FLog(@"🗺️ [v253] Dummy StartGameButton (oda-ici)"); } @catch (...) {}
+                    });
                 }
-                FLog([NSString stringWithFormat:@"⚠️ Sahne hala '%@' — LoadLevel fallback", cur]);
-                if (pn_loadLevelStr) {
-                    void* s2 = mkStr(sceneCopy);
-                    if (s2) { pn_loadLevelStr(s2); FLog(@"🔁 [v233] LoadLevel(str) fallback tetiklendi"); }
-                }
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    NSString *c2 = (pn_getActiveSceneName) ? readStr(pn_getActiveSceneName()) : @"?";
-                    if (c2 && [c2.lowercaseString containsString:sceneCopy.lowercaseString]) FLog(@"✅ [v233] Sahne degisti (LoadLevel)");
-                    else FLog(@"❌ Sahne degismedi — 'Oda Master Ol' bas, tekrar dene.");
+            }
+            // 4) v114.55 KRITIK: OYUNUN KENDI ADDRESSABLE YUKLEYICISI —
+            // PhotonManager.ese(scene, addressable=true). STATIC metod: aktif lobi/dummy
+            // instance GEREKMEZ, bu yuzden YARIS SIRASINDA da (sahne=HighwayPink) calisir.
+            // Haritalar Build Settings'te DEGIL, Addressable sahne -> PhotonNetwork.LoadLevel
+            // (build-settings isimli) bu yuzden sessizce fail ediyordu. ASIL dogru yol bu.
+            // Pointer 13018'de baglanmisti ama few1n_loadMap onu HIC cagirmiyordu (eksik parca).
+            // Isim de dogru: few1n_readMapNames() gercek referenceName veriyor.
+            if (photonMgrEnp) { void* s = mkStr(sceneCopy); if (s) { @try { photonMgrEnp(s, true); FLog(@"🗺️ [v253] PhotonManager.ese(scene,addressable) gonderildi ✅"); } @catch (...) {} } }
+            // 5) Son care: PhotonNetwork.LoadLevel(string) (build-settings adi)
+            if (pn_loadLevelStr) { void* s = mkStr(sceneCopy); if (s) { @try { pn_loadLevelStr(s); FLog(@"🗺️ [v253] LoadLevel(str) son care"); } @catch (...) {} } }
+            few1n_forceSceneLoadComplete();   // v116.5: NewSceneLoaded + overlay kapat ('Baglaniyor' coz)
+            // v114.84: LoadLevel(int) KALDIRILDI — yanlis harita yukluyordu (kullanici:
+            // 'Y5 kismen calisiyor, sadece isimli calissin'). Artik SADECE isim yolu (ese).
+            // v114.76: OTOMATIK CIK-GIR — sahne set edildikten sonra odadan cikip ayni
+            // odaya geri gir -> yeni harita yuklenir, "baglaniyor"da takilmaz (kullanici cozumu).
+            // v116.2: MASTER isen gir-cik YAPMA — master odayi terk edip 'baglaniyor'da
+            // takiliyordu. Master'in sahne senkronu odada kalarak yayilir. Sadece
+            // master OLMAYAN icin gir-cik (kendini odanin guncel sahnesine cekmek icin).
+            if (rnCopy.length > 0 && g_rejoinMode != 0 && !amMaster) {   // v114.96: gir-cik modu Kapali degilse
+                double _rjDelay = (g_rejoinMode == 2 && g_mapRejoinDelaySec > 0.05) ? g_mapRejoinDelaySec : 0.9;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(_rjDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    @try { few1n_joinTargetRoom(rnCopy); FLog([NSString stringWithFormat:@"🗺️ [v253] otomatik cik-gir (%.1fs): '%@'", _rjDelay, rnCopy]); } @catch (...) {}
                 });
+            }
+            // Sonuc kontrolu — Addressable async yukleme birkac saniye surebilir (3.5s bekle)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                NSString *cur = (pn_getActiveSceneName) ? readStr(pn_getActiveSceneName()) : @"?";
+                if (cur && [cur.lowercaseString containsString:sceneCopy.lowercaseString])
+                    FLog(@"✅ [v253] Sahne degisti — basarili");
+                else
+                    FLog([NSString stringWithFormat:@"⚠️ Sahne hala '%@'. Kendi odanda + lobi/bekleme ekraninda dene.", cur]);
             });
         } @catch (...) { FLog(@"few1n_loadMap exception"); }
     });
@@ -9457,7 +10877,7 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
             if (method == 1) {
                 if (!mapSel_selectMap || !lobbyStartGame || !lobbyGetInst) { FLog(@"[Y1] Pointerler hazir degil"); return; }
                 void* lobby = lobbyGetInst(); if (!ptrOk(lobby)) { FLog(@"[Y1] Lobby yok"); return; }
-                void* mapSel = *(void**)((uintptr_t)lobby + 0x28);
+                void* mapSel = *(void**)((uintptr_t)lobby + OFFR_LOBBY_MAPSEL);
                 if (!ptrOk(mapSel)) { FLog(@"[Y1] mapSelection null"); return; }
                 void* s = mkStr(inp); if (!s) return;
                 mapSel_selectMap(mapSel, s);
@@ -9468,8 +10888,8 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
             } else if (method == 2) {
                 if (!photonMgrEnp) { FLog(@"[Y2] photonMgrEnp NULL"); return; }
                 void* s = mkStr(inp); if (!s) return;
-                photonMgrEnp(s, false);
-                FLog([NSString stringWithFormat:@"[Y2] PhotonManager.enp('%@') gonderildi", inp]);
+                photonMgrEnp(s, true);   // v114.40: addressable=true (haritalar Addressable sahne)
+                FLog([NSString stringWithFormat:@"[Y2] PhotonManager.ese('%@', addressable=true) gonderildi", inp]);
             } else if (method == 3) {
                 if (!lobbySetScene || !lobbyGetInst) { FLog(@"[Y3] Pointerler yok"); return; }
                 void* lobby = lobbyGetInst(); if (!ptrOk(lobby)) { FLog(@"[Y3] Lobby yok"); return; }
@@ -9520,6 +10940,140 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
 - (void)mapMethod7 { [self askSceneNameThen:7]; }
 - (void)mapMethod8 { [self askSceneNameThen:8]; }
 
+// v114.73: ESKI Y1-Y8 YONTEM SECICI geri getirildi (eski surumde biri calisiyordu).
+// Her yontem tek tek denenir; hangisi haritayi herkeste degistiriyorsa o kullanilir.
+- (void)mapMethodPick {
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:@"🗺️ Harita Yöntem" msg:@"Odada olmalisin (kendi odanda + master iken en iyi)."]; return; }
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🗺️ Harita Değiştir — Yöntem Seç"
+        message:@"Eski sürümde biri çalışıyordu. Sırayla dene, hangisi haritayı herkeste değiştiriyorsa onu kullan. (Her biri sahne adı ister.)"
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Y1: SelectMap + StartGame (lobi)" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){ [self mapMethod1]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Y2: PhotonManager.ese (Addressable) ⭐" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){ [self mapMethod2]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Y3: HR_PhotonLobbyManager.SetScene" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){ [self mapMethod3]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Y4: PhotonNetwork.LoadLevel(isim)" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){ [self mapMethod4]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Y5: PhotonNetwork.LoadLevel(no)" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){ [self mapMethod5]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Y6: MainMenuHandler.StartRace" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){ [self mapMethod6]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Y7: Unity LoadScene(isim) — YEREL" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){ [self mapMethod7]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Y8: Unity LoadScene(no) — YEREL" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){ [self mapMethod8]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1); }
+    [self present:ac];
+}
+
+// v114.88: Y5 harita + GIR-CIK (kullanici istegi: otomatik VE manuel sure).
+// Harita yuklendikten sonra gir-cik modu: 0=Kapali, 1=Otomatik(hazir-bekle,
+// donmaz), 2=Manuel(sabit sure). Ek olarak 'Elle Numara' ile ekstra harita
+// tipleri denenebilir. Yukleme yolu: pn_loadLevelInt(idx) (calisan Y5).
+- (void)y5LoadIdx:(int)idx label:(NSString*)title {
+    if (!pn_loadLevelInt) { [self simpleAlert:@"🗺️ Harita" msg:@"LoadLevel(int) yok."]; return; }
+    NSString *rn = (g_lastRoomName[0]) ? [NSString stringWithUTF8String:g_lastRoomName] : nil;
+    // v116.4: g_lastRoomName bossa CANLI oda adini oku — gir-cik'in sarti, bossa cik-gir
+    // hic tetiklenmez ve oda 'Baglaniyor'da kalir.
+    if (rn.length == 0 && pn_getCurrentRoom && rinfo_getName) {
+        @try { void* room = pn_getCurrentRoom(); if (ptrOk(room)) { NSString *live = readStr(rinfo_getName(room));
+            if (live.length > 0) { rn = live; strncpy(g_lastRoomName, live.UTF8String, sizeof(g_lastRoomName)-1); g_lastRoomName[sizeof(g_lastRoomName)-1]='\0'; } } } @catch (...) {}
+    }
+    few1n_claimMaster();
+    if (pn_setAutomaticallySyncScene) { @try { pn_setAutomaticallySyncScene(true); } @catch (...) {} }
+    // v116.1: GERCEK MASTER kontrol. Master DEGILSEN LoadLevel sadece SENDE calisir,
+    // digerleri gelmez, sen desync olup ODA DONAR (kullanici raporu). Uyar.
+    BOOL amMaster = few1n_amRealMaster();
+    if (!amMaster) {
+        UIAlertController *w = [UIAlertController alertControllerWithTitle:@"⚠️ Master Değilsin"
+            message:[NSString stringWithFormat:@"'%@' YÜKLENİRSE sadece SENDE değişir, diğerleri gelmez ve oda DONAR (desync). Haritanın herkeste değişmesi için odanın GERÇEK master'ı olman şart — kendi kurduğun boş odada dene.\n\nYine de sadece kendinde yüklemek ister misin?", title]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [w addAction:[UIAlertAction actionWithTitle:@"Vazgeç" style:UIAlertActionStyleCancel handler:nil]];
+        [w addAction:[UIAlertAction actionWithTitle:@"Yine de yükle (sadece bende)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction*a){
+            // v116.2: sadece yerel yukle — REJOIN YOK. Master degilken cik-gir yapinca
+            // 'baglaniyor'da takiliyordu; artik sadece kendi sahnen degisir, takilma yok.
+            @try { pn_loadLevelInt(idx); } @catch (...) {}
+            few1n_forceSceneLoadComplete();   // v116.5: NewSceneLoaded + overlay kapat
+        }]];
+        [self present:w];
+        return;
+    }
+    // v116.5: GERCEK MASTER. LoadLevel oda 'curScn' prop'unu ayarlar (herkes yeni haritaya gelir)
+    // AMA master'in ekrani 'Baglaniyor'da takilir; oda ancak biri girince aciliyordu. GIR-CIK
+    // ise yaramadi (kullanici). YENI YONTEM (dump analizi): LoadLevel'den sonra PUN'un kendi
+    // tamamlama adimini ELLE tetikle -> few1n_forceSceneLoadComplete() NewSceneLoaded()'i cagirir
+    // (loadingLevelAndPausedNetwork=false + kuyruk=true, tam oyuncu girince olan sey) ve gorunen
+    // HR_LoadingScreen overlay'ini kapatir. Kimseyi beklemeden oda acilir. Odada KALINIR (cik-gir yok).
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        @try { pn_loadLevelInt(idx); } @catch (...) {}
+        FLog([NSString stringWithFormat:@"🗺️ [Y5] MASTER LoadLevel(%d) '%@' — NewSceneLoaded ile aciliyor (gir-cik YOK)", idx, title]);
+        few1n_forceSceneLoadComplete();   // NewSceneLoaded + overlay kapat -> 'Baglaniyor' cozulur
+    });
+    (void)rn;
+    [self simpleAlert:@"🗺️ Yüklendi" msg:[NSString stringWithFormat:@"%@ (#%d) yükleniyor. Master sensin — oda birkaç saniyede KENDİLİĞİNDEN açılır, kimseyi beklemezsin (yeni yöntem). Yanlış harita geldiyse #numarayı söyle.", title, idx]];
+}
+- (void)mapListY5 {
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:@"🗺️ Harita Seç" msg:@"Odada olmalisin (kendi odanda + master iken)."]; return; }
+    // v114.96: oyunun KENDI MapList'inden GERCEK harita adlari (canli okuma — dogru isimler).
+    NSArray<NSString*> *realMaps = few1n_readMapNames();
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🗺️ Harita Seç"
+        message:(realMaps.count > 0
+            ? [NSString stringWithFormat:@"Oyundaki %lu harita. MASTER iken seç — oda birkaç saniyede KENDİLİĞİNDEN açılır (kimseyi beklemezsin). İsim yanlış haritaya denk gelirse #numarayı söyle.", (unsigned long)realMaps.count]
+            : @"MapList okunamadı (oyuna tam gir). Numara ile (Y5). MASTER iken oda kendiliğinden açılır.")
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    if (realMaps.count > 0) {
+        // v115.7: ANALIZ — her isim icin DOGRU build index'i SceneUtility.GetScenePath
+        // ByBuildIndex ile runtime'dan bul (deneme-yanilma yok). Bulunursa o index'le
+        // LoadLevel(int) yukle; bulunamazsa (build'de yoksa) dizi pozisyonuna dus.
+        int i = 0;
+        for (NSString *mapName in realMaps) {
+            int arrIdx = i++;
+            NSString *cap = mapName;
+            int bi = few1n_buildIndexForName(mapName);       // KESIN build index
+            int useIdx = (bi >= 0) ? bi : arrIdx;            // bulunamazsa dizi pozisyonu
+            NSString *tag = (bi >= 0) ? [NSString stringWithFormat:@"#%d ✓", bi] : [NSString stringWithFormat:@"#%d ?", arrIdx];
+            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@  %@", mapName, tag] style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){
+                [self y5LoadIdx:useIdx label:cap];
+            }]];
+        }
+    } else {
+        // Fallback: MapList init olmadi -> onayli build sahneleri (LoadLevel int)
+        NSArray *maps = @[
+            @{@"t":@"Track", @"i":@0}, @{@"t":@"City", @"i":@1}, @{@"t":@"Highway", @"i":@2}, @{@"t":@"Desert", @"i":@3},
+            @{@"t":@"Port", @"i":@4}, @{@"t":@"Offroad", @"i":@5}, @{@"t":@"Forest", @"i":@6}, @{@"t":@"City Night", @"i":@7},
+        ];
+        for (NSDictionary *m in maps) {
+            int idx = [m[@"i"] intValue]; NSString *title = m[@"t"];
+            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ (#%d)", title, idx] style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){
+                [self y5LoadIdx:idx label:title];
+            }]];
+        }
+    }
+    // Ek: elle numara (Y5 LoadLevel int — isim yolu tutmazsa)
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔢 Elle Numara (ek harita — 8,9,10...)" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){
+        UIAlertController *in = [UIAlertController alertControllerWithTitle:@"🔢 Harita Numarası"
+            message:@"Sahne numarası yaz (0-60). Ek harita/hava varsa burada." preferredStyle:UIAlertControllerStyleAlert];
+        [in addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.keyboardType = UIKeyboardTypeNumberPad; tf.placeholder = @"Ornek: 8"; }];
+        [in addAction:[UIAlertAction actionWithTitle:@"Yükle" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a2){
+            int idx = in.textFields.firstObject.text.intValue;
+            if (idx < 0 || idx > 60) { [self simpleAlert:@"🔢 Hatalı" msg:@"0-60 arası yaz."]; return; }
+            [self y5LoadIdx:idx label:[NSString stringWithFormat:@"Numara #%d", idx]];
+        }]];
+        [in addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        [self present:in];
+    }]];
+    // Gir-cik MOD sec — v116.5: ARTIK GEREKMEZ. Harita degisince oda otomatik NewSceneLoaded ile
+    // acilir (gir-cik yerine). Bu ayar sadece ESKI YONTEM icin opsiyonel kaldi (few1n_loadMap/ese
+    // yolu, master DEGILKEN). Yeni harita listesinde kullanilmiyor.
+    [ac addAction:[UIAlertAction actionWithTitle:@"⚙️ Gir-Çık Modu (eski yöntem — gerekmez, opsiyonel)" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){
+        UIAlertController *mc = [UIAlertController alertControllerWithTitle:@"⚙️ Gir-Çık Modu (eski)"
+            message:@"Yeni yöntemde GEREKMEZ — harita değişince oda kendiliğinden açılır. Bu ayar sadece eski/yedek yol için." preferredStyle:UIAlertControllerStyleActionSheet];
+        [mc addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@🤖 Otomatik (hazır olunca — önerilen)", g_rejoinMode==1?@"✅ ":@""] style:UIAlertActionStyleDefault handler:^(UIAlertAction*x){ g_rejoinMode=1; saveInt(@"rejoinMode",1); [self simpleAlert:@"⚙️ Gir-Çık" msg:@"Otomatik: hazır olunca çık-gir (donmaz)."]; }]];
+        [mc addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@⏱️ Manuel (sabit süre)", g_rejoinMode==2?@"✅ ":@""] style:UIAlertActionStyleDefault handler:^(UIAlertAction*x){ g_rejoinMode=2; saveInt(@"rejoinMode",2); [self tapMapRejoinDelay]; }]];
+        [mc addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@🚫 Kapalı (biri girince oturur)", g_rejoinMode==0?@"✅ ":@""] style:UIAlertActionStyleDefault handler:^(UIAlertAction*x){ g_rejoinMode=0; saveInt(@"rejoinMode",0); [self simpleAlert:@"⚙️ Gir-Çık" msg:@"Kapalı: harita, odaya biri girince oturur."]; }]];
+        [mc addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        if (mc.popoverPresentationController) { mc.popoverPresentationController.sourceView = self.panel; mc.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1); }
+        [self present:mc];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1); }
+    [self present:ac];
+}
+
 // ===== v70 KLASIK: MASTER CLAIM YAPMADAN direkt lobby+MapSelection+StartGame =====
 // v70 build'inde bu yaklasim calisiyordu (kullanici raporu).
 // v73'teki fark: few1n_claimMaster once cagriliyordu, muhtemelen sunucu CAS mismatch nedeniyle
@@ -9535,44 +11089,6 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
 }
 
 // ===== KISI ARACI KLONLA UI =====
-- (void)cloneCarPicker {
-    if (!pn_getInRoom || !pn_getInRoom()) {
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚗 Klonla" message:@"Odada olmalisin." preferredStyle:UIAlertControllerStyleAlert];
-        [ac addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
-        [self present:ac]; return;
-    }
-    if (!pn_getPlayerList || !ply_getNickName || !ply_getActorNumber) {
-        FLog(@"[KLON] Pointerler yok"); return;
-    }
-    void* arr = pn_getPlayerList();
-    if (!ptrOk(arr)) { FLog(@"[KLON] Oyuncu listesi yok"); return; }
-    int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
-    if (cnt <= 0) { FLog(@"[KLON] Oyuncu yok"); return; }
-    void** players = (void**)((uintptr_t)arr + 0x20);
-
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚗 Kimin Aracini Klonla?"
-        message:@"Sec — sonra rapid map switch ile arac swap race glitch'i denenir. Basarili olmayabilir, birkac deneme gerekebilir."
-        preferredStyle:UIAlertControllerStyleActionSheet];
-    for (int i = 0; i < cnt && i < 32; i++) {
-        void* p = players[i]; if (!ptrOk(p)) continue;
-        int actor = ply_getActorNumber(p);
-        void* ns = ply_getNickName(p);
-        NSString *nick = ptrOk(ns) ? readStr(ns) : [NSString stringWithFormat:@"actor%d", actor];
-        [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ (actor=%d)", nick, actor]
-            style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            g_carCloneTargetActor = actor;
-            g_carCloneTargetNick = nick;
-            few1n_startCarCloneAttempt(@"Desert");   // Desert genelde en stabil
-        }]];
-    }
-    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-    if (ac.popoverPresentationController) {
-        ac.popoverPresentationController.sourceView = self.panel;
-        ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
-    }
-    [self present:ac];
-}
-
 - (void)changeMapV70Classic {
     if (!pn_getInRoom || !pn_getInRoom()) {
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🕐 v70 Klasik"
@@ -9597,7 +11113,7 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
                 if (!mapSel_selectMap || !lobbyStartGame || !lobbyGetInst) { FLog(@"[v70] Pointerler yok"); return; }
                 void* lobby = lobbyGetInst();
                 if (!ptrOk(lobby)) { FLog(@"[v70] Lobby yok"); return; }
-                void* mapSel = *(void**)((uintptr_t)lobby + 0x28);
+                void* mapSel = *(void**)((uintptr_t)lobby + OFFR_LOBBY_MAPSEL);
                 if (!ptrOk(mapSel)) { FLog(@"[v70] mapSelection null"); return; }
                 void* s = mkStr(internal);
                 if (!s) return;
@@ -9714,6 +11230,54 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
     [self present:ac];
 }
 
+// ===== v114.78: HARITA GIR-CIK (leave-rejoin) SURESI AYARLA =====
+// Harita degistiginde otomatik odadan cikip geri girme gecikmesi. Cihaz/baglanti
+// yavassa daha uzun sure gerekir; hizli baglantida kisa sure daha akici.
+- (void)tapMapRejoinDelay {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏱️ Gir-Çık Süresi"
+        message:[NSString stringWithFormat:@"Harita değişince odadan çıkıp geri girme gecikmesi.\nŞu an: %.1f sn\n\nOda açılmıyorsa (bağlanıyor'da kalıyorsa) süreyi artır.", g_mapRejoinDelaySec]
+        preferredStyle:UIAlertControllerStyleAlert];
+
+    NSArray *presets = @[@0.8, @1.3, @2.0, @3.0, @4.0, @5.0];
+    for (NSNumber *p in presets) {
+        double sec = p.doubleValue;
+        BOOL isCur = (fabs(sec - g_mapRejoinDelaySec) < 0.05);
+        NSString *title = [NSString stringWithFormat:@"%@%.1f sn", (isCur ? @"✅ " : @""), sec];
+        [ac addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *act){
+            g_mapRejoinDelaySec = sec;
+            [[NSUserDefaults standardUserDefaults] setDouble:sec forKey:@"mapRejoinDelay"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+            FLog([NSString stringWithFormat:@"⏱️ Gir-çık süresi: %.1f sn", sec]);
+        }]];
+    }
+
+    // Elle deger girme (0.3 - 10 sn arasi)
+    [ac addAction:[UIAlertAction actionWithTitle:@"✏️ Elle Yaz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *act){
+        UIAlertController *inputAc = [UIAlertController alertControllerWithTitle:@"✏️ Gir-Çık Süresi"
+            message:@"Saniye yaz (0.3 - 10):" preferredStyle:UIAlertControllerStyleAlert];
+        [inputAc addTextFieldWithConfigurationHandler:^(UITextField *tf){
+            tf.placeholder = @"Ornek: 1.5";
+            tf.keyboardType = UIKeyboardTypeDecimalPad;
+            tf.text = [NSString stringWithFormat:@"%.1f", g_mapRejoinDelaySec];
+        }];
+        [inputAc addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a2){
+            NSString *val = inputAc.textFields.firstObject.text;
+            double sec = val.doubleValue;
+            if (sec < 0.3) sec = 0.3;
+            if (sec > 10.0) sec = 10.0;
+            g_mapRejoinDelaySec = sec;
+            [[NSUserDefaults standardUserDefaults] setDouble:sec forKey:@"mapRejoinDelay"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+            FLog([NSString stringWithFormat:@"⏱️ Gir-çık süresi: %.1f sn", sec]);
+        }]];
+        [inputAc addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        [self present:inputAc];
+    }]];
+
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
 // ===== ODADAYKEN ANLIK ODA ISMINI DEGISTIR =====
 - (void)changeRoomNameInRoom {
     if (!pn_getInRoom || !pn_getInRoom()) {
@@ -9752,7 +11316,7 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
             if (pn_getCurrentRoom && nameStr) {
                 void* room = pn_getCurrentRoom();
                 if (ptrOk(room)) {
-                    *(void**)((uintptr_t)room + 0x40) = nameStr;
+                    *(void**)((uintptr_t)room + OFFR_ROOM_NAME) = nameStr;
                     FLog([NSString stringWithFormat:@"✓ Metod 1 Room.Name (0x40) client-side yazildi: '%@'", newName]);
 
                     // v114.4: Metod 2 - SUNUCU push - Room.set_Name(string) invoke
@@ -9884,6 +11448,17 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
     [ac addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
     [self present:ac];
     FLog([NSString stringWithFormat:@"🤖 AutoMaster: %d", isAutoMasterEnabled]);
+}
+
+- (void)tapAntiKick {
+    isAntiKickEnabled = !isAntiKickEnabled;
+    saveBool(@"antikick", isAntiKickEnabled);
+    NSString *durum = isAntiKickEnabled ? @"🛡️ AÇIK — kicklenirsen odaya geri girip master olursun" : @"❌ KAPALI";
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🛡️ Anti-Kick"
+        message:[NSString stringWithFormat:@"Durum: %@\n\nNot: Kendin çıkmak istersen önce bunu kapat (yoksa geri çeker). CloseConnection ile atılırsan geri giriş çalışır; kalıcı ban varsa çalışmaz.", durum] preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:ac];
+    FLog([NSString stringWithFormat:@"🛡️ AntiKick: %d", isAntiKickEnabled]);
 }
 
 // ===== OYUN HIZI (TIMESCALE) =====
@@ -10137,15 +11712,16 @@ static NSString* few1n_roomPasswordPropertyKey(void) {
 
             // Oyunun iki TMP alanını da eşitle; bu, lobi panelinin doğru durumu
             // göstermesini sağlar fakat asıl koruma yukarıdaki sunucu özelliğidir.
-            if (lobbyGetInst && tmp_set_text) {
+            if (lobbyGetInst) {
                 void *lobby = lobbyGetInst();
                 if (ptrOk(lobby)) {
-                    void *pwdInput = *(void **)((uintptr_t)lobby + OFF_LOBBY_PWD_INPUT);
-                    void *pwdOnConnect = *(void **)((uintptr_t)lobby + OFF_LOBBY_PWD_ON_CONN_INPUT);
+                    void *pwdInput = *(void **)((uintptr_t)lobby + OFFR_LOBBY_PWD);
+                    void *pwdOnConnect = *(void **)((uintptr_t)lobby + OFFR_LOBBY_PWD_CONN);
                     void *pwdStr = mkStr(pwd);
                     if (ptrOk(pwdStr)) {
-                        if (ptrOk(pwdInput)) tmp_set_text(pwdInput, pwdStr);
-                        if (ptrOk(pwdOnConnect)) tmp_set_text(pwdOnConnect, pwdStr);
+                        // v114.60: TMP_InputField.set_text (TMP_Text DEGIL) -> crash fix
+                        if (ptrOk(pwdInput)) w_tmp_input_set_text(pwdInput, pwdStr);
+                        if (ptrOk(pwdOnConnect)) w_tmp_input_set_text(pwdOnConnect, pwdStr);
                     }
                 }
             }
@@ -10205,20 +11781,22 @@ static NSString* few1n_roomPasswordPropertyKey(void) {
             NSString *tgt = target;
             FLog([NSString stringWithFormat:@"🌤️ HAVA: %@ -> yukleniyor '%@'", wName, tgt]);
             @try {
+                // v114.40: Bu sahneler Addressable -> once ese(name, addressable=true).
+                // (LoadLevel/SetScene Build-Settings sahnesi bekler, addressable'da calismaz.)
+                if (photonMgrEnp) {
+                    void* s = mkStr(tgt);
+                    if (s) { photonMgrEnp(s, true); FLog(@"🌤️ ese(addressable=true) ile gonderildi"); return; }
+                }
                 if (pn_loadLevelStr) {
                     void* s = mkStr(tgt);
-                    if (s) { pn_loadLevelStr(s); FLog(@"🌤️ LoadLevel ile gonderildi"); return; }
+                    if (s) { pn_loadLevelStr(s); FLog(@"🌤️ LoadLevel yedegi ile gonderildi"); return; }
                 }
                 if (lobbySetScene && lobbyGetInst) {
                     void* lobby = lobbyGetInst();
                     if (ptrOk(lobby)) {
                         void* s = mkStr(tgt);
-                        if (s) { lobbySetScene(lobby, s); FLog(@"🌤️ SetScene ile gonderildi"); return; }
+                        if (s) { lobbySetScene(lobby, s); FLog(@"🌤️ SetScene yedegi ile gonderildi"); return; }
                     }
-                }
-                if (photonMgrEnp) {
-                    void* s = mkStr(tgt);
-                    if (s) { photonMgrEnp(s, false); FLog(@"🌤️ enp ile gonderildi"); }
                 }
             } @catch (...) { FLog(@"🌤️ Exception"); }
         }]];
@@ -10231,72 +11809,6 @@ static NSString* few1n_roomPasswordPropertyKey(void) {
 // ===== ODADAKİ TÜM ARAÇLARIN RENGİNİ SEÇ & BOYA (ODA DEĞİŞSE DE KALICI) =====
 static bool isCarPaintActive = false;
 static char customCarPaintHex[32] = "#FF0000";
-
-- (void)pickCarPaintColor {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🎨 Odadaki Araçların Rengini Seç & Boya"
-        message:@"Odadaki tüm oyuncuların araç rengini ayarla (Oda değişse de renk tercihin aktif kalır):" preferredStyle:UIAlertControllerStyleAlert];
-
-    NSArray *colors = @[
-        @{@"name": @"🔴 Alev Kırmızı (Neon Red)", @"hex": @"#FF0000"},
-        @{@"name": @"🟢 Neon Yeşil (Neon Green)", @"hex": @"#00FF00"},
-        @{@"name": @"🩵 Siber Turkuaz (Cyan)", @"hex": @"#00FFFF"},
-        @{@"name": @"🟣 Gece Moru (Neon Purple)", @"hex": @"#AA00FF"},
-        @{@"name": @"🟡 Altın Sarısı (Gold)", @"hex": @"#FFD700"},
-        @{@"name": @"🖤 Mat Siyah (Matte Black)", @"hex": @"#111111"},
-        @{@"name": @"⚪ Kristal Beyaz (Crystal White)", @"hex": @"#FFFFFF"}
-    ];
-
-    for (NSDictionary *c in colors) {
-        NSString *cName = c[@"name"];
-        NSString *cHex  = c[@"hex"];
-        [ac addAction:[UIAlertAction actionWithTitle:cName style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            strncpy(customCarPaintHex, cHex.UTF8String, sizeof(customCarPaintHex)-1);
-            isCarPaintActive = true;
-            saveBool(@"carPaintActive", true);
-            saveStr(@"carPaintHex", cHex);
-
-            // Chate oda içi araç rengi değişim bildirimi gönder
-            if (chatGetInst && chatSend) {
-                NSString *notice = [NSString stringWithFormat:@"<color=%@><b>[PAINT] Odadaki Tüm Araçlar Yeni Renge Boyandı! (%@)</b></color>", cHex, cName];
-                void* mgr = chatGetInst(); void* s = mkStr(notice);
-                if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
-            }
-            FLog([NSString stringWithFormat:@"🎨 Araç rengi ayarlandı: %@ (%@)", cName, cHex]);
-        }]];
-    }
-
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
-        tf.placeholder = @"Veya Özel HEX Kodu (Örn: #FF0055)";
-        tf.clearButtonMode = UITextFieldViewModeAlways;
-    }];
-
-    [ac addAction:[UIAlertAction actionWithTitle:@"Uygula (Yazılan HEX)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-        NSString *hex = ac.textFields.firstObject.text;
-        if (hex && hex.length > 0) {
-            if (![hex hasPrefix:@"#"]) hex = [@"#" stringByAppendingString:hex];
-            strncpy(customCarPaintHex, hex.UTF8String, sizeof(customCarPaintHex)-1);
-            isCarPaintActive = true;
-            saveBool(@"carPaintActive", true);
-            saveStr(@"carPaintHex", hex);
-
-            if (chatGetInst && chatSend) {
-                NSString *notice = [NSString stringWithFormat:@"<color=%@><b>[PAINT] Odadaki Tüm Araçlar Özel Renge Boyandı! (%@)</b></color>", hex, hex];
-                void* mgr = chatGetInst(); void* s = mkStr(notice);
-                if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
-            }
-            FLog([NSString stringWithFormat:@"🎨 Özel araç rengi ayarlandı: %@", hex]);
-        }
-    }]];
-
-    [ac addAction:[UIAlertAction actionWithTitle:@"🔄 Boyayı Sıfırla" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
-        isCarPaintActive = false;
-        saveBool(@"carPaintActive", false);
-        FLog(@"Araç rengi orijinaline sıfırlandı!");
-    }]];
-
-    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-    [self present:ac];
-}
 
 - (void)pickRoomMax:(UIButton*)b {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F465 Oda Max Oyuncu"
@@ -10483,8 +11995,8 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     if (!isCarPanelEnabled && g_carDrive) {
         @try {   // kapatinca oyunun kendi kontroluna geri birak
             uintptr_t d = (uintptr_t)g_carDrive;
-            *(unsigned char*)(d + 0x61) = 0;
-            *(unsigned char*)(d + 0x62) = 0;
+            *(unsigned char*)(d + OFFR_CDS_OVR_ACCEL) = 0;
+            *(unsigned char*)(d + OFFR_CDS_OVR_STEER) = 0;
         } @catch (...) {}
     }
     FLog([NSString stringWithFormat:@"Arac paneli: %@", isCarPanelEnabled ? @"ACIK" : @"KAPALI"]);
@@ -10781,44 +12293,6 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     } @catch (...) { FLog(@"Oda master alma hatasi"); }
 }
 
-- (void)nukeRoom {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"💥 Odayi Kapat & Herkesi At"
-        message:@"Bu odanin kontrolunu (Master) alip odadaki HERKESI oyundan atarak odayi sonlandiracak. Emin misin?" preferredStyle:UIAlertControllerStyleAlert];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Evet, Odayi Kapat!" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *act){
-        @try {
-            // 1) Master Client al
-            if (pn_setMasterClient && pn_getLocalPlayer) {
-                void* me = pn_getLocalPlayer();
-                if (me) pn_setMasterClient(me);
-            }
-            // 2) Kendi kick helper'imiz ile herkesi at
-            [self nativeKickAll];
-            FLog(@"Oda sonlandirma komutu iletildi! 💥");
-        } @catch (...) { FLog(@"Oda kapatma hatasi"); }
-    }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-    [self present:ac];
-}
-
-- (void)tapRoomKickAll {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"💥 Odadaki Herkesi At (Mass Kick)"
-        message:@"Odadaki TÜM oyuncular sunucudan/odadan atılacak ve düşürülecektir. Devam edilsin mi?" preferredStyle:UIAlertControllerStyleAlert];
-    [ac addAction:[UIAlertAction actionWithTitle:@"💥 Evet, Herkesi At!" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *act){
-        @try {
-            few1n_forceEnableKick();
-            if (pn_setMasterClient && pn_getLocalPlayer) {
-                void* me = pn_getLocalPlayer();
-                if (me) pn_setMasterClient(me);
-            }
-            [self nativeKickAll];
-            [self fireRoomCrash];
-            FLog(@"💥 Odadaki herkes başarıyla atıldı! (Mass Kick)");
-        } @catch (...) { FLog(@"Herkesi atma hatası"); }
-    }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-    [self present:ac];
-}
-
 - (void)tapRoomExplode {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"💣 Oda Patlatma (Odadakileri Düşür)"
         message:@"Odadayken bu özellik tetiklendiğinde odanın senkronizasyonu bozulur ve odadaki herkes oyundan düşer. Devam edilsin mi?" preferredStyle:UIAlertControllerStyleAlert];
@@ -10830,10 +12304,10 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
                 void* nameStr = mkStr(crashName);
                 void* opts = i_object_new(g_roomOptionsClass);
                 if (nameStr && opts) {
-                    *(bool*)((uintptr_t)opts + 0x10) = true;
-                    *(bool*)((uintptr_t)opts + 0x11) = true;
-                    *(int*) ((uintptr_t)opts + 0x14) = 0x7FFFFFFF;
-                    *(int*) ((uintptr_t)opts + 0x1C) = 0;
+                    *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;
+                    *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;
+                    *(int*) ((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = 0x7FFFFFFF;
+                    *(int*) ((uintptr_t)opts + OFFR_ROPT_EMPTYTTL) = 0;
                     pn_createRoom(nameStr, opts, NULL, NULL);
                 }
             }
@@ -11002,7 +12476,7 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     for (NSString *t in tests) {
         double delay = (i++) * 0.6;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            @try { void* mgr = chatGetInst(); void* s = mkStr(t); if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; } } @catch (...) { g_modSendingRichText = false; }
+            @try { void* mgr = chatGetInst(); void* s = mkStr(t); if (mgr && s) chatSend(mgr, s); } @catch (...) {}
         });
     }
 }
@@ -11064,63 +12538,6 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
 }
 
 // ===== EXPLOIT ILE ODA KURMA (30 YONTEM) =====
-- (void)exploitCreateRoom {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🧪 Exploit Oda Kurma (30 Yontem)"
-                                                               message:@"Oda adini girin ve uygulanacak 30 exploit tekniginden birini secin:"
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
-        tf.text = @"FEW1N";
-        tf.placeholder = @"Oda Ismini Girin";
-        tf.clearButtonMode = UITextFieldViewModeAlways;
-    }];
-
-    void (^runExp)(NSString*, NSString*) = ^(NSString *prefix, NSString *suffix){
-        NSString *inp = ac.textFields.firstObject.text;
-        if (!inp || inp.length == 0) inp = @"FEW1N";
-        NSString *full = [NSString stringWithFormat:@"%@%@%@", prefix, inp, suffix];
-        strncpy(customRoomName, full.UTF8String, sizeof(customRoomName)-1);
-        customRoomName[sizeof(customRoomName)-1]='\0';
-        saveStr(@"roomName", full);
-        FLog([NSString stringWithFormat:@"Exploit oda ismi kuruluyor: %@", full]);
-        [self createOneRoom];
-    };
-
-    [ac addAction:[UIAlertAction actionWithTitle:@"1. Kisa Hex 6 (<#FF0000>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<#FF0000>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"2. Kisa Hex 8 (<#00FF00FF>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<#00FF00FF>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"3. Kisa Hex 3 (<#00F>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<#00F>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"4. Kisa Hex 4 (<#F00F>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<#F00F>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"5. Hashsiz Hex (<color=FF0000>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<color=FF0000>", @"</color>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"6. Buyuk Harf (<COLOR=#FF0000>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<COLOR=#FF0000>", @"</COLOR>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"7. Karma Harf (<CoLoR=#00FFFF>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<CoLoR=#00FFFF>", @"</CoLoR>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"8. Cift Tirnak (<color=\"yellow\">)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<color=\"yellow\">", @"</color>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"9. Tek Tirnak (<color='orange'>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<color='orange'>", @"</color>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"10. Bosluklu Tag (<color = #FF0000>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<color = #FF0000>", @"</color>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"11. Cift Katman (<col<color...>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<col<color=#FF00FF>or=#FF00FF>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"12. Uc Katman (<col<col<color...>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<col<col<color=#FF0000>or=#FF0000>or=#FF0000>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"13. Mark Vurgu (<mark=#FF8800AA>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<mark=#FF8800AA>", @"</mark>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"14. Alpha Tag (<alpha=#FF><#00FF>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<alpha=#FF><#00FFFF>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"15. Dev Yazili (<size=160%><#00FF>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<size=160%><#00FF00>", @"</size>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"16. ZeroWidth Split (c\\u200Bolor)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"c\u200Bolor=#FF0000>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"17. Soft Hyphen Split (c\\u00ADolor)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"c\u00ADolor=#FF0000>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"18. Word Joiner (c\\u2060olor)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"c\u2060olor=#FF0000>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"19. RTL Control Mark (\\u200F)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"\u200F<#FF0000>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"20. UTF-8 BOM Prefix (\\uFEFF)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"\uFEFF<#FF0000>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"21. HTML Entity (&lt;color...)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"&lt;color=#FF0000&gt;", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"22. Decimal Entity (&#60;color...)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"&#60;color=#FF0000&#62;", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"23. Sprite Injection (<sprite=0>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<sprite index=0><#FF0000>", @""); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"24. Full Combo Overlay" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<size=140%><mark=#000000AA><#FF0000>", @"</mark></size>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"25. Gradient Tag (<gradient=...>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<gradient=\"RedYellow\"><#FF0000>", @"</gradient>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"26. Font Swap Inject (<font=...>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<font=\"Arial\"><#00FF00>", @"</font>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"27. Alt Cizgili Renk (<u>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<u><#00FFFF>", @"</u>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"28. Italik Renk (<i>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<i><#FF00FF>", @"</i>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"29. Ust Indis Renk (<sup>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<sup><#FFFF00>", @"</sup>"); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"30. Satir Yuksekligi Enjeksiyonu" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ runExp(@"<line-height=120%><#FF0000>", @""); }]];
-
-    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
-    [self present:ac];
-}
-
 - (void)editSpam {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F4AC Spam Yazisi" message:nil preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = [NSString stringWithUTF8String:chatSpamText]; tf.clearButtonMode = UITextFieldViewModeAlways; }];
@@ -11246,6 +12663,11 @@ static bool (*pn_joinOrCreateRoom)(void*, void*, void*, void*) = NULL;
 static void few1n_joinTargetRoom(NSString *nm) {
     if (!nm || nm.length == 0) return;
     @try {
+        // v116.4: KRITIK — LoadLevel'den sonra PhotonNetwork.IsMessageQueueRunning=false
+        // olabilir; oyleyse LeaveRoom RPC'si sunucuya GIDEMEZ ve gir-cik 'Baglaniyor'da
+        // takilir (kullanicinin eski 'gir cik calismiyo' sorununun kok nedeni). Cikmadan
+        // ONCE kuyrugu zorla ac ki 'cik' komutu gitsin.
+        if (pn_setMessageQueueRunning) { @try { pn_setMessageQueueRunning(true); } @catch (...) {} }
         bool wasInRoom = (pn_getInRoom && pn_getInRoom());
         if (wasInRoom) {
             if (pn_leaveRoom) pn_leaveRoom(false);
@@ -11254,11 +12676,15 @@ static void few1n_joinTargetRoom(NSString *nm) {
                 if (l) lobby_leaveRoom(l);
             }
         }
-        int64_t delay = wasInRoom ? (int64_t)(0.35 * NSEC_PER_SEC) : (int64_t)(0.05 * NSEC_PER_SEC);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay), dispatch_get_main_queue(), ^{
+        // v114.86: Photon LeaveRoom ASENKRON — sabit 0.35s cok kisa, JoinRoom master'a
+        // donmeden calisirsa reddediliyordu (oda degismiyor). Artik IsConnectedAndReady
+        // olana kadar bekleyip oyle giriyoruz. joinNow _rjDone ile TEK sefer calisir.
+        __block bool _rjDone = false;
+        void (^joinNow)(void) = ^{
+            if (_rjDone) return;
             void* ns = mkStr(nm);
             if (!ns) return;
-            
+            _rjDone = true;
             bool ok = false;
             // 1) Doğrudan JoinRoom dene
             if (pn_joinRoom) {
@@ -11300,15 +12726,14 @@ static void few1n_joinTargetRoom(NSString *nm) {
                                 void** lines = (void**)((uintptr_t)rlarr + 0x20);
                                 for (int i = 0; i < rcnt; i++) {
                                     void* ln = lines[i]; if (!unityAlive(ln)) continue;
-                                    void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
-                                    if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
+                                    void* rinfo = *(void**)((uintptr_t)ln + OFFR_RL_ROOMINFO);
                                     if (ptrOk(rinfo) && rinfo_getName) {
                                         NSString *rnm = readStr(rinfo_getName(rinfo));
                                         if ([rnm isEqualToString:nm]) {
                                             // RoomInfo.maxPlayers @offset +0x20 (bool RemovedFromList +0x10, customProps +0x18 pointer)
                                             // Photon.Realtime.RoomInfo layout: bool(1) + [ptr customProps(8)] + int(maxPlayers)
                                             // Offset guvenlik icin +0x20 civari
-                                            @try { *(int*)((uintptr_t)rinfo + 0x20) = 100; } @catch (...) {}
+                                            @try { *(int*)((uintptr_t)rinfo + OFFR_ROOM_MAXPLAYERS) = 100; } @catch (...) {}
                                             void* nsRetry = mkStr(nm);
                                             if (nsRetry) ok = pn_joinRoom(nsRetry, NULL);
                                             break;
@@ -11333,7 +12758,19 @@ static void few1n_joinTargetRoom(NSString *nm) {
                 });
             }
             FLog(ok ? [NSString stringWithFormat:@"✓ '%@' odasına katılım başarılı!", nm] : [NSString stringWithFormat:@"❌ '%@' TÜM METODLAR fail (Photon sunucu MaxPlayers=full katı - 2sn sonra 1x retry gonderildi)", nm]);
-        });
+        };
+        // v114.86: HAZIR olana kadar artan gecikmelerle yokla. Ilk 'IsConnectedAndReady
+        // + odada degil' aninda gir; joinNow tek sefer calisir. Son deneme zorla dener.
+        NSArray *_rjDelays = @[@0.30, @0.6, @1.0, @1.6, @2.4, @3.4, @4.6, @6.0];
+        for (NSNumber *dN in _rjDelays) {
+            few1n_after(dN.doubleValue, ^{
+                if (_rjDone) return;
+                bool ready   = (!pn_getConnReady) || pn_getConnReady();   // pointer yoksa engelleme
+                bool stillIn = (pn_getInRoom && pn_getInRoom());
+                if (ready && !stillIn) joinNow();
+            });
+        }
+        few1n_after(7.0, ^{ if (!_rjDone) joinNow(); });   // son care: hazir olmasa da zorla
     } @catch (...) { FLog(@"Odaya katılma hatası"); }
 }
 
@@ -11354,8 +12791,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
                     void** lines = (void**)((uintptr_t)arr + 0x20);
                     for (int i = 0; i < cnt; i++) {
                         void* ln = lines[i]; if (!unityAlive(ln)) continue;
-                        void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
-                        if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
+                        void* rinfo = *(void**)((uintptr_t)ln + OFFR_RL_ROOMINFO);
                         if (ptrOk(rinfo) && rinfo_getName) {
                             NSString *nm = readStr(rinfo_getName(rinfo));
                             if (nm.length > 0 && ![liveNames containsObject:nm]) [liveNames addObject:nm];
@@ -11531,8 +12967,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
                     void** lines = (void**)((uintptr_t)arr + 0x20);
                     for (int i = 0; i < cnt; i++) {
                         void* ln = lines[i]; if (!unityAlive(ln)) continue;
-                        void* rinfo = *(void**)((uintptr_t)ln + OFF_ROOMLINE_ROOMINFO);
-                        if (!ptrOk(rinfo)) rinfo = *(void**)((uintptr_t)ln + 0x58);
+                        void* rinfo = *(void**)((uintptr_t)ln + OFFR_RL_ROOMINFO);
                         if (ptrOk(rinfo) && rinfo_getName) {
                             NSString *nm = readStr(rinfo_getName(rinfo));
                             if (nm.length > 0 && ![liveNames containsObject:nm]) [liveNames addObject:nm];
@@ -11668,7 +13103,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
 }
 
 - (void)editPlate {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F522 Ozel Plaka" message:@"Plakada gorunecek yazi:" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F522 Yerel Plaka Onizlemesi" message:@"Yalnizca bu cihazda gorunecek yazi:" preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"FEW1N"; if (isCustomPlateEnabled) tf.text = [NSString stringWithUTF8String:customPlateText]; tf.clearButtonMode = UITextFieldViewModeAlways; }];
     [ac addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         NSString *t = ac.textFields.firstObject.text;
@@ -11676,6 +13111,691 @@ static void few1n_joinTargetRoom(NSString *nm) {
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Kapat" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a){ isCustomPlateEnabled = false; saveBool(@"plateEnabled", false); [self refreshUI]; }]];
     [self present:ac];
+}
+
+- (void)spinServerPlate {
+    if (few1n_spinServerPlate()) {
+        UIAlertController *ok = [UIAlertController alertControllerWithTitle:@"Plaka istegi gonderildi"
+            message:@"Oyunun resmi plaka akisi sunucudan yanit bekliyor. Sonuc geldiginde plaka kayda yazilir."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [ok addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:ok];
+    } else {
+        UIAlertController *er = [UIAlertController alertControllerWithTitle:@"Plaka hazir degil"
+            message:@"Once oyunun arac tuning/plaka ekranini ac. PlateUIElement yuklendikten sonra tekrar dene."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [er addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:er];
+    }
+}
+
+- (void)setServerPlate {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🔰 Özel Plaka (Herkeste)"
+        message:@"Yazdığın plaka odadaki HERKESTE görünür (oyunun kendi tuning yayınıyla). Aracın garaj/tuning ekranı açıkken en güvenilir çalışır."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"Örn: FEW1N 34";
+        tf.text = [NSString stringWithUTF8String:customPlateText];
+        tf.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Uygula & Yayınla" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *t = ac.textFields.firstObject.text;
+        if (!t || t.length == 0) return;
+        strncpy(customPlateText, t.UTF8String, sizeof(customPlateText)-1);
+        customPlateText[sizeof(customPlateText)-1] = '\0';
+        bool ok = few1n_applyServerPlate(t);
+        // v114.55: yerel fallback KALDIRILDI (kullanici istegi). Sadece HERKESTE yol.
+        UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"✅ Gönderildi" : @"⚠️ Şimdi olmadı")
+            message:(ok ? @"Plaka uygulandı ve odaya yayınlandı. Diğer oyuncularda görünmeli."
+                        : @"PlateTuner bulunamadı. Oyunun PLAKA ekranını (garajda alttaki PLAKA sekmesi) AÇ, sonra bu butona bas. PlateTuner sadece o ekranda var.")
+            preferredStyle:UIAlertControllerStyleAlert];
+        [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:r];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+// v114.63: BASKASININ PLAKASINI DEGISTIR (herkeste — deneysel).
+// Oyuncu sec -> plaka yaz -> hedefin PlateTuner'ina yazilir + hedefin
+// TuningManager'indan yayinlanir. Kendi plakamin CALISAN yolu, hedefe uygulanmis.
+- (void)hijackPlatePick {
+    if (!pn_getInRoom || !pn_getInRoom()) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🎭 Hedef Plaka" message:@"Odada olmalisin." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e]; return;
+    }
+    if (!ply_getNickName || !ply_getActorNumber) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🎭 Hedef Plaka" message:@"Photon pointer'lari hazir degil." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e]; return;
+    }
+    @try {
+        void* pa = NULL;
+        if (pn_getPlayerListOthers) pa = pn_getPlayerListOthers();
+        BOOL useAllList = NO;
+        if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); useAllList = YES; }
+        if (!ptrOk(pa)) {
+            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🎭 Hedef Plaka" message:@"Oyuncu listesi alinamadi." preferredStyle:UIAlertControllerStyleAlert];
+            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+            [self present:e]; return;
+        }
+        int cnt = few1n_rdI32(pa, 0x18, 0);   // v114.79: guvenli sayac
+        if (cnt <= 0 || cnt > 64) {
+            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🎭 Hedef Plaka" message:[NSString stringWithFormat:@"Odada baska oyuncu yok. (cnt=%d)", cnt] preferredStyle:UIAlertControllerStyleAlert];
+            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+            [self present:e]; return;
+        }
+        void* me = (useAllList && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🎭 Hedef Plaka — Oyuncu Sec"
+            message:@"Seçtiğin oyuncunun aracına plakanı yazacaksın (herkeste görünmesi denenir).\nHedef yarışta/görünür olmalı."
+            preferredStyle:UIAlertControllerStyleActionSheet];
+
+        for (int i = 0; i < cnt && i < 32; i++) {
+            void* p = few1n_rdPtr(pa, 0x20 + (uintptr_t)i * sizeof(void*));   // v114.79: guvenli eleman
+            if (!ptrOk(p) || !few1n_memOk(p)) continue;
+            if (me && p == me) continue;
+            int actor = ply_getActorNumber(p);
+            if (actor <= 0) continue;
+            void* nsObj = ply_getNickName(p);
+            NSString *nm = ptrOk(nsObj) ? (readStr(nsObj) ?: @"") : @"";
+            if (nm.length == 0) nm = [NSString stringWithFormat:@"actor%d", actor];
+            NSString *nmClean = stripRichTextTags(nm) ?: nm;
+
+            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎭 %@", nmClean]
+                style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                UIAlertController *pin = [UIAlertController alertControllerWithTitle:@"🎭 Plaka Yaz"
+                    message:[NSString stringWithFormat:@"'%@' oyuncusunun aracına yazılacak plaka:", nmClean]
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [pin addTextFieldWithConfigurationHandler:^(UITextField *tf){
+                    tf.placeholder = @"Örn: FEW1N 34";
+                    tf.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
+                }];
+                // v114.97: iki yontem de test edilebilsin. A=eah (oyun yayini), B=manuel RPC.
+                void (^showRes)(bool) = ^(bool ok){
+                    NSString *diag = [NSString stringWithUTF8String:g_plateDiag];
+                    UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"ℹ️ Sadece Sende" : @"⚠️ Olmadı")
+                        message:(ok ? [NSString stringWithFormat:@"Plaka SENİN ekranında değişti (lokal). Test edildi: 3 yöntem (manuel RPC / IsMine-flip / tam sahiplik spoof) de HERKESE yaymadı — Photon sunucusu, sahibi olmadığın aracın tuning RPC'sini reddediyor. Çık-gir yapınca eskiye döner.\n\nGERÇEKTEN herkeste değişen kimlik için '🏷️ İsmini Değiştir' kullan (isim = Photon property, sunucu relay eder).\n\nTeşhis: %@", diag]
+                                    : [NSString stringWithFormat:@"Başarısız.\nTeşhis: %@", diag])
+                        preferredStyle:UIAlertControllerStyleAlert];
+                    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+                    [self present:r];
+                };
+                // v114.98: Yontem B (manuel RPC) KALDIRILDI — RpcTarget.All ile alicida
+                // asenkron cokuyordu (send-guard yakalayamaz). Sadece eah (guvenli) kaldi.
+                [pin addAction:[UIAlertAction actionWithTitle:@"Uygula & Yayınla (eah)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a2){
+                    NSString *t = pin.textFields.firstObject.text; if (!t || t.length == 0) return;
+                    showRes(few1n_hijackPlateToTarget(actor, t));
+                }]];
+                [pin addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+                [self present:pin];
+            }]];
+        }
+        [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        if (ac.popoverPresentationController) {
+            ac.popoverPresentationController.sourceView = self.panel;
+            ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
+        }
+        [self present:ac];
+    } @catch (...) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🎭 Hedef Plaka" message:@"Hata olustu." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e];
+    }
+}
+
+// v114.66: OYUNCUYU HERKESTE ZIPLAT/FIRLAT — oyuncu sec, araci yukari isinla (networked).
+- (void)launchPlayerPick {
+    if (!pn_getInRoom || !pn_getInRoom()) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Zıplat" message:@"Odada olmalisin." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e]; return;
+    }
+    if (!ply_getNickName || !ply_getActorNumber) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Zıplat" message:@"Photon pointer'lari hazir degil." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e]; return;
+    }
+    @try {
+        void* pa = NULL;
+        if (pn_getPlayerListOthers) pa = pn_getPlayerListOthers();
+        BOOL useAllList = NO;
+        if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); useAllList = YES; }
+        if (!ptrOk(pa)) {
+            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Zıplat" message:@"Oyuncu listesi alinamadi." preferredStyle:UIAlertControllerStyleAlert];
+            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+            [self present:e]; return;
+        }
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+        if (cnt <= 0 || cnt > 64) {
+            UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Zıplat" message:[NSString stringWithFormat:@"Odada baska oyuncu yok. (cnt=%d)", cnt] preferredStyle:UIAlertControllerStyleAlert];
+            [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+            [self present:e]; return;
+        }
+        void** ps = (void**)((uintptr_t)pa + 0x20);
+        void* me = (useAllList && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚀 Oyuncuyu Zıplat/Fırlat"
+            message:@"Seçtiğin oyuncunun aracı yukarı fırlatılır (herkeste görünmesi denenir).\nHedef yarışta/görünür olmalı."
+            preferredStyle:UIAlertControllerStyleActionSheet];
+
+        for (int i = 0; i < cnt && i < 32; i++) {
+            void* p = ps[i]; if (!ptrOk(p)) continue;
+            if (me && p == me) continue;
+            int actor = ply_getActorNumber(p);
+            if (actor <= 0) continue;
+            void* nsObj = ply_getNickName(p);
+            NSString *nm = ptrOk(nsObj) ? (readStr(nsObj) ?: @"") : @"";
+            if (nm.length == 0) nm = [NSString stringWithFormat:@"actor%d", actor];
+            NSString *nmClean = stripRichTextTags(nm) ?: nm;
+            void* pTarget = p;
+
+            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🚀 %@", nmClean]
+                style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+                // Siddet secimi: zipla / firlat / uzaya
+                UIAlertController *lv = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"🚀 %@ — Şiddet", nmClean]
+                    message:@"Ne kadar yükseğe fırlatılsın?" preferredStyle:UIAlertControllerStyleActionSheet];
+                void (^doLaunch)(float, NSString*) = ^(float h, NSString *label){
+                    bool ok = few1n_launchPlayerNetworked(pTarget, actor, h);
+                    UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"✅ Gönderildi" : @"⚠️ Olmadı")
+                        message:(ok ? [NSString stringWithFormat:@"%@ gönderildi. Diğer oyuncularda görünüyor mu kontrol et.", label]
+                                    : @"Hedefin aracı bulunamadı (yarışta/görünür olmalı).")
+                        preferredStyle:UIAlertControllerStyleAlert];
+                    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+                    [self present:r];
+                };
+                [lv addAction:[UIAlertAction actionWithTitle:@"🤏 Zıpla (hafif +15)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ doLaunch(15.0f, @"Zıplatma"); }]];
+                [lv addAction:[UIAlertAction actionWithTitle:@"🚀 Fırlat (+60)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ doLaunch(60.0f, @"Fırlatma"); }]];
+                [lv addAction:[UIAlertAction actionWithTitle:@"🌌 Uzaya Fırlat (+300)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x){ doLaunch(300.0f, @"Uzaya fırlatma"); }]];
+                [lv addAction:[UIAlertAction actionWithTitle:@"🏎️ İleri Fırlat (hız patlaması)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                    bool ok = few1n_flingForward(pTarget, actor, 90.0f);
+                    [self simpleAlert:(ok?@"✅ Gönderildi":@"⚠️ Olmadı") msg:(ok?@"Hız patlaması (ileri fırlatma) gönderildi.":@"Hedef bulunamadı.")];
+                }]];
+                [lv addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+                if (lv.popoverPresentationController) { lv.popoverPresentationController.sourceView = self.panel; lv.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1); }
+                [self present:lv];
+            }]];
+        }
+        [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        if (ac.popoverPresentationController) {
+            ac.popoverPresentationController.sourceView = self.panel;
+            ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
+        }
+        [self present:ac];
+    } @catch (...) {
+        UIAlertController *e = [UIAlertController alertControllerWithTitle:@"🚀 Zıplat" message:@"Hata olustu." preferredStyle:UIAlertControllerStyleAlert];
+        [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:e];
+    }
+}
+
+// v114.68: kisa alert yardimcisi
+- (void)simpleAlert:(NSString*)t msg:(NSString*)m {
+    UIAlertController *e = [UIAlertController alertControllerWithTitle:t message:m preferredStyle:UIAlertControllerStyleAlert];
+    [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:e];
+}
+// v114.68: ORTAK oyuncu-secici -> secilince cb(player, actor, nick).
+- (void)pickOtherPlayer:(NSString*)title emoji:(NSString*)emoji handler:(void(^)(void* player, int actor, NSString* nick))cb {
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:title msg:@"Odada olmalisin."]; return; }
+    if (!ply_getNickName || !ply_getActorNumber) { [self simpleAlert:title msg:@"Photon hazir degil."]; return; }
+    @try {
+        void* pa = NULL;
+        if (pn_getPlayerListOthers) pa = pn_getPlayerListOthers();
+        BOOL useAllList = NO;
+        if (!ptrOk(pa) && pn_getPlayerList) { pa = pn_getPlayerList(); useAllList = YES; }
+        if (!ptrOk(pa)) { [self simpleAlert:title msg:@"Oyuncu listesi alinamadi."]; return; }
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+        if (cnt <= 0 || cnt > 64) { [self simpleAlert:title msg:[NSString stringWithFormat:@"Baska oyuncu yok (cnt=%d).", cnt]]; return; }
+        void** ps = (void**)((uintptr_t)pa + 0x20);
+        void* me = (useAllList && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:title message:@"Oyuncu seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+        for (int i = 0; i < cnt && i < 32; i++) {
+            void* p = ps[i]; if (!ptrOk(p)) continue;
+            if (me && p == me) continue;
+            int actor = ply_getActorNumber(p); if (actor <= 0) continue;
+            void* nsObj = ply_getNickName(p);
+            NSString *nm = ptrOk(nsObj) ? (readStr(nsObj) ?: @"") : @"";
+            if (nm.length == 0) nm = [NSString stringWithFormat:@"actor%d", actor];
+            NSString *nmClean = stripRichTextTags(nm) ?: nm;
+            void* pT = p;
+            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ %@", emoji, nmClean]
+                style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){ cb(pT, actor, nmClean); }]];
+        }
+        [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1); }
+        [self present:ac];
+    } @catch (...) { [self simpleAlert:title msg:@"Hata olustu."]; }
+}
+
+// 🧲 Oyuncuyu sana çek (senin yanına ışınla)
+- (void)pullPlayerPick {
+    [self pickOtherPlayer:@"🧲 Sana Çek" emoji:@"🧲" handler:^(void* p, int actor, NSString* nick){
+        Vec3 my; if (!few1n_myCarPos(&my)) { [self simpleAlert:@"🧲 Sana Çek" msg:@"Senin araç konumun okunamadı (araca bin)."]; return; }
+        bool ok = few1n_teleportPlayerTo(p, actor, my);
+        [self simpleAlert:(ok?@"✅ Çekildi":@"⚠️ Olmadı") msg:(ok?[NSString stringWithFormat:@"%@ senin yanına ışınlandı.", nick]:@"Hedef bulunamadı (yarışta/görünür olmalı).")];
+    }];
+}
+// 🌪️ Herkesi fırlat
+- (void)massLaunch {
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:@"🌪️ Herkesi Fırlat" msg:@"Odada olmalisin."]; return; }
+    @try {
+        void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
+        BOOL useAll = NO; if (!ptrOk(pa) && pn_getPlayerList){ pa = pn_getPlayerList(); useAll = YES; }
+        if (!ptrOk(pa)) { [self simpleAlert:@"🌪️ Herkesi Fırlat" msg:@"Liste yok."]; return; }
+        int cnt = (int)(*(uintptr_t*)((uintptr_t)pa + 0x18));
+        if (cnt <= 0 || cnt > 64) { [self simpleAlert:@"🌪️ Herkesi Fırlat" msg:@"Baska oyuncu yok."]; return; }
+        void** ps = (void**)((uintptr_t)pa + 0x20);
+        void* me = (useAll && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+        int done = 0;
+        for (int i = 0; i < cnt && i < 32; i++) {
+            void* p = ps[i]; if (!ptrOk(p)) continue;
+            if (me && p == me) continue;
+            int actor = ply_getActorNumber ? ply_getActorNumber(p) : 0; if (actor <= 0) continue;
+            if (few1n_launchPlayerNetworked(p, actor, 60.0f)) done++;
+        }
+        [self simpleAlert:@"🌪️ Herkesi Fırlat" msg:[NSString stringWithFormat:@"%d oyuncu havaya fırlatıldı.", done]];
+    } @catch (...) { [self simpleAlert:@"🌪️ Herkesi Fırlat" msg:@"Hata."]; }
+}
+// 🧲 v114.90: HERKESI BANA CEK (mass pull — non-owner). few1n_teleportPlayerTo
+// (eod + RPC injection) tum oyunculari senin araç konumuna isinlar. Ham okumalar
+// SIGSEGV-guvenli (few1n_rdPtr/rdI32). Ust uste binip patlamasin diye dikey kaydirma.
+- (void)massPull {
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:@"🧲 Herkesi Çek" msg:@"Odada olmalisin."]; return; }
+    Vec3 my; if (!few1n_myCarPos(&my)) { [self simpleAlert:@"🧲 Herkesi Çek" msg:@"Senin araç konumun okunamadı (araca bin)."]; return; }
+    @try {
+        void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
+        BOOL useAll = NO; if (!ptrOk(pa) && pn_getPlayerList){ pa = pn_getPlayerList(); useAll = YES; }
+        if (!ptrOk(pa)) { [self simpleAlert:@"🧲 Herkesi Çek" msg:@"Liste yok."]; return; }
+        int cnt = few1n_rdI32(pa, 0x18, 0);
+        if (cnt <= 0 || cnt > 64) { [self simpleAlert:@"🧲 Herkesi Çek" msg:@"Baska oyuncu yok."]; return; }
+        void* me = (useAll && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+        int done = 0;
+        for (int i = 0; i < cnt && i < 32; i++) {
+            void* p = few1n_rdPtr(pa, 0x20 + (uintptr_t)i * sizeof(void*));
+            if (!ptrOk(p) || !few1n_memOk(p)) continue;
+            if (me && p == me) continue;
+            int actor = ply_getActorNumber ? ply_getActorNumber(p) : 0; if (actor <= 0) continue;
+            Vec3 dst = my; dst.y += 2.0f + (float)(done % 6);   // ust uste binme -> hafif dikey kaydir
+            if (few1n_teleportPlayerTo(p, actor, dst)) done++;
+        }
+        [self simpleAlert:@"🧲 Herkesi Çek" msg:[NSString stringWithFormat:@"%d oyuncu senin yanına çekildi.", done]];
+    } @catch (...) { [self simpleAlert:@"🧲 Herkesi Çek" msg:@"Hata."]; }
+}
+// 📍 Konumu kaydet (senin mevcut konumun)
+- (void)griefSavePos {
+    Vec3 my; if (!few1n_myCarPos(&my)) { [self simpleAlert:@"📍 Konum Kaydet" msg:@"Araç konumun okunamadı (araca bin)."]; return; }
+    g_griefSavedPos = my; g_griefSavedValid = true;
+    [self simpleAlert:@"📍 Konum Kaydet" msg:[NSString stringWithFormat:@"Konum kaydedildi (%.0f, %.0f, %.0f).\nArtık oyuncuları buraya ışınlayabilirsin.", my.x, my.y, my.z]];
+}
+// 🎯 Kaydedilen konuma ışınla (oyuncu seç)
+- (void)teleportToSavedPick {
+    if (!g_griefSavedValid) { [self simpleAlert:@"🎯 Kaydedilen Konuma Işınla" msg:@"Önce '📍 Konum Kaydet'e bas."]; return; }
+    [self pickOtherPlayer:@"🎯 Kaydedilen Konuma Işınla" emoji:@"🎯" handler:^(void* p, int actor, NSString* nick){
+        bool ok = few1n_teleportPlayerTo(p, actor, g_griefSavedPos);
+        [self simpleAlert:(ok?@"✅ Işınlandı":@"⚠️ Olmadı") msg:(ok?[NSString stringWithFormat:@"%@ kaydettiğin konuma ışınlandı.", nick]:@"Hedef bulunamadı.")];
+    }];
+}
+// 🔒 Sürekli fırlat (kilit) — tekrar basınca kapanır
+- (void)lockLaunchPick {
+    if (g_lockLaunchActor > 0) { g_lockLaunchActor = -1; [self simpleAlert:@"🔒 Sürekli Fırlat" msg:@"Kilit KAPATILDI."]; return; }
+    [self pickOtherPlayer:@"🔒 Sürekli Fırlat (Kilit)" emoji:@"🔒" handler:^(void* p, int actor, NSString* nick){
+        g_lockLaunchActor = actor; g_lockLaunchFrame = 0;
+        [self simpleAlert:@"🔒 Sürekli Fırlat" msg:[NSString stringWithFormat:@"%@ artık ~0.5sn'de bir havaya fırlatılıyor.\nKapatmak için butona tekrar bas.", nick]];
+    }];
+}
+// ❄️ v114.92: Dondur/Kilitle — hedefi yerinde tutar (hareket edemez). Tekrar bas kapat.
+- (void)freezePlayerPick {
+    if (g_freezeActor > 0) { g_freezeActor = -1; [self simpleAlert:@"❄️ Dondur" msg:@"Kilit KAPATILDI (oyuncu serbest)."]; return; }
+    [self pickOtherPlayer:@"❄️ Dondur / Yerinde Kilitle" emoji:@"❄️" handler:^(void* p, int actor, NSString* nick){
+        Vec3 pos; if (!few1n_playerCarPos(actor, &pos)) { [self simpleAlert:@"❄️ Dondur" msg:@"Hedefin konumu okunamadı (yarışta/görünür olmalı)."]; return; }
+        g_freezePos = pos; g_freezeActor = actor; g_freezeFrame = 0;
+        [self simpleAlert:@"❄️ Donduruldu" msg:[NSString stringWithFormat:@"%@ yerinde kilitlendi — hareket edemez (~0.3sn'de bir aynı noktaya çekilir).\nKapatmak için butona TEKRAR bas.", nick]];
+    }];
+}
+// 🧲 v114.92: Herkesi kayıtlı konuma topla (mass gather — non-owner)
+- (void)massGatherSaved {
+    if (!g_griefSavedValid) { [self simpleAlert:@"🧲 Herkesi Topla" msg:@"Önce '📍 Konum Kaydet'e bas (toplama noktası)."]; return; }
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:@"🧲 Herkesi Topla" msg:@"Odada olmalisin."]; return; }
+    @try {
+        void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
+        BOOL useAll = NO; if (!ptrOk(pa) && pn_getPlayerList){ pa = pn_getPlayerList(); useAll = YES; }
+        if (!ptrOk(pa)) { [self simpleAlert:@"🧲 Herkesi Topla" msg:@"Liste yok."]; return; }
+        int cnt = few1n_rdI32(pa, 0x18, 0);
+        if (cnt <= 0 || cnt > 64) { [self simpleAlert:@"🧲 Herkesi Topla" msg:@"Baska oyuncu yok."]; return; }
+        void* me = (useAll && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+        int done = 0;
+        for (int i = 0; i < cnt && i < 32; i++) {
+            void* p = few1n_rdPtr(pa, 0x20 + (uintptr_t)i * sizeof(void*));
+            if (!ptrOk(p) || !few1n_memOk(p)) continue;
+            if (me && p == me) continue;
+            int actor = ply_getActorNumber ? ply_getActorNumber(p) : 0; if (actor <= 0) continue;
+            Vec3 dst = g_griefSavedPos; dst.y += 2.0f + (float)(done % 6);
+            if (few1n_teleportPlayerTo(p, actor, dst)) done++;
+        }
+        [self simpleAlert:@"🧲 Herkesi Topla" msg:[NSString stringWithFormat:@"%d oyuncu kayıtlı konuma toplandı.", done]];
+    } @catch (...) { [self simpleAlert:@"🧲 Herkesi Topla" msg:@"Hata."]; }
+}
+// 🎯 v114.93: Oto-Takip — hedefi surekli senin yanina ceker. Tekrar bas -> kapat.
+- (void)followPlayerPick {
+    if (g_followActor > 0) { g_followActor = -1; [self simpleAlert:@"🎯 Oto-Takip" msg:@"Takip KAPATILDI."]; return; }
+    [self pickOtherPlayer:@"🎯 Oto-Takip (yanında tut)" emoji:@"🎯" handler:^(void* p, int actor, NSString* nick){
+        Vec3 my; if (!few1n_myCarPos(&my)) { [self simpleAlert:@"🎯 Oto-Takip" msg:@"Senin araç konumun okunamadı (araca bin)."]; return; }
+        g_followActor = actor; g_followFrame = 0;
+        [self simpleAlert:@"🎯 Oto-Takip" msg:[NSString stringWithFormat:@"%@ artık ~0.4sn'de bir senin yanına çekiliyor (peşinden gelir).\nKapatmak için butona TEKRAR bas.", nick]];
+    }];
+}
+// 🔄 v114.93: Yer Değiştir — sen ve seçtiğin oyuncu yer değiştirirsiniz.
+- (void)swapPlayerPick {
+    if (!unityAlive(g_rb)) { @try { few1n_findMyCarPhoton(); } @catch (...) {} }
+    if (!unityAlive(g_rb)) { [self simpleAlert:@"🔄 Yer Değiştir" msg:@"Senin araç bulunamadı (araca bin)."]; return; }
+    [self pickOtherPlayer:@"🔄 Yer Değiştir" emoji:@"🔄" handler:^(void* p, int actor, NSString* nick){
+        Vec3 myPos = {0,0,0}; @try { rbGetPosIl(g_rb, &myPos); } @catch (...) {}
+        Vec3 tgtPos; if (!few1n_playerCarPos(actor, &tgtPos)) { [self simpleAlert:@"🔄 Yer Değiştir" msg:@"Hedefin konumu okunamadı (görünür olmalı)."]; return; }
+        // 1) sen -> hedefin yeri, 2) hedef -> senin eski yerin
+        @try { Vec3 t = tgtPos; rbSetPosIl(g_rb, &t); Vec3 z = {0,0,0}; rbSetVelIl(g_rb, &z); } @catch (...) {}
+        bool ok = few1n_teleportPlayerTo(p, actor, myPos);
+        [self simpleAlert:(ok?@"🔄 Yer Değiştirildi":@"⚠️ Kısmi") msg:(ok?[NSString stringWithFormat:@"Sen ve %@ yer değiştirdiniz.", nick]:[NSString stringWithFormat:@"Sen %@'in yerine ışınlandın ama onu taşımak tutmadı (görünür olmalı).", nick])];
+    }];
+}
+// 🧊 v114.94: Herkesi Dondur — tum odayi yakalanan yerlerde kilitle. Toggle.
+- (void)massFreezeToggle {
+    if (g_massFreezeOn) { g_massFreezeOn = false; [self simpleAlert:@"🧊 Herkesi Dondur" msg:@"Dondurma KAPATILDI (herkes serbest)."]; return; }
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:@"🧊 Herkesi Dondur" msg:@"Odada olmalisin."]; return; }
+    @try {
+        void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
+        BOOL useAll = NO; if (!ptrOk(pa) && pn_getPlayerList){ pa = pn_getPlayerList(); useAll = YES; }
+        if (!ptrOk(pa)) { [self simpleAlert:@"🧊 Herkesi Dondur" msg:@"Liste yok."]; return; }
+        int cnt = few1n_rdI32(pa, 0x18, 0);
+        if (cnt <= 0 || cnt > 64) { [self simpleAlert:@"🧊 Herkesi Dondur" msg:@"Baska oyuncu yok."]; return; }
+        void* me = (useAll && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+        int n = 0;
+        for (int i = 0; i < cnt && i < 32 && n < FEW1N_MAXFREEZE; i++) {
+            void* p = few1n_rdPtr(pa, 0x20 + (uintptr_t)i * sizeof(void*));
+            if (!ptrOk(p) || !few1n_memOk(p)) continue;
+            if (me && p == me) continue;
+            int actor = ply_getActorNumber ? ply_getActorNumber(p) : 0; if (actor <= 0) continue;
+            Vec3 pos; if (!few1n_playerCarPos(actor, &pos)) continue;   // konumu yakala
+            g_massFreezeActors[n] = actor; g_massFreezePos[n] = pos; n++;
+        }
+        if (n == 0) { [self simpleAlert:@"🧊 Herkesi Dondur" msg:@"Konumu okunabilen oyuncu yok (görünür olmalılar)."]; return; }
+        g_massFreezeCount = n; g_massFreezeFrame = 0; g_massFreezeOn = true;
+        [self simpleAlert:@"🧊 Herkesi Dondur" msg:[NSString stringWithFormat:@"%d oyuncu yerinde donduruldu (hareket edemezler).\nKapatmak için butona TEKRAR bas.", n]];
+    } @catch (...) { [self simpleAlert:@"🧊 Herkesi Dondur" msg:@"Hata."]; }
+}
+// 🎢 v114.94: Firlatip-Getir (yo-yo) — hedefi surekli yukari at / yanina getir. Toggle.
+- (void)yoyoPlayerPick {
+    if (g_yoyoActor > 0) { g_yoyoActor = -1; [self simpleAlert:@"🎢 Fırlatıp-Getir" msg:@"KAPATILDI."]; return; }
+    [self pickOtherPlayer:@"🎢 Fırlatıp-Getir (yo-yo)" emoji:@"🎢" handler:^(void* p, int actor, NSString* nick){
+        g_yoyoActor = actor; g_yoyoFrame = 0; g_yoyoUp = true;
+        [self simpleAlert:@"🎢 Fırlatıp-Getir" msg:[NSString stringWithFormat:@"%@ sürekli havaya fırlatılıp yanına getiriliyor.\nKapatmak için butona TEKRAR bas.", nick]];
+    }];
+}
+// 🏷️ v114.95: Baskasinin ismini degistir (herkeste — non-owner property).
+- (void)changeNamePick {
+    [self pickOtherPlayer:@"🏷️ İsmini Değiştir" emoji:@"🏷️" handler:^(void* p, int actor, NSString* nick){
+        UIAlertController *in = [UIAlertController alertControllerWithTitle:@"🏷️ Yeni İsim"
+            message:[NSString stringWithFormat:@"'%@' oyuncusunun yeni ismi:", nick] preferredStyle:UIAlertControllerStyleAlert];
+        [in addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Örn: NOOB"; }];
+        [in addAction:[UIAlertAction actionWithTitle:@"Değiştir & Yayınla" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a2){
+            NSString *nm = in.textFields.firstObject.text;
+            if (!nm || nm.length == 0) return;
+            bool ok = few1n_setTargetNameNonOwner(actor, nm);
+            NSString *diag = [NSString stringWithUTF8String:g_plateDiag];
+            [self simpleAlert:(ok?@"✅ Gönderildi":@"⚠️ Olmadı")
+                msg:(ok?[NSString stringWithFormat:@"'%@' -> '%@' ismi Photon property (255) ile yayınlandı. Diğer oyuncularda değişti mi kontrol et. (Deneysel — sunucu izin vermezse tutmaz.)\n\nTeşhis: %@", nick, nm, diag]
+                       :[NSString stringWithFormat:@"Başarısız.\nTeşhis: %@\n(Bu satırı bana gönder.)", diag])];
+        }]];
+        [in addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        [self present:in];
+    }];
+}
+// 🏷️ v115.0: HERKESIN ismini degistir (mass — non-owner property).
+- (void)massNameChange {
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:@"🏷️ Herkesin İsmi" msg:@"Odada olmalisin."]; return; }
+    UIAlertController *in = [UIAlertController alertControllerWithTitle:@"🏷️ Herkesin İsmi"
+        message:@"Odadaki TÜM oyunculara verilecek isim:" preferredStyle:UIAlertControllerStyleAlert];
+    [in addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Örn: BOT"; }];
+    [in addAction:[UIAlertAction actionWithTitle:@"Herkese Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a2){
+        NSString *nm = in.textFields.firstObject.text; if (!nm || nm.length == 0) return;
+        @try {
+            void* pa = pn_getPlayerListOthers ? pn_getPlayerListOthers() : NULL;
+            BOOL useAll = NO; if (!ptrOk(pa) && pn_getPlayerList){ pa = pn_getPlayerList(); useAll = YES; }
+            if (!ptrOk(pa)) { [self simpleAlert:@"🏷️ Herkesin İsmi" msg:@"Liste yok."]; return; }
+            int cnt = few1n_rdI32(pa, 0x18, 0);
+            if (cnt <= 0 || cnt > 64) { [self simpleAlert:@"🏷️ Herkesin İsmi" msg:@"Baska oyuncu yok."]; return; }
+            void* me = (useAll && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+            int done = 0;
+            for (int i = 0; i < cnt && i < 32; i++) {
+                void* p = few1n_rdPtr(pa, 0x20 + (uintptr_t)i * sizeof(void*));
+                if (!ptrOk(p) || !few1n_memOk(p)) continue;
+                if (me && p == me) continue;
+                int actor = ply_getActorNumber ? ply_getActorNumber(p) : 0; if (actor <= 0) continue;
+                if (few1n_setTargetNameNonOwner(actor, nm)) done++;
+            }
+            [self simpleAlert:@"🏷️ Herkesin İsmi" msg:[NSString stringWithFormat:@"%d oyuncunun ismi '%@' yapıldı. Başka oyuncudan kontrol et.", done, nm]];
+        } @catch (...) { [self simpleAlert:@"🏷️ Herkesin İsmi" msg:@"Hata."]; }
+    }]];
+    [in addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:in];
+}
+// 🧬 v115.0: Photon Property Enjektoru — hedefe key/deger gonder (isim=255 gibi).
+- (void)injectPropertyPick {
+    [self pickOtherPlayer:@"🧬 Property Enjekte" emoji:@"🧬" handler:^(void* p, int actor, NSString* nick){
+        UIAlertController *kc = [UIAlertController alertControllerWithTitle:@"🧬 Property Key"
+            message:[NSString stringWithFormat:@"'%@' için property anahtarı.\nSayı = byte key (255=isim); yazı = string custom key.", nick] preferredStyle:UIAlertControllerStyleAlert];
+        [kc addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Örn: 255 veya score"; }];
+        [kc addAction:[UIAlertAction actionWithTitle:@"İleri" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a2){
+            NSString *keyS = kc.textFields.firstObject.text; if (!keyS || keyS.length==0) return;
+            BOOL numeric = YES; for (NSUInteger i=0;i<keyS.length;i++){ unichar c=[keyS characterAtIndex:i]; if(c<'0'||c>'9'){numeric=NO;break;} }
+            UIAlertController *vc = [UIAlertController alertControllerWithTitle:@"🧬 Değer"
+                message:@"Property değeri (metin):" preferredStyle:UIAlertControllerStyleAlert];
+            [vc addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Örn: 999999"; }];
+            [vc addAction:[UIAlertAction actionWithTitle:@"Enjekte" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a3){
+                NSString *val = vc.textFields.firstObject.text; if (!val) return;
+                bool ok = few1n_setTargetPropNonOwner(actor, keyS, numeric, val);
+                NSString *diag = [NSString stringWithUTF8String:g_plateDiag];
+                [self simpleAlert:(ok?@"✅ Gönderildi":@"⚠️ Olmadı")
+                    msg:[NSString stringWithFormat:@"key=%@ (%@), değer=%@\n\nBaşka oyuncudan/oyundan etki oldu mu kontrol et.\n\nTeşhis: %@", keyS, numeric?@"sayı":@"yazı", val, diag]];
+            }]];
+            [vc addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+            [self present:vc];
+        }]];
+        [kc addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        [self present:kc];
+    }];
+}
+// 🏁 Zorla kazandır (oyuncu seç)
+- (void)forceWinPick {
+    [self pickOtherPlayer:@"🏁 Zorla Kazandır" emoji:@"🏁" handler:^(void* p, int actor, NSString* nick){
+        bool ok = few1n_forceWinTarget(actor);
+        [self simpleAlert:(ok?@"✅ Gönderildi":@"⚠️ Olmadı") msg:(ok?[NSString stringWithFormat:@"%@ için 'kazandı' RPC'si gönderildi (deneysel).", nick]:@"Hedef/enz bulunamadı.")];
+    }];
+}
+// 🚗 Aracını hedefe kopyala (hedefin araci = senin aracin klonu, herkeste)
+- (void)copyCarPick {
+    [self pickOtherPlayer:@"🚗 Aracını Ona Ver" emoji:@"🚗" handler:^(void* p, int actor, NSString* nick){
+        bool ok = few1n_copyMyCarToTarget(actor);
+        [self simpleAlert:(ok?@"✅ Kopyalandı":@"⚠️ Olmadı")
+            msg:(ok?[NSString stringWithFormat:@"%@ oyuncusunun aracı SENİN aracının klonu yapıldı (plaka+renk+jant+lastik). Diğer oyuncularda görünüyor mu kontrol et.", nick]
+                   :@"Hedef/TuningManager bulunamadı ya da senin currentData boş (garajda tuning yapıp araca bin).")];
+    }];
+}
+// 👑 GERÇEK master ol (sunucu) — başarılıysa harita değiştirme çalışır
+- (void)becomeRealMasterMap {
+    if (!pn_getInRoom || !pn_getInRoom()) { [self simpleAlert:@"👑 Gerçek Master" msg:@"Odada olmalısın (kendi odanda dene)."]; return; }
+    if (isAutoMasterEnabled) { [self simpleAlert:@"👑 Gerçek Master" msg:@"Önce 'Otomatik Master' toggle'ını KAPAT — o lokal yama testi yanıltıyor. Sonra tekrar bas."]; return; }
+    few1n_sendRealSetMaster();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (few1n_amRealMaster())
+            [self simpleAlert:@"👑 Master oldun ✅" msg:@"Sunucu seni MASTER yaptı! Şimdi '🗺️ Odadayken Harita Değiştir'e bas — sahne senkronu master'a açık olduğu için artık çalışmalı."];
+        else
+            [self simpleAlert:@"👑 Master OLAMADIN ❌" msg:@"Sunucu master isteğini onaylamadı. Bu oda/oyun master almaya izin vermiyorsa harita DEĞİŞTİRİLEMEZ (client'tan aşılamaz — dürüst gerçek). Kendi kurduğun boş odada tekrar dene."];
+    });
+}
+// 🎭 Hedefin aracını KENDİNE klonla (onun arabası sende olsun)
+- (void)stealCarPick {
+    [self pickOtherPlayer:@"🎭 Aracını Çal/Klonla" emoji:@"🎭" handler:^(void* p, int actor, NSString* nick){
+        bool ok = few1n_cloneTargetCarToMe(actor);
+        [self simpleAlert:(ok?@"✅ Klonlandı":@"⚠️ Olmadı")
+            msg:(ok?[NSString stringWithFormat:@"%@ oyuncusunun aracı SENİN aracına klonlandı (renk+jant+lastik+plaka). Garaj/araç görünümünü kontrol et.", nick]
+                   :@"Hedef TuningManager/currentData bulunamadı (hedef görünür ve tuning'li olmalı) ya da sen araçta değilsin.")];
+    }];
+}
+
+// ===== v114.42: 3 YENI OZELLIK BUTONU =====
+// v114.48: officialPlateEveryone (Resmi Plaka) KALDIRILDI — PlayerManager.goy
+// cagrisi oyunu cokertiyordu. Ozel Plaka (few1n_forcePlate, per-karakter) kullan.
+
+- (void)officialNicknameEveryone {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🏷️ Sunucu İsmi"
+        message:@"Yazdığın isim SUNUCU profiline yazılır. Odadaki herkes yeni ismini görür (Photon nick'ten farklı, kalıcı)." preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"Yeni isim";
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Sunucuya Yaz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *t = ac.textFields.firstObject.text;
+        if (!t || t.length == 0) return;
+        bool ok = few1n_officialNickname(t);
+        UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"✅ Gönderildi" : @"⚠️ Olmadı")
+            message:(ok ? @"İsim sunucuya yazıldı. Herkeste güncellenmeli (birkaç saniye/yeniden giriş). Loga bak: '🏷️ SunucuIsmi'."
+                        : @"PlayerManager.gow bulunamadı. Ana menü/garajdayken tekrar dene.")
+            preferredStyle:UIAlertControllerStyleAlert];
+        [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:r];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
+- (void)instantWin {
+    bool ok = few1n_instantWin();
+    UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"🏆 Kazan gönderildi" : @"⚠️ Olmadı")
+        message:(ok ? @"Kazanma sinyali gönderildi. Yarış içindeyken en iyi çalışır. Olmadıysa loga bak: '🏆 AnindaKazan'."
+                    : @"Yarışta değilsin veya HR_PhotonHandler hazır değil. Yarışa girip tekrar dene.")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:r];
+}
+
+- (void)trafficStrike {
+    bool ok = few1n_trafficStrike();
+    UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"🚧 Fırlatıldı" : @"⚠️ Olmadı")
+        message:(ok ? @"Trafik aracı önüne gönderildi (deneysel). Tutmazsa loga bak: '🚧 TrafikFirlat'."
+                    : @"Arabana binmen ve yarışta olman lazım. Sonra tekrar dene.")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:r];
+}
+
+- (void)cycleWheels {
+    static int idx = 0;
+    idx = (idx + 1) % 16;   // sıradaki jant modeli
+    bool ok = few1n_applyTunerInt("WheelsITuner", idx, "Jant");
+    UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"🛞 Jant değişti" : @"⚠️ Olmadı")
+        message:(ok ? [NSString stringWithFormat:@"Jant modeli #%d uygulandı + yayınlandı. Diğer oyuncularda da görünmeli (tuner yayını).", idx]
+                    : @"WheelsITuner bulunamadı. Garaj/tuning ekranı açıkken tekrar dene.")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:r];
+}
+
+- (void)cycleTire {
+    static int idx = 0;
+    idx = (idx + 1) % 16;   // sıradaki lastik
+    bool ok = few1n_applyTunerInt("TireTuner", idx, "Lastik");
+    UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"🛢️ Lastik değişti" : @"⚠️ Olmadı")
+        message:(ok ? [NSString stringWithFormat:@"Lastik #%d uygulandı + yayınlandı. Diğer oyuncularda da görünmeli (tuner yayını).", idx]
+                    : @"TireTuner bulunamadı. Garaj/tuning ekranı açıkken tekrar dene.")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:r];
+}
+
+// v114.45: Hedef oyuncu seç -> arabasına SENİN tuning'ini bas (herkeste, deneysel)
+- (void)setRimColor {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"💿 Jant Rengi (Herkeste)"
+        message:@"Jant rengi oyunun tuning yayınıyla herkese gider. Garaj/tuning ekranı açıkken." preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *cols = @[
+        @{@"n":@"🔴 Kırmızı", @"r":@1.0,@"g":@0.0,@"b":@0.0},
+        @{@"n":@"🟢 Yeşil",   @"r":@0.0,@"g":@1.0,@"b":@0.0},
+        @{@"n":@"🔵 Mavi",    @"r":@0.0,@"g":@0.35,@"b":@1.0},
+        @{@"n":@"🟡 Altın",   @"r":@1.0,@"g":@0.84,@"b":@0.0},
+        @{@"n":@"🟣 Mor",     @"r":@0.6,@"g":@0.0,@"b":@1.0},
+        @{@"n":@"🖤 Siyah",    @"r":@0.05,@"g":@0.05,@"b":@0.05},
+        @{@"n":@"⚪ Beyaz",    @"r":@1.0,@"g":@1.0,@"b":@1.0},
+    ];
+    for (NSDictionary *c in cols) {
+        [ac addAction:[UIAlertAction actionWithTitle:c[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            if (!few1n_applyRimColor([c[@"r"] floatValue], [c[@"g"] floatValue], [c[@"b"] floatValue])) {
+                UIAlertController *e = [UIAlertController alertControllerWithTitle:@"⚠️ Hazır değil" message:@"DiskPaintTuner bulunamadı. Garaj/tuning ekranını aç, tekrar dene." preferredStyle:UIAlertControllerStyleAlert];
+                [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+                [self present:e];
+            }
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, self.panel.bounds.size.height/2, 1, 1); }
+    [self present:ac];
+}
+
+- (void)setChromeMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"✨ Krom (Herkeste)"
+        message:@"Aracın krom kaplamasını aç/kapa — herkes görür." preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"✨ Krom AÇIK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setChrome(true); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"◻️ Krom KAPALI" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setChrome(false); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, self.panel.bounds.size.height/2, 1, 1); }
+    [self present:ac];
+}
+
+- (void)setGlassMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🪟 Cam Koyuluğu (Herkeste)"
+        message:@"Camların koyuluğu — herkes görür." preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *lv = @[@{@"n":@"⬜ Şeffaf", @"v":@0.0}, @{@"n":@"🌫️ Hafif", @"v":@0.35}, @{@"n":@"🕶️ Orta", @"v":@0.65}, @{@"n":@"⬛ Full Koyu", @"v":@1.0}];
+    for (NSDictionary *c in lv) {
+        [ac addAction:[UIAlertAction actionWithTitle:c[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setGlass([c[@"v"] floatValue]); }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, self.panel.bounds.size.height/2, 1, 1); }
+    [self present:ac];
+}
+
+- (void)setStanceMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🏎️ Stance / Kamber (Herkeste)"
+        message:@"Aracın duruşu — herkes senin aracını böyle görür. Garaj/tuning ekranı açıkken." preferredStyle:UIAlertControllerStyleActionSheet];
+    // camber(derece, negatif=yatık), offset(dışa taşma), width(genişlik x), radius(jant boyu)
+    NSArray *presets = @[
+        @{@"n":@"😈 Aşırı Kamber",        @"c":@-25.0,@"o":@0.0, @"w":@1.0,@"r":@1.0},
+        @{@"n":@"🔥 Hellaflush (geniş)",   @"c":@-14.0,@"o":@0.22,@"w":@1.15,@"r":@1.0},
+        @{@"n":@"🛞 Devasa Jant",          @"c":@-6.0, @"o":@0.05,@"w":@1.3,@"r":@1.55},
+        @{@"n":@"🏁 Hafif Spor",           @"c":@-4.0, @"o":@0.05,@"w":@1.05,@"r":@1.0},
+        @{@"n":@"↩️ Normal (sıfırla)",      @"c":@0.0,  @"o":@0.0, @"w":@1.0,@"r":@1.0},
+    ];
+    for (NSDictionary *p in presets) {
+        [ac addAction:[UIAlertAction actionWithTitle:p[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            if (!few1n_applyStance([p[@"c"] floatValue], [p[@"o"] floatValue], [p[@"w"] floatValue], [p[@"r"] floatValue])) {
+                UIAlertController *e = [UIAlertController alertControllerWithTitle:@"⚠️ Hazır değil" message:@"WheelbaseTuner bulunamadı. Garaj/tuning ekranını aç, tekrar dene." preferredStyle:UIAlertControllerStyleAlert];
+                [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+                [self present:e];
+            }
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) { ac.popoverPresentationController.sourceView = self.panel; ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, self.panel.bounds.size.height/2, 1, 1); }
+    [self present:ac];
+}
+
+- (void)finishTeleport {
+    bool ok = few1n_finishTeleport();
+    UIAlertController *r = [UIAlertController alertControllerWithTitle:(ok ? @"🏁 Denendi" : @"⚠️ Olmadı")
+        message:(ok ? @"Bitiş teleport çağrıldı. Ne yaptığı deneysel — sonucu oyunda gör." : @"HR_MultiplayerTeleport bulunamadı (sadece yarış içinde çalışır).")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [r addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:r];
 }
 
 // ===== REKLAM BOZUCU TOGGLE (CANLI / ANINDA) =====
@@ -11850,7 +13970,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
             NSString *nuke = @"<size=9999%><line-height=9999%><font=\"Arial\"><b>💥 FEW1N NUKE 💥</b></font></size>";
             void* mgr = chatGetInst();
             void* s = mkStr(nuke);
-            if (mgr && s) { g_modSendingRichText = true; chatSend(mgr, s); g_modSendingRichText = false; }
+            if (mgr && s) chatSend(mgr, s);
         }
         // 4) HEMEN pozisyonu geri yükle
         if (unityAlive(g_rb)) {
@@ -11959,10 +14079,10 @@ static void few1n_joinTargetRoom(NSString *nm) {
         void* ns = mkStr(@"OVERFLOW");
         void* opts = i_object_new(g_roomOptionsClass);
         if (ns && opts) {
-            *(bool*)((uintptr_t)opts + 0x10) = true;
-            *(bool*)((uintptr_t)opts + 0x11) = true;
-            *(int*)((uintptr_t)opts + 0x14) = 0x7FFFFFFF;
-            *(int*)((uintptr_t)opts + 0x1C) = 0x7FFFFFFF;
+            *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;
+            *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;
+            *(int*)((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = 0x7FFFFFFF;
+            *(int*)((uintptr_t)opts + OFFR_ROPT_EMPTYTTL) = 0x7FFFFFFF;
             pn_createRoom(ns, opts, NULL, NULL);
             FLog(@"MaxPlayer=INT_MAX overflow denendi");
         }
@@ -12029,7 +14149,17 @@ static void few1n_joinTargetRoom(NSString *nm) {
     [st appendString:@"── BASE TESTI (araba disi hook) ──\n"];
     [st appendFormat:@"timeScale:%ld chat:%ld odaSatir:%ld odaKurBtn:%ld baglanti:%ld\n", fTS, fChat, fRoomLine, fCreateBtn, fConn];
     long nonCar = fTS + fChat + fRoomLine + fCreateBtn + fConn;
-    [st appendFormat:@"SONUC: %@\n", nonCar > 0 ? @"HOOKLAR CALISIYOR -> sorun araba sinifi" : @"HICBIR HOOK CALISMIYOR -> OFFSET/BASE OLU"];
+    // v114.22: eski mesaj "OFFSET/BASE OLU" diyordu — yaniltici. Hook adresleri artik
+    // isimle bulunuyor, base ile ilgisi yok. Gercek nedenleri ayirt et.
+    NSString *hookVerdict;
+    if (nonCar > 0)                    hookVerdict = @"HOOKLAR CALISIYOR -> sorun araba sinifi";
+    else if (hookSuccessCount == 0 && !g_msHook)
+                                       hookVerdict = @"Hook motoru YOK (sideload?) -> il2cpp yolu aktif";
+    else if (hookSuccessCount == 0)    hookVerdict = @"Hook kurulamadi -> il2cpp yolu aktif";
+    else                               hookVerdict = @"Hooklar kuruldu, henuz tetiklenmedi (oyuna gir)";
+    [st appendFormat:@"SONUC: %@\n", hookVerdict];
+    [st appendFormat:@"hook kur: %d OK / %d FAIL | adres: %@\n", hookSuccessCount, hookFailCount,
+          i_method_get_pointer ? @"export" : @"MethodInfo+0"];
     [st appendString:@"── ozellik durumlari ──\n"];
     [st appendFormat:@"Hiz:%dx Nitro:%@ Ucus:%@ DusukG:%@\n", speedMode, isInfiniteNitroEnabled?@"A":@"K", isFlyEnabled?@"A":@"K", isLowGravEnabled?@"A":@"K"];
     [st appendFormat:@"RenkliChat:%@ Spam:%@ ASCII:%@ Sifre:%@\n", isColorChatEnabled?@"A":@"K", isSpamEnabled?@"A":@"K", isAsciiAnimEnabled?@"A":@"K", isBypassPasswordEnabled?@"A":@"K"];
@@ -12134,111 +14264,97 @@ static void few1n_joinTargetRoom(NSString *nm) {
 //   = false / = 0 sabiti + `[SESSION_ONLY]` yorumu -> OTURUMLUK: her tweak yuklenmesinde sifirlanir
 // Oturumluk toggle'lara UI'da "(oturumluk)" etiketi eklendi.
 static void restoreSettings(void) {
-    // KULLANICI ISTEGI: TUM OZELLIKLER OTOMATIK KAPALI BASLASIN
-    g_voteKickFullYes      = false;
-    speedMode              = 1;
-    speedMult              = 1.0f;
-    isRoomLocked           = false;
-    isRoomInvisible        = false;
-    isInfiniteNitroEnabled = false;
-    isUnlockAllCarsEnabled = false;
-    isCarPanelEnabled      = false;
-    isEspEnabled           = false;
-    isSpeedHud             = false;
-    isNoClip               = false;
-    isAntiGrav             = false;
-    isCarSizeEnabled       = false;
-    carSizeVal             = 1.0f;
-    isCarColorEnabled      = false;
-    carColorRainbow        = false;
-    g_carColor             = (Color4){ 1.0f, 0.0f, 0.0f, 1.0f };
-    isCarPaintActive       = false;
-    asciiColorCycle        = false;
-    lyricsColorCycle       = false;
-    lyricsLoop             = false;
-    lyricsInterval         = 2.0f;
-    isAnnounceEnabled      = false;
-    isGodmode              = false;
-    isSelektor             = false;
-    isAlwaysLightsEnabled  = false;
+    speedMode              = loadInt(@"speedMode", 1);
+    speedMult              = ((float)loadInt(@"speedMult10", 10)) / 10.0f;
+    if (speedMult < 0.1f || speedMult > 10.0f) speedMult = 1.0f;
+    // v114.78: harita gir-cik gecikmesi (KALICI)
+    if ([defs() objectForKey:@"mapRejoinDelay"]) g_mapRejoinDelaySec = [defs() doubleForKey:@"mapRejoinDelay"];
+    if (g_mapRejoinDelaySec < 0.3 || g_mapRejoinDelaySec > 10.0) g_mapRejoinDelaySec = 1.3;
+    g_rejoinMode = loadInt(@"rejoinMode", 1);   // v114.88: gir-cik modu (KALICI, varsayilan otomatik)
+    if (g_rejoinMode < 0 || g_rejoinMode > 2) g_rejoinMode = 1;
+    isRoomLocked           = false;   // [SESSION_ONLY] odadan cikinca zaten anlamsiz
+    isRoomInvisible        = false;   // [SESSION_ONLY]
+    { NSString *rp = loadStr(@"roomPass", @""); if (rp.length) { strncpy(roomPasswordText, rp.UTF8String, sizeof(roomPasswordText)-1); roomPasswordText[sizeof(roomPasswordText)-1]='\0'; } }
+    isInfiniteNitroEnabled = false;   // [SESSION_ONLY] ozellik kaldirildi, kalici kapali
+    isCarPanelEnabled      = loadBool(@"carpanel", false);
+    isEspEnabled           = false;   // [SESSION_ONLY] ESP overlay her aciliste kapali (guvenlik)
+    isSpeedHud             = false;   // [SESSION_ONLY]
+    isNoClip               = loadBool(@"noclip", false);
+    isAntiGrav             = loadBool(@"antigrav", false);
+    isCarSizeEnabled       = false;   // [SESSION_ONLY]
+    carSizeVal             = loadFloat(@"carSize", 1.0f);
+    isCarColorEnabled      = false;   // [SESSION_ONLY] materyal onbellegi bos aciliste
+    carColorRainbow        = loadBool(@"carrainbow", true);
+    g_carColor             = (Color4){ loadFloat(@"carR",1.0f), loadFloat(@"carG",0.0f), loadFloat(@"carB",0.0f), 1.0f };
+    isCarPaintActive       = loadBool(@"carPaintActive", false);
+    { NSString *cph = loadStr(@"carPaintHex", @"#FF0000"); if (cph.length) { strncpy(customCarPaintHex, cph.UTF8String, sizeof(customCarPaintHex)-1); customCarPaintHex[sizeof(customCarPaintHex)-1]='\0'; } }
+    asciiColorCycle        = loadBool(@"asciiColor", false);
+    lyricsColorCycle       = loadBool(@"lyricsColor", true);
+    lyricsLoop             = loadBool(@"lyricsLoop", false);
+    lyricsInterval         = loadFloat(@"lyricsInterval", 2.0f);
+    { NSString *lt = loadStr(@"lyricsText", @"");
+      if (lt.length) { g_lyrics = [[NSMutableArray alloc] init];
+        for (NSString *l in [lt componentsSeparatedByString:@"\n"]) [g_lyrics addObject:[l stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]]; } }
+    isAnnounceEnabled      = false;   // [SESSION_ONLY]
+    isGodmode              = false;   // [SESSION_ONLY] guvenlik icin her aciliste kapali
+    isSelektor             = false;   // [SESSION_ONLY]
+    isAlwaysLightsEnabled  = loadBool(@"alwayslights", false);
+    // [SESSION_ONLY] Gizli il2cpp ozellikleri her aciliste kapali (guvenlik)
     isInfiniteNosEnabled    = false;
     isInfiniteFuelEnabled   = false;
     isMaxRpmEnabled         = false;
     isNoDamageV2Enabled     = false;
     isEngineImmortalEnabled = false;
     isNoTrafficEnabled      = false;
-    isEmissivePaintEnabled  = false;
-    isExhaustFlameOnEnabled = false;
-    isVidyoNamesEnabled     = false;
-    isAiChatModeEnabled     = false;
-    g_selFlashRate         = 1;
-    announceInterval       = 5.0f;
-    isAutoGreetEnabled     = false;
-    carAccelPower          = 3.0f;
-    carSteerPower          = 1.0f;
-    carTopSpeed            = 300.0f;
-    isColorChatEnabled     = false;
-    isSpamEnabled          = false;
-    isBypassPasswordEnabled= false;
-    isFlyEnabled           = false;
-    flyAutoThrust          = false;
-    isFlyPadShown          = false;
-    isLowGravEnabled       = false;
-    isAsciiAnimEnabled     = false;
-    g_gifColored           = false;
-    g_gifCols              = 24;
-    asciiAnimIndex         = 0;
-    isRoomSpamEnabled      = false;
-    roomSpamMaxCount       = 0;
-    roomMaxPlayers         = 31;
-    roomSpamTTL            = 300000;
-    roomSpamInterval       = 0.4f;
-    roomSpamContinuous     = false;
-    spamStyle              = 0;
-    isCustomPlateEnabled   = false;
-    isMasterClaimDisabled  = false;
-    isBrakeGlowEnabled        = false;
-    isBrakeGlowDobEnabled     = false;
-    isBrakeGlowMinTempEnabled = false;
-    isNoDamageEnabled      = false;
-    isAutoMoneyEnabled     = false;
+    isEmissivePaintEnabled  = loadBool(@"emissive", false);
+    isExhaustFlameOnEnabled = loadBool(@"exhaustflame", false);
+    isVidyoNamesEnabled     = loadBool(@"vidyonames", false);
+    isAiChatModeEnabled     = loadBool(@"aichat", false);
+    // v114.4: AI renkleri kalici
+    NSString *nc = loadStr(@"aiNameCol", @"00E5FF");  strncpy(g_aiNameColorHex, nc.UTF8String, 7); g_aiNameColorHex[7]='\0';
+    NSString *rc = loadStr(@"aiReplyCol", @"FF00FF"); strncpy(g_aiReplyColorHex, rc.UTF8String, 7); g_aiReplyColorHex[7]='\0';
+    g_selFlashRate         = loadInt(@"selRate", 1);
+    announceInterval       = (float)loadInt(@"announceIv", 5);
+    { NSString *at = loadStr(@"announceText", @""); if (at.length) { strncpy(announceText, at.UTF8String, sizeof(announceText)-1); announceText[sizeof(announceText)-1]='\0'; } }
+    isAutoGreetEnabled     = loadBool(@"autogreet", false);
+    { NSString *gt = loadStr(@"greetText", @""); if (gt.length) { strncpy(g_greetText, gt.UTF8String, sizeof(g_greetText)-1); g_greetText[sizeof(g_greetText)-1]='\0'; } }
+    carAccelPower          = loadFloat(@"caraccel", 3.0f);
+    carSteerPower          = loadFloat(@"carsteer", 1.0f);
+    carTopSpeed            = loadFloat(@"cartop",   300.0f);
+    isColorChatEnabled     = false;   // [SESSION_ONLY] ozellik kaldirildi, kalici kapali
+    isSpamEnabled          = loadBool(@"chatspam", false);
+    isBypassPasswordEnabled= loadBool(@"bypass", true);
+    isFlyEnabled           = loadBool(@"fly", false);
+    flyAutoThrust          = loadBool(@"flyauto", false);
+    isFlyPadShown          = false;   // [SESSION_ONLY] D-pad ekrani kapamasin
+    isLowGravEnabled       = loadBool(@"lowgrav", false);
+    isAsciiAnimEnabled     = loadBool(@"asciianim", false);
+    g_gifColored           = loadBool(@"gifColored", false);
+    g_gifCols              = loadInt(@"gifCols", 24);
+    loadFavorites();
+    asciiAnimIndex         = loadInt(@"asciiIdx", 0);
+    isRoomSpamEnabled      = false;   // [SESSION_ONLY] spam kapali baslasin (guvenlik)
+    roomSpamMaxCount       = loadInt(@"roomMax", 0);
+    roomMaxPlayers         = loadInt(@"roomMaxP", 31);
+    roomSpamTTL            = loadInt(@"roomTTL", 300000);
+    roomSpamInterval       = loadInt(@"roomIv", 40) / 100.0f;
+    roomSpamContinuous     = loadBool(@"roomcont", true);
+    spamStyle              = loadInt(@"spamStyle", 0);
+    NSString* rn = loadStr(@"roomName", @"<b><color=#FF0000>FEW1N</color></b>");
+    strncpy(customRoomName, rn.UTF8String, sizeof(customRoomName)-1); customRoomName[sizeof(customRoomName)-1]='\0';
+    isCustomPlateEnabled   = loadBool(@"plateEnabled", false);
+    isMasterClaimDisabled  = loadBool(@"masterClaimOff", false);   // v70 modu tercihi
+    // v90: RCCP toggle'lar crash sebep oluyor — HEPSI ZORLA KAPALI (offset uyumsuzluğu memory corruption)
+    isBrakeGlowEnabled        = false; saveBool(@"brakeglow", false);
+    isBrakeGlowDobEnabled     = false; saveBool(@"brakeglowdob", false);
+    isBrakeGlowMinTempEnabled = false; saveBool(@"brakeglowmin", false);
+    // v90: Farlar/Yakit/NOS kaldirildi, Hasar Yok + Balata Glow KALDI (placeholder — v91'de il2cpp ile gercek fix)
+    isNoDamageEnabled      = loadBool(@"nodamage", false);
+    isAutoMoneyEnabled     = loadBool(@"automoney", false);
     isNanCrashEnabled      = false;
     isRoomCrashActive      = false;
     panicCrash             = false;
-    isAdBlockEnabled       = false;
-    customMoneyAmount      = 100000000;
-
-    // UserDefaults temizle (kalintilar acilista oto-aktif olmasin)
-    saveBool(@"unlockcars", false);
-    saveBool(@"carpanel", false);
-    saveBool(@"noclip", false);
-    saveBool(@"antigrav", false);
-    saveBool(@"carrainbow", false);
-    saveBool(@"carPaintActive", false);
-    saveBool(@"asciiColor", false);
-    saveBool(@"lyricsColor", false);
-    saveBool(@"lyricsLoop", false);
-    saveBool(@"alwayslights", false);
-    saveBool(@"emissive", false);
-    saveBool(@"exhaustflame", false);
-    saveBool(@"vidyonames", false);
-    saveBool(@"aichat", false);
-    saveBool(@"autogreet", false);
-    saveBool(@"chatspam", false);
-    saveBool(@"bypass", false);
-    saveBool(@"fly", false);
-    saveBool(@"flyauto", false);
-    saveBool(@"lowgrav", false);
-    saveBool(@"asciianim", false);
-    saveBool(@"gifColored", false);
-    saveBool(@"roomcont", false);
-    saveBool(@"plateEnabled", false);
-    saveBool(@"nodamage", false);
-    saveBool(@"automoney", false);
-    saveBool(@"adblock", false);
-    saveBool(@"brakeglow", false);
-    saveBool(@"brakeglowdob", false);
-    saveBool(@"brakeglowmin", false);
+    isAdBlockEnabled       = loadBool(@"adblock", false);  // v96: VARSAYILAN KAPALI (bug yaratiyordu)
     customMoneyAmount      = loadInt(@"moneyAmount", 100000000);
     NSString* pt = loadStr(@"plateText", @"FEW1N");
     strncpy(customPlateText, pt.UTF8String, sizeof(customPlateText)-1); customPlateText[sizeof(customPlateText)-1]='\0';
@@ -12290,6 +14406,9 @@ static void InstallEverything(uintptr_t b) {
     pn_getPlayerListOthers     = w_pn_getPlayerListOthers;
     pn_getLocalPlayer          = w_pn_getLocalPlayer;           // v114.11
     pn_setAutomaticallySyncScene = w_pn_setAutomaticallySyncScene;
+    pn_setMessageQueueRunning  = w_pn_setMessageQueueRunning;    // v116.3
+    pn_getMessageQueueRunning  = w_pn_getMessageQueueRunning;    // v116.3
+    pn_newSceneLoaded          = w_pn_newSceneLoaded;            // v116.5
     pn_getActiveSceneName      = w_pn_getActiveSceneName;
     pn_getActiveSceneBuildIndex = w_pn_getActiveSceneBuildIndex;
 
@@ -12318,12 +14437,12 @@ static void InstallEverything(uintptr_t b) {
     chatGetInst                = w_chatGetInst;                 // obf fzi
     chatSend                   = w_chatSend;
 
-    // === PlayerManager (get_Instance obf gns; para metotları obf + server-locked, hardcoded NULL) ===
-    playerManagerGetInst       = w_playerManagerGetInst;        // obf gns
-    pm_updateNicknameInternal  = NULL;    // obf, kullanım yerinde NULL-guard var
-    pm_getMoney                = NULL;    // obf, il2cpp field read alternatif
-    pm_syncWithServer          = NULL;    // obf
-    pm_addMoney                = NULL;    // obf + server-locked
+    // === PlayerManager (tamami IL2CPP by-name; hardcoded RVA yok) ===
+    playerManagerGetInst       = w_playerManagerGetInst;        // gns()
+    pm_updateNicknameInternal  = w_pm_updateNicknameInternal;   // gos(string)
+    pm_getMoney                = w_pm_getMoney;                 // goc()
+    pm_syncWithServer          = w_pm_syncWithServer;           // goo()
+    pm_addMoney                = w_pm_addMoney;                 // gor(int)
 
     // === HR_PhotonLobbyManager ===
     lobbyGetInst               = w_lobbyGetInst;                // obf eov
@@ -12357,7 +14476,9 @@ static void InstallEverything(uintptr_t b) {
     // === MapList / MapSelection / PhotonManager (obf isimler) ===
     mapList_getInstance        = w_mapList_getInstance;         // obf gtp
     mapSel_selectMap           = w_mapSel_selectMap;
-    photonMgrEnp               = NULL;   // obf isim bilinmiyor, güvenli NULL (kullanım tek yer + NULL-guard var)
+    // v114.23: harita degistirme buradan kiriliyordu. Isim her surumde degisiyor
+    // (1.4.2 "LoadLevel" -> 1.4.3 "ese"), wrapper aday listesiyle bulur.
+    photonMgrEnp               = w_photonMgrLoadLevel;
 
     // === Teleport RPC'ler — v114.21: drift-immune il2cpp-by-name ===
     // Eski hardcoded offset'lerin HEPSİ 1.4.3'te yanlış yere düşüyordu (crash veya
@@ -12396,8 +14517,6 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("Photon.Pun",      "PhotonNetwork",  "CloseConnection", 1, (void*)h_closeConnection, (void**)&o_closeConnection, "PhotonNetwork.CloseConnection");
     safeHookByName("TMPro",           "TMP_Text",       "set_text",        1, (void*)h_tmpSetText,      (void**)&o_tmpSetText,      "TMP_Text.set_text");
     safeHookByName("",                "ChatManager",    "Send",            1, (void*)h_chatSend,        (void**)&o_chatSend,        "ChatManager.Send");
-    safeHookByName("Censorship",      "ra",             "opp",             1, (void*)h_censorship_opp,  (void**)&o_censorship_opp,  "Censorship.ra.opp");
-    safeHookByName("",                "VoteKick",       "Count",           2, (void*)h_voteKickCount,   (void**)&o_voteKickCount,   "VoteKick.Count (Full Evet Sayımı)");
 
     // CarPlayerInput.FixedUpdate ismi korunmuş (Unity engine method)
     safeHookByName("", "CarPlayerInput", "FixedUpdate", 0, (void*)h_playerInputFixed, (void**)&o_playerInputFixed, "CarPlayerInput.FixedUpdate *ANA*");
@@ -12410,39 +14529,45 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("", "RCCP_CarController", "Update", 0, (void*)h_rccpUpdate, (void**)&o_rccpUpdate, "RCCP_CarController.Update (rb yakala)");
 
     // Obfuscated metotlar (1.4.3 dump'tan mangled name)
-    safeHookByName("", "CarDriveSystem",       "fgp", 4, (void*)h_driveMove,     (void**)&o_driveMove,     "CarDriveSystem.Move (obf fgp)");
-    safeHookByName("", "PlateVariant",         "ghs", 1, (void*)h_plateChange,   (void**)&o_plateChange,   "PlateVariant.Change (obf ghs)");
-    safeHookByName("", "ChatManager",          "fzk", 1, (void*)h_chatFup,       (void**)&o_chatFup,       "ChatManager.fup (obf fzk — gelen chat)");
-    safeHookByName("", "HR_UI_RoomListLine",   "ghh", 0, (void*)h_roomLineClick, (void**)&o_roomLineClick, "HR_UI_RoomListLine.ghh (room click)");
-    if (!o_roomLineClick && global_base) {
-        safeHook((void*)(global_base + 0x5669B2C), (void*)h_roomLineClick, (void**)&o_roomLineClick, "HR_UI_RoomListLine.ghh (direct RVA)");
-    }
+    { static const char* const n[] = {"fgp","Move",NULL};
+      static const char* pr[] = {"Single","Single","Single","Single"};
+      safeHookBySig("", "CarDriveSystem", n, 4, "Void", pr, NULL,
+                    (void*)h_driveMove, (void**)&o_driveMove, "CarDriveSystem.Move"); }
+    { static const char* const n[] = {"ghs","Change",NULL};
+      static const char* pr[] = {"PlateHolder"};
+      safeHookBySig("", "PlateVariant", n, 1, "Void", pr, NULL,
+                    (void*)h_plateChange, (void**)&o_plateChange, "PlateVariant.Change"); }
+    // v114.26: void(String) ChatManager'da 3 metoda uyuyor (Send/SendRPC/fzk).
+    // Send public API, SendRPC [PunRPC] — Photon onu ISIMLE cozdugu icin ikisi de
+    // obfuscate edilemez. Eleyince geriye tek basina obfuscated olan kaliyor.
+    { static const char* const n[]  = {"fzk",NULL};
+      static const char* pr[]       = {"String"};
+      static const char* const ex[] = {"Send","SendRPC",NULL};
+      safeHookBySig("", "ChatManager", n, 1, "Void", pr, ex,
+                    (void*)h_chatFup, (void**)&o_chatFup, "ChatManager.fup (gelen chat)"); }
+    // NOT: void() imzasi bu sinifta 3 metoda uyuyor (Start/eqm/eqo) — imza fallback'i YOK.
     safeHookByName("", "HR_UI_RoomListLine",   "eqm", 0, (void*)h_roomConnect,   (void**)&o_roomConnect,   "HR_UI_RoomListLine.Connect (obf eqm)");
-    if (!o_roomConnect && global_base) {
-        safeHook((void*)(global_base + 0x5669A40), (void*)h_roomConnect, (void**)&o_roomConnect, "HR_UI_RoomListLine.eqm (direct RVA)");
-    }
-    safeHookByName("", "HR_UI_RoomListLine",   "eqn", 6, (void*)h_roomLineSetup, (void**)&o_roomLineSetup, "HR_UI_RoomListLine.Setup (obf eqn)");
-    if (!o_roomLineSetup && global_base) {
-        safeHook((void*)(global_base + 0x565FBD8), (void*)h_roomLineSetup, (void**)&o_roomLineSetup, "HR_UI_RoomListLine.Setup (direct RVA)");
-    }
+    // 1.4.4 YENI HOOKLAR: Censorship (<noparse> bypass), RoomListLine.ghh (sifre oto-doldur), VoteKick (99 Evet + 0sn Cooldown + Tam Koruma)
+    safeHookByName("Censorship", "ra",                 "opp",                  1, (void*)h_censorship_opp,          (void**)&o_censorship_opp,          "Censorship.ra.opp (<noparse> bypass)");
+    safeHookByName("",           "HR_UI_RoomListLine", "ghh",                  0, (void*)h_roomLineClick,           (void**)&o_roomLineClick,           "HR_UI_RoomListLine.ghh (1.4.4 Connect)");
+    safeHookByName("",           "VoteKick",           "Count",                1, (void*)h_voteKickCount,           (void**)&o_voteKickCount,           "VoteKick.Count (99 EVET)");
+    safeHookByName("",           "VoteKick",           "VoteKickEndRPC",       1, (void*)h_voteKickEndRPC,          (void**)&o_voteKickEndRPC,          "VoteKick.VoteKickEndRPC (Koruma)");
+    safeHookByName("",           "VoteKick",           "VoteKickStartRPC",     1, (void*)h_voteKickStartRPC,        (void**)&o_voteKickStartRPC,        "VoteKick.VoteKickStartRPC (Oto 99 Evet + Koruma)");
+    safeHookByName("",           "VoteKick",           "mkv",                  1, (void*)h_voteKickMkv,             (void**)&o_voteKickMkv,             "VoteKick.mkv (0sn Cooldown Bypass)");
+    safeHookByName("",           "VoteKick",           "mky",                  2, (void*)h_voteKickMky,             (void**)&o_voteKickMky,             "VoteKick.mky (180sn Cooldown Bypass)");
+    safeHookByName("",           "VoteKick",           "OnPlayerEnteredRoom",  1, (void*)h_voteKickOnPlayerEntered, (void**)&o_voteKickOnPlayerEntered, "VoteKick.OnPlayerEnteredRoom (0sn Giris Kilidi)");
+    safeHookByName("",           "VoteKick",           "mkw",                  0, (void*)h_voteKickMkw,             (void**)&o_voteKickMkw,             "VoteKick.mkw (Oylama Atilma Engelleyici)");
+    safeHookByName("",           "HR_PhotonLobbyManagerDummy", "KickPlayerRPC",1, (void*)h_dummyKickRPC,            (void**)&o_dummyKickRPC,            "LobbyDummy.KickPlayerRPC (Koruma)");
+    safeHookByName("",           "ChatManager",        "ReportRPC",            3, (void*)h_reportRPC,               (void**)&o_reportRPC,               "ChatManager.ReportRPC (Rapor Engelleyici)");
+
+    { static const char* const n[] = {"eqn","Setup",NULL};
+      static const char* pr[] = {"String","String","Byte","Byte","String","RoomInfo"};
+      safeHookBySig("", "HR_UI_RoomListLine", n, 6, "Void", pr, NULL,
+                    (void*)h_roomLineSetup, (void**)&o_roomLineSetup, "HR_UI_RoomListLine.Setup"); }
 
     // Nitro getterlari: RCCP_Nos.get/set_amount — obfuscated. Eski hardcoded offset (0x54CFE14/1C)
     // hâlâ 1.4.3'te bozuk olabilir. Skip — SONSUZ NOS özelliği zaten il2cpp field write ile de çalışıyor.
     // safeHookByName("", "RCCP_Nos", "?", 0, (void*)h_getNitro, (void**)&o_getNitro, "RCCP_Nos.get_nitroAmount");
-
-    // v114.22 / 1.4.4: Anti-VoteKick, Anti-Report, Free Garage native hook yerine il2cpp runtime yolu kullanır.
-    // safeHookByName çağrıları sideload ve Substrate olmayan ortamlarda crash riskini önlemek için pasife alındı.
-    // 1.4.4: Anti-VoteKick, Anti-Report, Anti-Kick (Tam Dokunulmazlık) + Anında Oylama Başlatma (0sn Cooldown)
-    safeHookByName("", "VoteKick",                  "VoteKickEndRPC",      4, (void*)h_voteKickEndRPC,         (void**)&o_voteKickEndRPC,         "VoteKick.VoteKickEndRPC (Anti-VoteKick)");
-    safeHookByName("", "VoteKick",                  "VoteKickStartRPC",    2, (void*)h_voteKickStartRPC,       (void**)&o_voteKickStartRPC,       "VoteKick.VoteKickStartRPC (Anti-VoteKick)");
-    safeHookByName("", "VoteKick",                  "mkv",                 1, (void*)h_voteKickMkv,            (void**)&o_voteKickMkv,            "VoteKick.mkv (0sn Cooldown CanVoteKick)");
-    safeHookByName("", "VoteKick",                  "mky",                 2, (void*)h_voteKickMky,            (void**)&o_voteKickMky,            "VoteKick.mky (Hedef Cooldown Bypass)");
-    safeHookByName("", "VoteKick",                  "OnPlayerEnteredRoom", 1, (void*)h_voteKickOnPlayerEntered,(void**)&o_voteKickOnPlayerEntered,"VoteKick.OnPlayerEnteredRoom (60sn Kilit Yok)");
-    safeHookByName("", "VoteKick",                  "mkw",                 1, (void*)h_voteKickMkw,            (void**)&o_voteKickMkw,            "VoteKick.mkw (Anında Oylama Başlat)");
-    safeHookByName("", "ChatManager",               "ReportRPC",           3, (void*)h_reportRPC,              (void**)&o_reportRPC,              "ChatManager.ReportRPC (Anti-Report)");
-    safeHookByName("", "HR_PhotonLobbyManagerDummy", "KickPlayerRPC",      1, (void*)h_dummyKickRPC,           (void**)&o_dummyKickRPC,           "LobbyDummy.KickPlayerRPC (Anti-Kick)");
-    // safeHookByName("", "CarManager",  "gmz",              1, (void*)h_carManager_gmz,   (void**)&o_carManager_gmz,   "CarManager.gmz (Tüm Araçları Aç)");
-    // safeHookByName("", "CarManager",  "gna",              1, (void*)h_carManager_gna,   (void**)&o_carManager_gna,   "CarManager.gna (Tüm Araçları Aç isim)");
 
     // PlayerManager.AddMoney — obfuscated + sunucu-kilitli. Skip.
     // CAS reklam hookları — obj-c swizzle zaten yapıyor (%ctor içinde). Skip.
@@ -12467,7 +14592,7 @@ static void few1n_poll(void) {
 
 %ctor {
     few1n_setupCrashGuard();
-    FLog(@"v114.8 basladi, UnityFramework araniyor...");
+    FLog(@"v" @FEW1N_STR(FEW1N_VERSION) @" basladi, UnityFramework araniyor...");
     restoreSettings();
 
     // ===== REKLAM BOZUCU: TUM reklam SDK'larini engelle (Obj-C runtime swizzle) =====
