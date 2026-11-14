@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION dev
+#define FEW1N_VERSION 116.6
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -2693,9 +2693,9 @@ static void* g_mGetVoteKickPac = NULL;
 static bool  g_voteKickFullYes = true;
 static void few1n_claimMaster(void);
 static void few1n_forceLocalMasterForVoteKick(void) {
-    if (!pn_getRoom || !pn_getLocalPlayer) return;
+    if (!pn_getCurrentRoom || !pn_getLocalPlayer) return;
     @try {
-        void* room = pn_getRoom();
+        void* room = pn_getCurrentRoom();
         void* me = pn_getLocalPlayer();
         if (ptrOk(room) && ptrOk(me)) {
             int myActor = *(int*)((uintptr_t)me + OFFR_PLAYER_ACTORNUM);
