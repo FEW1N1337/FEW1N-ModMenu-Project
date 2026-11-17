@@ -1507,15 +1507,15 @@ static int OFFR_RL_PLAYERCOUNT  = OFF_ROOMLINE_PLAYERCOUNT_TEXT;  // .PlayerCoun
 static int OFFR_RL_PASSWORD     = OFF_ROOMLINE_PASSWORD;          // .password (1.4.4: 0x58 kzw)
 static int OFFR_RL_ROOMINFO     = 0x60;                           // .roomInfo (1.4.4: 0x60 kzx)
 
-static int OFFR_LOBBY_MAPSEL    = 0x28;   // HR_PhotonLobbyManager.mapSelection
-static int OFFR_LOBBY_ROOMNAME  = 0x48;   // .roomNameInput
+static int OFFR_LOBBY_MAPSEL    = OFF_LOBBY_MAPSEL;   // HR_PhotonLobbyManager.mapSelection (1.4.4: 0x40)
+static int OFFR_LOBBY_ROOMNAME  = OFF_LOBBY_ROOMNAME; // .roomNameInput (1.4.4: 0x60)
 static int OFFR_LOBBY_PWD       = OFF_LOBBY_PWD_INPUT;
 static int OFFR_LOBBY_PWD_CONN  = OFF_LOBBY_PWD_ON_CONN_INPUT;
-static int OFFR_LOBBY_PWDPANEL  = 0xB0;   // HR_PhotonLobbyManager.passwordPanel (GameObject, 1.4.4: 0xB0) — hooksuz sifre dolduru tetigi
-static int OFFR_LOBBY_PENDROOM  = 0xF0;   // HR_PhotonLobbyManager.ldv/jdt (internal RoomInfo, 1.4.4: 0xF0 — baglanilacak bekleyen oda)
-static int OFFR_DUMMY_KICKNAME  = 0x108;  // HR_PhotonLobbyManagerDummy.jdz (kick hedef ismi)
+static int OFFR_LOBBY_PWDPANEL  = OFF_LOBBY_PWDPANEL; // HR_PhotonLobbyManager.passwordPanel (GameObject, 1.4.4: 0xB0)
+static int OFFR_LOBBY_PENDROOM  = OFF_LOBBY_PENDROOM; // HR_PhotonLobbyManager.jdt (internal RoomInfo, 1.4.4: 0xF8 — baglanilacak bekleyen oda)
+static int OFFR_DUMMY_KICKNAME  = OFF_DUMMY_KICKNAME; // HR_PhotonLobbyManagerDummy.jdz (kick hedef ismi, 1.4.4: 0x108)
 
-static int OFFR_CHAT_MSGLIST    = 0x40;   // ChatManager.kss (List<string> — tum chat mesajlari, hooksuz gelen-chat)
+static int OFFR_CHAT_MSGLIST    = OFF_CHAT_MSGLIST;   // ChatManager.kss (List<string> — tum chat mesajlari, 1.4.4: 0x48)
 
 static int OFFR_CDS_INPUT       = 0x20;   // CarDriveSystem.jyr (CarPlayerInput)
 static int OFFR_CDS_RIGIDBODY   = 0x48;   // .<jyt>k__BackingField (Rigidbody)
@@ -14721,8 +14721,14 @@ static void InstallEverything(uintptr_t b) {
                     (void*)h_chatFup, (void**)&o_chatFup, "ChatManager.fup (gelen chat)"); }
     // NOT: void() imzasi bu sinifta 3 metoda uyuyor (Start/eqm/eqo) — imza fallback'i YOK.
     safeHookByName("", "HR_UI_RoomListLine",   "eqm", 0, (void*)h_roomConnect,   (void**)&o_roomConnect,   "HR_UI_RoomListLine.Connect (obf eqm)");
+    if (!o_roomConnect && global_base) {
+        safeHook((void*)(global_base + 0x5669A40), (void*)h_roomConnect, (void**)&o_roomConnect, "HR_UI_RoomListLine.eqm (direct RVA)");
+    }
     // 1.4.4 YENI HOOKLAR: Censorship (<noparse> bypass), RoomListLine.ghh (sifre oto-doldur), VoteKick (99 Evet + 0sn Cooldown + Tam Koruma)
     safeHookByName("Censorship", "ra",                        "opp",                 1, (void*)h_censorship_opp,          (void**)&o_censorship_opp,          "Censorship.ra.opp (<noparse> bypass)");
+    if (!o_censorship_opp && global_base) {
+        safeHook((void*)(global_base + 0x32852FC), (void*)h_censorship_opp, (void**)&o_censorship_opp, "Censorship.ra.opp (direct RVA)");
+    }
     safeHookByName("",           "HR_UI_RoomListLine",        "ghh",                 0, (void*)h_roomLineClick,           (void**)&o_roomLineClick,           "HR_UI_RoomListLine.ghh (1.4.4 Connect)");
     if (!o_roomLineClick && global_base) {
         safeHook((void*)(global_base + 0x5669B2C), (void*)h_roomLineClick, (void**)&o_roomLineClick, "HR_UI_RoomListLine.ghh (direct RVA)");
@@ -14756,7 +14762,13 @@ static void InstallEverything(uintptr_t b) {
         safeHook((void*)(global_base + 0x32895D4), (void*)h_voteKickMkw, (void**)&o_voteKickMkw, "VoteKick.mkw (direct RVA)");
     }
     safeHookByName("",           "ChatManager",               "ReportRPC",           3, (void*)h_reportRPC,               (void**)&o_reportRPC,               "ChatManager.ReportRPC (Anti-Report)");
+    if (!o_reportRPC && global_base) {
+        safeHook((void*)(global_base + 0x3285D0C), (void*)h_reportRPC, (void**)&o_reportRPC, "ChatManager.ReportRPC (direct RVA)");
+    }
     safeHookByName("",           "HR_PhotonLobbyManagerDummy","KickPlayerRPC",       1, (void*)h_dummyKickRPC,            (void**)&o_dummyKickRPC,            "LobbyDummy.KickPlayerRPC (Anti-Kick)");
+    if (!o_dummyKickRPC && global_base) {
+        safeHook((void*)(global_base + 0x5664C04), (void*)h_dummyKickRPC, (void**)&o_dummyKickRPC, "LobbyDummy.KickPlayerRPC (direct RVA)");
+    }
 
     { static const char* const n[] = {"eqn","Setup",NULL};
       static const char* pr[] = {"String","String","Byte","Byte","String","RoomInfo"};
