@@ -2835,7 +2835,87 @@ static void h_voteKickCount(void* self, int* yes, int* no) {
     }
 }
 
-// 1.4.4: Oylamayı Full Evet Yap (Evet sayısını tavana çıkar + pau/pav sözlüklerine 99 Evet bas)
+// 1.4.4: Sana karşı açılan oylamayı 99 HAYIR oyu ile anında düşür (Anti-VoteKick 99 Hayır)
+static void few1n_counterVoteKickWithFullNo(void* vk, int targetActor) {
+    if (!ptrOk(vk) || !i_runtime_invoke) return;
+    @try {
+        int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
+        if (myActor <= 0 || targetActor != myActor) return;
+
+        // 1. MasterClient yetkisini anında al (böylece oylamayı finalize etme yetkisi bize geçer)
+        few1n_claimMaster(); few1n_forceLocalMasterForVoteKick();
+        few1n_resetVoteKickCooldowns(vk);
+
+        int voteId = *(int*)((uintptr_t)vk + 0x54);
+        if (voteId <= 0) voteId = *(int*)((uintptr_t)vk + 0x74);
+        if (voteId <= 0) voteId = 1;
+
+        // 2. Ekrandaki sayacı 0 EVET / 99 HAYIR yap ve sequence artır
+        *(int*)((uintptr_t)vk + 0x40) = 0;   // Evet = 0
+        *(int*)((uintptr_t)vk + 0x44) = 99;  // Hayır = 99
+        *(int*)((uintptr_t)vk + 0x50) += 1;
+
+        // 3. Sunucu oylama durumunu (par/pas/pat) senkronla
+        *(bool*)((uintptr_t)vk + 0x70) = true;
+        *(int*)((uintptr_t)vk + 0x74)  = voteId;
+        *(int*)((uintptr_t)vk + 0x78)  = myActor;
+
+        // 4. pau (HashSet<int> @ +0x80) ve pav (Dictionary<int, bool> @ +0x88) içine 99 gerçek HAYIR (false) oyu bas!
+        void* pau = *(void**)((uintptr_t)vk + 0x80);
+        void* pav = *(void**)((uintptr_t)vk + 0x88);
+        if (ptrOk(pau) && ptrOk(pav)) {
+            few1n_clearCollection(pau);
+            few1n_clearCollection(pav);
+            void* pauCls = *(void**)pau;
+            void* pavCls = *(void**)pav;
+            void* mAdd = ptrOk(pauCls) ? few1n_resolveOn(pauCls, "Add", 1) : NULL;
+            void* mSetItem = ptrOk(pavCls) ? few1n_resolveOn(pavCls, "set_Item", 2) : NULL;
+            if (mAdd && mSetItem) {
+                for (int fk = 10001; fk < 10001 + 99; fk++) {
+                    int voterId = fk;
+                    bool voteVal = false; // HAYIR OYU!
+                    void* a1[1] = { &voterId };
+                    void* a2[2] = { &voterId, &voteVal };
+                    i_runtime_invoke(mAdd, pau, a1, NULL);
+                    i_runtime_invoke(mSetItem, pav, a2, NULL);
+                }
+            }
+        }
+
+        // 5. Kendi lokal HAYIR oyumuzu sunucuya yolla (mkx(false))
+        static void* mMkx = NULL;
+        if (!mMkx && g_voteKickClass) mMkx = few1n_resolveOn(g_voteKickClass, "mkx", 1);
+        if (mMkx && !(*(bool*)((uintptr_t)vk + 0x4c))) {
+            bool noVote = false;
+            void* args[1] = { &noVote };
+            i_runtime_invoke(mMkx, vk, args, NULL);
+        }
+
+        // 6. mkz(endTs) ile tüm odaya 0 EVET / 99 HAYIR durumunu yayınla
+        static void* mMkz = NULL;
+        if (!mMkz && g_voteKickClass) mMkz = few1n_resolveOn(g_voteKickClass, "mkz", 1);
+        if (mMkz) {
+            int endTs = *(int*)((uintptr_t)vk + 0x58);
+            if (endTs <= 0) endTs = 30000;
+            void* argsZ[1] = { &endTs };
+            i_runtime_invoke(mMkz, vk, argsZ, NULL);
+        }
+
+        // 7. mla() ile oylamayı 99 HAYIR (Result.Failed = 0) olarak tüm odada sonlandır!
+        static void* mMla = NULL;
+        if (!mMla && g_voteKickClass) mMla = few1n_resolveOn(g_voteKickClass, "mla", 0);
+        if (mMla) {
+            i_runtime_invoke(mMla, vk, NULL, NULL);
+        }
+
+        // 8. Oylamayı bitir
+        *(bool*)((uintptr_t)vk + 0x38) = false;
+        *(bool*)((uintptr_t)vk + 0x70) = false;
+        FLog(@"🛡️ [ANTI-VOTEKICK] Sana açılan oylamaya 99 HAYIR basıldı ve oylama tüm odada iptal edildi!");
+    } @catch (...) {}
+}
+
+// 1.4.4: Oylamayı Full Evet Yap (Hedef başkasıysa 99 EVET + Passed, hedef BİZ isek 99 HAYIR + Failed!)
 static bool few1n_makeVoteKickFullYes(void) {
     few1n_ensureVoteKick();
     void* vk = few1n_findVoteKickInstance();
@@ -2845,20 +2925,27 @@ static bool few1n_makeVoteKickFullYes(void) {
         few1n_resetVoteKickCooldowns(vk);
 
         bool isActive = *(bool*)((uintptr_t)vk + 0x38);
-        if (!isActive) return false;
+        bool srvActive = *(bool*)((uintptr_t)vk + 0x70);
+        if (!isActive && !srvActive) return false;
 
-        // Kendi actor numaramızı al (kendimizi kazara oylamayla atmayalım)
         int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
         int target = *(int*)((uintptr_t)vk + 0x3C);
+        if (target <= 0) target = *(int*)((uintptr_t)vk + 0x78);
+
+        int voteId = *(int*)((uintptr_t)vk + 0x54);
+        if (voteId <= 0) voteId = *(int*)((uintptr_t)vk + 0x74);
+        if (voteId <= 0) voteId = 1;
+
+        // ===== SENARYO A: SANA KARŞI OYLAMA AÇILDI (target == myActor) =====
         if (myActor > 0 && target == myActor) {
-            // Sana karşı oylama açılmış! Hayır'ı 99 yap, oylamayı düşür
-            *(int*)((uintptr_t)vk + 0x40) = 0;   // Evet = 0
-            *(int*)((uintptr_t)vk + 0x44) = 99;  // Hayır = 99
-            *(int*)((uintptr_t)vk + 0x50) += 1;
+            few1n_counterVoteKickWithFullNo(vk, myActor);
             return false;
         }
 
-        // MasterClient yetkisi iste (CAS uyumlu)
+        // Eğer kullanıcı "Oylamayı Full Evet Yap" toggle'ını kapattıysa başkalarına karışma
+        if (!g_voteKickFullYes) return false;
+
+        // ===== SENARYO B: BAŞKASINA KARŞI OYLAMA (target != myActor) -> 99 EVET BAS VE AT =====
         few1n_claimMaster(); few1n_forceLocalMasterForVoteKick();
 
         int eligible = *(int*)((uintptr_t)vk + 0x48);
@@ -2869,8 +2956,14 @@ static bool few1n_makeVoteKickFullYes(void) {
         *(int*)((uintptr_t)vk + 0x44) = 0;          // Hayır sayısı (0)
         *(int*)((uintptr_t)vk + 0x50) += 1;         // Sequence counter artır -> VoteKickBanner anında ekranda günceller!
 
+        // Sunucu alanlarını da senkronla (başkası başlattıysa bile biz bitirebilelim)
+        if (target > 0) {
+            *(bool*)((uintptr_t)vk + 0x70) = true;
+            *(int*)((uintptr_t)vk + 0x74)  = voteId;
+            *(int*)((uintptr_t)vk + 0x78)  = target;
+        }
+
         // 1.b: pau (HashSet<int> @ +0x80) ve pav (Dictionary<int, bool> @ +0x88) içine 99 gerçek Evet oyu enjekte et
-        // (Substrate olmayan sideload ortamlarında bile VoteKick.Count doğal olarak 99 Evet sayar!)
         void* pau = *(void**)((uintptr_t)vk + 0x80);
         void* pav = *(void**)((uintptr_t)vk + 0x88);
         if (ptrOk(pau) && ptrOk(pav) && i_runtime_invoke) {
@@ -2902,12 +2995,10 @@ static bool few1n_makeVoteKickFullYes(void) {
             i_runtime_invoke(mMkx, vk, args, NULL);
         }
 
-        // 3. Eğer odada MasterClient isek:
-        // mla() ile oylamayı kabul edip hedef oyuncuyu attır
-        bool isMaster = (ply_getIsMaster && pn_getLocalPlayer) ? ply_getIsMaster(pn_getLocalPlayer()) : false;
+        // 3. mla() ile oylamayı kabul edip hedef oyuncuyu attır
         static void* mMla = NULL;
         if (!mMla && g_voteKickClass) mMla = few1n_resolveOn(g_voteKickClass, "mla", 0);
-        if (isMaster && mMla && i_runtime_invoke) {
+        if (mMla && i_runtime_invoke) {
             i_runtime_invoke(mMla, vk, NULL, NULL);
         }
 
@@ -2927,7 +3018,7 @@ static void few1n_tickVoteKickFullYes(void) {
             if (ptrOk(vk)) few1n_resetVoteKickCooldowns(vk);
         }
     }
-    if (!g_voteKickFullYes) return;
+    // Not: g_voteKickFullYes kapalı olsa bile sana karşı açılan oylamayı (target == myActor) 99 HAYIR ile düşürmek için her zaman çalışır!
     few1n_makeVoteKickFullYes();
 }
 
@@ -3042,7 +3133,12 @@ static void h_voteKickEndRPC(void* self, int vote, int target, unsigned char res
     int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
     if (myActor > 0 && target == myActor) {
         FLog([NSString stringWithFormat:@"🛡️ Anti-VoteKick: Birisi seni oylamayla atmaya çalıştı! Engellendi (vote=%d, target=%d, result=%d)", vote, target, (int)result]);
-        return; // Düşmeyi engelle - LeaveRoom'a gitmesini önle!
+        if (ptrOk(self)) {
+            *(bool*)((uintptr_t)self + 0x38) = false;
+            *(bool*)((uintptr_t)self + 0x70) = false;
+            few1n_resetVoteKickCooldowns(self);
+        }
+        return; // Düşmeyi engelle - LeaveRoom / Disconnect çağrısını %100 önle!
     }
     if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
     if (o_voteKickEndRPC) o_voteKickEndRPC(self, vote, target, result, info);
@@ -3051,12 +3147,12 @@ static void h_voteKickEndRPC(void* self, int vote, int target, unsigned char res
 static void (*o_voteKickStartRPC)(void*, int, void*) = NULL;
 static void h_voteKickStartRPC(void* self, int target, void* info) {
     int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
-    if (myActor > 0 && target == myActor) {
-        FLog(@"🛡️ Anti-VoteKick: Sana karşı oylama başlatıldı, sessize alındı.");
-        return;
-    }
     if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
     if (o_voteKickStartRPC) o_voteKickStartRPC(self, target, info);
+    if (myActor > 0 && target == myActor) {
+        FLog(@"🛡️ Anti-VoteKick: Sana karşı oylama başlatıldı -> 99 HAYIR basılarak anında tüm odada iptal ediliyor!");
+        few1n_counterVoteKickWithFullNo(self, target);
+    }
 }
 
 // Anti-Kick (1.4.4): Lobide KickPlayerRPC ile atılmayı engelle
@@ -14632,12 +14728,33 @@ static void InstallEverything(uintptr_t b) {
         safeHook((void*)(global_base + 0x5669B2C), (void*)h_roomLineClick, (void**)&o_roomLineClick, "HR_UI_RoomListLine.ghh (direct RVA)");
     }
     safeHookByName("",           "VoteKick",                  "Count",               2, (void*)h_voteKickCount,           (void**)&o_voteKickCount,           "VoteKick.Count (Full Evet Sayımı)");
+    if (!o_voteKickCount && global_base) {
+        safeHook((void*)(global_base + 0x328BBB4), (void*)h_voteKickCount, (void**)&o_voteKickCount, "VoteKick.Count (direct RVA)");
+    }
     safeHookByName("",           "VoteKick",                  "VoteKickEndRPC",      4, (void*)h_voteKickEndRPC,          (void**)&o_voteKickEndRPC,          "VoteKick.VoteKickEndRPC (Anti-VoteKick)");
+    if (!o_voteKickEndRPC && global_base) {
+        safeHook((void*)(global_base + 0x328C4DC), (void*)h_voteKickEndRPC, (void**)&o_voteKickEndRPC, "VoteKick.VoteKickEndRPC (direct RVA)");
+    }
     safeHookByName("",           "VoteKick",                  "VoteKickStartRPC",    2, (void*)h_voteKickStartRPC,        (void**)&o_voteKickStartRPC,        "VoteKick.VoteKickStartRPC (Anti-VoteKick)");
+    if (!o_voteKickStartRPC && global_base) {
+        safeHook((void*)(global_base + 0x328B358), (void*)h_voteKickStartRPC, (void**)&o_voteKickStartRPC, "VoteKick.VoteKickStartRPC (direct RVA)");
+    }
     safeHookByName("",           "VoteKick",                  "mkv",                 1, (void*)h_voteKickMkv,             (void**)&o_voteKickMkv,             "VoteKick.mkv (0sn Cooldown CanVoteKick)");
+    if (!o_voteKickMkv && global_base) {
+        safeHook((void*)(global_base + 0x32874A0), (void*)h_voteKickMkv, (void**)&o_voteKickMkv, "VoteKick.mkv (direct RVA)");
+    }
     safeHookByName("",           "VoteKick",                  "mky",                 2, (void*)h_voteKickMky,             (void**)&o_voteKickMky,             "VoteKick.mky (Hedef Cooldown Bypass)");
+    if (!o_voteKickMky && global_base) {
+        safeHook((void*)(global_base + 0x328B110), (void*)h_voteKickMky, (void**)&o_voteKickMky, "VoteKick.mky (direct RVA)");
+    }
     safeHookByName("",           "VoteKick",                  "OnPlayerEnteredRoom", 1, (void*)h_voteKickOnPlayerEntered, (void**)&o_voteKickOnPlayerEntered, "VoteKick.OnPlayerEnteredRoom (60sn Kilit Yok)");
+    if (!o_voteKickOnPlayerEntered && global_base) {
+        safeHook((void*)(global_base + 0x328C144), (void*)h_voteKickOnPlayerEntered, (void**)&o_voteKickOnPlayerEntered, "VoteKick.OnPlayerEnteredRoom (direct RVA)");
+    }
     safeHookByName("",           "VoteKick",                  "mkw",                 1, (void*)h_voteKickMkw,             (void**)&o_voteKickMkw,             "VoteKick.mkw (Anında Oylama Başlat)");
+    if (!o_voteKickMkw && global_base) {
+        safeHook((void*)(global_base + 0x32895D4), (void*)h_voteKickMkw, (void**)&o_voteKickMkw, "VoteKick.mkw (direct RVA)");
+    }
     safeHookByName("",           "ChatManager",               "ReportRPC",           3, (void*)h_reportRPC,               (void**)&o_reportRPC,               "ChatManager.ReportRPC (Anti-Report)");
     safeHookByName("",           "HR_PhotonLobbyManagerDummy","KickPlayerRPC",       1, (void*)h_dummyKickRPC,            (void**)&o_dummyKickRPC,            "LobbyDummy.KickPlayerRPC (Anti-Kick)");
 
