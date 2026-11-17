@@ -6738,6 +6738,7 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)cycleTire;               // v114.43
 - (void)officialNicknameEveryone;// v114.44
 - (void)setRimColor;
+- (void)coloredNameTagMenu;      // v116.6 (Herkeste %100 renkli 3D NameTag)
 - (void)setChromeMenu;
 - (void)setGlassMenu;
 - (void)setStanceMenu;
@@ -7315,6 +7316,7 @@ static UIViewController* few1n_topVC(void) {
     [self.nameBtn setTitle:@"\U0001F4DB  Isim Degistir" forState:UIControlStateNormal];
     [self.nameBtn setTitleColor:C_CYAN forState:UIControlStateNormal];
     [self.nameBtn addTarget:self action:@selector(changeName) forControlEvents:UIControlEventTouchUpInside];
+    y = [self actionRow:@"🌈  Renkli 3D İsimlik (Herkeste Renkli NameTag)" color:C_ON atY:y action:@selector(coloredNameTagMenu)];
     y = [self actionRow:@"\U0001F3AD  Isim Hileleri (rozet/gorunmez/kayan)" color:C_GOLD atY:y action:@selector(nameTricks)];
 
     y = [self header:@"\U0001F511  ODA" atY:y];
@@ -12560,10 +12562,84 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     if (ns) { pn_setNickName(ns);
         if (playerManagerGetInst && pm_updateNicknameInternal) { @try { void* pm = playerManagerGetInst(); if (pm) pm_updateNicknameInternal(pm, ns); } @catch (...) {} } }
 }
+- (void)coloredNameTagMenu {
+    if (!pn_setNickName) { FLog(@"Isim ayari hazir degil (odaya gir)"); return; }
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🌈 Renkli 3D İsimlik"
+        message:@"Oyunun 14 karakter sınırı nedeniyle kısa <#RGB> etiketi kullanılır.\nModsuz oyuncularda da 3D araç üstü ve oda listesinde %100 RENKLİ görünür!"
+        preferredStyle:UIAlertControllerStyleAlert];
+
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"FEW1N (en fazla 8 harf)";
+        tf.text = @"FEW1N";
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+    }];
+
+    void (^applyColor)(NSString *tag, NSString *label) = ^(NSString *tag, NSString *label){
+        if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
+        nameTrickMode = 0;
+        NSString *raw = ac.textFields.firstObject.text;
+        if (!raw || raw.length == 0) raw = @"FEW1N";
+        if (raw.length > 8) raw = [raw substringToIndex:8]; // 6 + 8 = 14 karakter sınırı
+        NSString *full = [NSString stringWithFormat:@"%@%@", tag, raw];
+        [self applyPlainNick:full];
+        [self.nameBtn setTitle:[NSString stringWithFormat:@"%@: %@ ✅", label, raw] forState:UIControlStateNormal];
+        [self.nameBtn setTitleColor:C_ON forState:UIControlStateNormal];
+        FLog([NSString stringWithFormat:@"Herkeste renkli isimlik ayarlandi: %@", full]);
+    };
+
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔵 Neon Cyan (<#0FF>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        applyColor(@"<#0FF>", @"Cyan");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔴 Parlak Kırmızı (<#F00>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        applyColor(@"<#F00>", @"Kırmızı");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🟢 Neon Yeşil (<#0F0>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        applyColor(@"<#0F0>", @"Yeşil");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🟡 Altın Sarı (<#FF0>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        applyColor(@"<#FF0>", @"Sarı");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🟣 Neon Mor / Pembe (<#F0F>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        applyColor(@"<#F0F>", @"Mor");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🟠 Ateş Turuncusu (<#FA0>)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        applyColor(@"<#FA0>", @"Turuncu");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⚡ Animasyonlu Hacker Renk Döngüsü" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
+        nameTrickMode = 4;
+        nameMarqueeTimer = [NSTimer scheduledTimerWithTimeInterval:0.4 target:self selector:@selector(fireHackerName) userInfo:nil repeats:YES];
+        FLog(@"Hacker renk dongusu basladi");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⚪ Orijinal / Normale Dön" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+        if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
+        nameTrickMode = 0;
+        NSString *raw = ac.textFields.firstObject.text;
+        if (!raw || raw.length == 0) raw = @"FEW1N";
+        [self applyPlainNick:raw];
+        [self.nameBtn setTitle:[NSString stringWithFormat:@"İsim: %@ ✅", raw] forState:UIControlStateNormal];
+        [self.nameBtn setTitleColor:C_ON forState:UIControlStateNormal];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
 - (void)nameTricks {
     if (!pn_setNickName) { FLog(@"Isim ayari hazir degil (odaya gir)"); return; }
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3AD Isim Hileleri"
         message:@"Herkes bu ismi gorur (Photon senkron)" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌈 Neon Cyan (<#0FF>FEW1N - Herkeste Renkli)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
+        nameTrickMode = 0; [self applyPlainNick:@"<#0FF>FEW1N"]; FLog(@"Neon Cyan isimlik ayarlandi");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔴 Parlak Kırmızı (<#F00>FEW1N - Herkeste Renkli)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
+        nameTrickMode = 0; [self applyPlainNick:@"<#F00>FEW1N"]; FLog(@"Kirmizi isimlik ayarlandi");
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🟡 Altın Sarı (<#FF0>FEW1N - Herkeste Renkli)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
+        nameTrickMode = 0; [self applyPlainNick:@"<#FF0>FEW1N"]; FLog(@"Sari isimlik ayarlandi");
+    }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"✔️ Sahte Dogrulama Rozeti" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
         nameTrickMode = 0; [self applyPlainNick:@"FEW1N ✔️"]; FLog(@"Rozet ismi ayarlandi");
@@ -12585,9 +12661,9 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
         if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
         nameTrickMode = 3; [self applyPlainNick:@"[DEV] FEW1N"]; FLog(@"Fake Dev rozetli isim ayarlandi");
     }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"⚡ Hacker Isim (Animasyonlu)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+    [ac addAction:[UIAlertAction actionWithTitle:@"⚡ Hacker Isim (Animasyonlu Renk)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         if (nameMarqueeTimer) { [nameMarqueeTimer invalidate]; nameMarqueeTimer = nil; }
-        nameTrickMode = 4; nameMarqueeTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(fireHackerName) userInfo:nil repeats:YES];
+        nameTrickMode = 4; nameMarqueeTimer = [NSTimer scheduledTimerWithTimeInterval:0.4 target:self selector:@selector(fireHackerName) userInfo:nil repeats:YES];
         FLog(@"Hacker isim animasyonu basladi");
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"🟢 Matrix Isim (Binary)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
@@ -12619,18 +12695,17 @@ static bool few1n_invoke0(void* method, void* obj, const char* label) {
     [self present:ac];
 }
 
-// Hacker isim animasyonu (yanip-sonen, renk degisen)
+// Hacker isim animasyonu (yanip-sonen, renk degisen kisa <#RGB> etiketleri - 14 karakter altinda, herkeste gorunur)
 - (void)fireHackerName {
     static int hi = 0;
     NSArray *hackerNames = @[
-        @"<color=#FF0000><b>[ROOT] FEW1N</b></color>",
-        @"<color=#00FF00><b>[ROOT] FEW1N</b></color>",
-        @"<color=#00FFFF><b>[ROOT] FEW1N</b></color>",
-        @"<color=#FF00FF><b>[ROOT] FEW1N</b></color>",
-        @"<color=#FFFF00><b>[ROOT] FEW1N</b></color>",
-        @"<color=#FF0000>⚡ FEW1N ⚡</color>",
-        @"<color=#00FF00>⚡ FEW1N ⚡</color>",
-        @"<color=#00FFFF>⚡ FEW1N ⚡</color>"
+        @"<#F00>FEW1N",
+        @"<#0F0>FEW1N",
+        @"<#0FF>FEW1N",
+        @"<#FF0>FEW1N",
+        @"<#F0F>FEW1N",
+        @"<#FA0>FEW1N",
+        @"<#FFF>FEW1N"
     ];
     [self applyPlainNick:hackerNames[hi % hackerNames.count]];
     hi++;
