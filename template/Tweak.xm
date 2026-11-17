@@ -165,6 +165,8 @@ static bool g_secOpen[24] = {0};         // her bolum acik mi (basliga basinca d
 static int  nameTrickMode = 0;            // 0=kapali 1=admin 2=mod 3=dev 4=hacker 5=matrix 6=glitch 7=binary
 static bool isMatrixChatEnabled = false;  // chat mesajlarini matrix stiline cevir
 static bool isGlitchChatEnabled = false;  // chat mesajlarini glitch stiline cevir
+static bool isUniversalChatEnabled = false; // herkeste gorunen filtresiz ozel fontlu chat (ra.opp bypass)
+static int  universalChatStyle = 0;
 static bool isStealthMode = false;        // menuyu gizle, sadece gizli gesture ile ac
 static int  stealthTapCount = 0;          // gizli acma icin triple-tap sayaci
 static NSDate *stealthLastTap = nil;      // son tap zamani
@@ -383,6 +385,99 @@ static NSString* hackerTagWrap(NSString* base, int mode) {
         default: return base;
     }
 }
+
+// ==== EVRENSEL CHAT (MODSUZ OYUNCULARDA %100 GORUNEN FILTRESIZ TIPOGRAFI) ====
+// ra.opp (0x32852FC) icinde '<' kontrolu vardir. Bu font ve emojilerde '<' olmadigi icin
+// filtre bunlari duz metin sanip gecirir; TMP motoru ise herkeste ozel hacker/neon fontuyla cizer!
+static void few1n_appendCodepoint(NSMutableString *outStr, uint32_t cp) {
+    if (cp <= 0xFFFF) {
+        unichar c = (unichar)cp;
+        [outStr appendString:[NSString stringWithCharacters:&c length:1]];
+    } else {
+        unichar buf[2];
+        buf[0] = (unichar)(0xD800 + ((cp - 0x10000) >> 10));
+        buf[1] = (unichar)(0xDC00 + ((cp - 0x10000) & 0x3FF));
+        [outStr appendString:[NSString stringWithCharacters:buf length:2]];
+    }
+}
+
+static NSString* few1n_toMathBoldSans(NSString* text) {
+    if (!text || text.length == 0) return text;
+    NSMutableString *outStr = [NSMutableString string];
+    for (NSUInteger i = 0; i < text.length; i++) {
+        unichar c = [text characterAtIndex:i];
+        if (c >= 'A' && c <= 'Z') few1n_appendCodepoint(outStr, 0x1D5D4 + (c - 'A'));
+        else if (c >= 'a' && c <= 'z') few1n_appendCodepoint(outStr, 0x1D5EE + (c - 'a'));
+        else if (c >= '0' && c <= '9') few1n_appendCodepoint(outStr, 0x1D7EC + (c - '0'));
+        else [outStr appendString:[NSString stringWithCharacters:&c length:1]];
+    }
+    return outStr;
+}
+
+static NSString* few1n_toDoubleStruck(NSString* text) {
+    if (!text || text.length == 0) return text;
+    NSMutableString *outStr = [NSMutableString string];
+    for (NSUInteger i = 0; i < text.length; i++) {
+        unichar c = [text characterAtIndex:i];
+        if (c == 'C') [outStr appendString:@"ℂ"];
+        else if (c == 'H') [outStr appendString:@"ℍ"];
+        else if (c == 'N') [outStr appendString:@"ℕ"];
+        else if (c == 'P') [outStr appendString:@"ℙ"];
+        else if (c == 'Q') [outStr appendString:@"ℚ"];
+        else if (c == 'R') [outStr appendString:@"ℝ"];
+        else if (c == 'Z') [outStr appendString:@"ℤ"];
+        else if (c >= 'A' && c <= 'Z') few1n_appendCodepoint(outStr, 0x1D538 + (c - 'A'));
+        else if (c >= 'a' && c <= 'z') few1n_appendCodepoint(outStr, 0x1D552 + (c - 'a'));
+        else if (c >= '0' && c <= '9') few1n_appendCodepoint(outStr, 0x1D7D8 + (c - '0'));
+        else [outStr appendString:[NSString stringWithCharacters:&c length:1]];
+    }
+    return outStr;
+}
+
+static NSString* few1n_toMathBoldSerif(NSString* text) {
+    if (!text || text.length == 0) return text;
+    NSMutableString *outStr = [NSMutableString string];
+    for (NSUInteger i = 0; i < text.length; i++) {
+        unichar c = [text characterAtIndex:i];
+        if (c >= 'A' && c <= 'Z') few1n_appendCodepoint(outStr, 0x1D400 + (c - 'A'));
+        else if (c >= 'a' && c <= 'z') few1n_appendCodepoint(outStr, 0x1D41A + (c - 'a'));
+        else if (c >= '0' && c <= '9') few1n_appendCodepoint(outStr, 0x1D7CE + (c - '0'));
+        else [outStr appendString:[NSString stringWithCharacters:&c length:1]];
+    }
+    return outStr;
+}
+
+static NSString* few1n_toFullwidth(NSString* text) {
+    if (!text || text.length == 0) return text;
+    NSMutableString *outStr = [NSMutableString string];
+    for (NSUInteger i = 0; i < text.length; i++) {
+        unichar c = [text characterAtIndex:i];
+        if (c >= 33 && c <= 126) {
+            unichar fw = (unichar)(0xFF01 + (c - 33));
+            [outStr appendString:[NSString stringWithCharacters:&fw length:1]];
+        } else if (c == 32) {
+            [outStr appendString:@"　"];
+        } else {
+            [outStr appendString:[NSString stringWithCharacters:&c length:1]];
+        }
+    }
+    return outStr;
+}
+
+static NSString* universalWrapChat(NSString* msg, int style) {
+    if (!msg || msg.length == 0) return msg;
+    switch (style % 7) {
+        case 0: return [NSString stringWithFormat:@"⚡ 𝗙𝗘𝗪𝟭𝗡 ⚡ ➔ %@", few1n_toMathBoldSans(msg)];
+        case 1: return [NSString stringWithFormat:@"🔥 𝔽𝔼𝕎𝟙ℕ 🔥 » %@", few1n_toDoubleStruck(msg)];
+        case 2: return [NSString stringWithFormat:@"👑 𝐅𝐄𝐖𝟏𝐍 👑 : %@", few1n_toMathBoldSerif(msg)];
+        case 3: return [NSString stringWithFormat:@"【 ⚡ ＦＥＷ１Ｎ ⚡ 】 %@", few1n_toFullwidth(msg)];
+        case 4: return [NSString stringWithFormat:@"░▒▓ 𝗙𝗘𝗪𝟭𝗡 ▓▒░ » %@", few1n_toMathBoldSans(msg)];
+        case 5: return [NSString stringWithFormat:@"╔══ ⚡ 𝗙𝗘𝗪𝟭𝗡 ⚡ ══╗ %@", few1n_toMathBoldSerif(msg)];
+        case 6: return [NSString stringWithFormat:@"🔴🟡🔵 𝗙𝗘𝗪𝟭𝗡 🔵🟡🔴 ➔ %@", few1n_toMathBoldSans(msg)];
+        default: return [NSString stringWithFormat:@"⚡ 𝗙𝗘𝗪𝟭𝗡 ⚡ ➔ %@", few1n_toMathBoldSans(msg)];
+    }
+}
+
 static NSString* matrixWrapChat(NSString* msg) {
     if (!msg || msg.length == 0) return msg;
     return [NSString stringWithFormat:@"<color=#00FF00><b>[SYSTEM]</b></color> <color=#00CC00>%@</color>", msg];
@@ -6104,7 +6199,11 @@ static void h_chatSend(void* self, void* msg) {
                     msg = mkStr(orig);
                 }
             }
-            if (isMatrixChatEnabled) {
+            if (isUniversalChatEnabled) {
+                NSString *uMsg = universalWrapChat(orig, universalChatStyle);
+                void* ns = mkStr(uMsg);
+                if (ns) { if (o_chatSend) o_chatSend(self, ns); return; }
+            } else if (isMatrixChatEnabled) {
                 void* colored = mkStr(matrixWrapChat(orig));
                 if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
             } else if (isGlitchChatEnabled) {
@@ -6739,6 +6838,9 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)officialNicknameEveryone;// v114.44
 - (void)setRimColor;
 - (void)coloredNameTagMenu;      // v116.6 (Herkeste %100 renkli 3D NameTag)
+- (void)tapUniversalChat;        // v116.6 (Herkeste ozel fontlu chat toggle)
+- (void)pickUniversalChatStyle:(UIButton*)b; // v116.6 (Evrensel chat stili sec)
+- (void)sendUniversalChatMsg;    // v116.6 (Evrensel mesaj popup'i)
 - (void)setChromeMenu;
 - (void)setGlassMenu;
 - (void)setStanceMenu;
@@ -7291,6 +7393,22 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"▶️  GIF'i Chatte Oynat (baslat/durdur)" color:C_ACCENT atY:y action:@selector(playGifAscii)];
     y = [self toggle:@"🌈  GIF Renkli Oynat" sub:@"Kapali=renksiz ASCII, Acik=gokkusagi" key:@"gifColored" atY:y action:@selector(tapGifColored)];
     // YENI: Hacker Chat Modlari
+    y = [self toggle:@"🌐  Evrensel Chat (Herkeste Özel Font)" sub:@"Filtresiz: Modsuz oyuncuların ekranında bile kalın hacker fontu ve renkli rozetlerle görünür" key:@"universalchat" atY:y action:@selector(tapUniversalChat)];
+    {
+        UIView *urow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
+        urow.backgroundColor = C_CARD; urow.layer.cornerRadius = 12;
+        UIButton *ub = [UIButton buttonWithType:UIButtonTypeSystem];
+        ub.frame = CGRectMake(0,0,pw-24,44);
+        NSArray *unm = @[@"⚡ Sans-Bold", @"🔥 Neon Hollow", @"👑 Serif-Bold", @"【★】Fullwidth", @"░▒▓ Siber Bar", @"╔═╗ Cyber Çerçeve", @"🔴🟡🔵 Renkli Rozet"];
+        [ub setTitle:[NSString stringWithFormat:@"🎨 Evrensel Chat Stili: %@", unm[universalChatStyle % 7]] forState:UIControlStateNormal];
+        [ub setTitleColor:C_ON forState:UIControlStateNormal];
+        ub.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+        [ub addTarget:self action:@selector(pickUniversalChatStyle:) forControlEvents:UIControlEventTouchUpInside];
+        [urow addSubview:ub];
+        [self.contentView addSubview:urow];
+        y += 52;
+    }
+    y = [self actionRow:@"💬  Evrensel Mesaj Gönder (Herkeste Görünür)" color:C_ON atY:y action:@selector(sendUniversalChatMsg)];
     y = [self toggle:@"🟢  Matrix Chat Modu" sub:@"Mesajlarin yesil sistem stili" key:@"matrixchat" atY:y action:@selector(tapMatrixChat)];
     y = [self toggle:@"💀  Glitch Chat Modu" sub:@"Mesajlarin mor/root stili" key:@"glitchchat" atY:y action:@selector(tapGlitchChat)];
     // YENI: mod'dan yaz -> stilde gonder (hook gerektirmez, her zaman calisir)
@@ -7668,6 +7786,7 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"godmode"   on:isGodmode];
     [self setToggle:@"selektor"  on:isSelektor];
     [self setToggle:@"antigrav"  on:isAntiGrav];
+    [self setToggle:@"universalchat" on:isUniversalChatEnabled];
     [self setToggle:@"matrixchat" on:isMatrixChatEnabled];
     [self setToggle:@"glitchchat" on:isGlitchChatEnabled];
     [self setToggle:@"carsize"   on:isCarSizeEnabled];
@@ -9029,6 +9148,53 @@ static UIViewController* few1n_topVC(void) {
     [self refreshUI];
 }
 
+// YENI: Evrensel Chat Modu (Filtresiz, Modsuz Oyuncular Dahil Herkeste Ozel Font)
+- (void)tapUniversalChat {
+    isUniversalChatEnabled = !isUniversalChatEnabled;
+    if (isUniversalChatEnabled) { isMatrixChatEnabled = false; isGlitchChatEnabled = false; }
+    saveBool(@"universalchat", isUniversalChatEnabled);
+    FLog(isUniversalChatEnabled ? @"Evrensel Chat Modu ACIK" : @"Evrensel Chat Modu KAPALI");
+    [self refreshUI];
+}
+- (void)pickUniversalChatStyle:(UIButton*)b {
+    universalChatStyle = (universalChatStyle + 1) % 7;
+    saveInt(@"universalChatStyle", universalChatStyle);
+    NSArray *unm = @[@"⚡ Sans-Bold", @"🔥 Neon Hollow", @"👑 Serif-Bold", @"【★】Fullwidth", @"░▒▓ Siber Bar", @"╔═╗ Cyber Çerçeve", @"🔴🟡🔵 Renkli Rozet"];
+    [b setTitle:[NSString stringWithFormat:@"🎨 Evrensel Chat Stili: %@", unm[universalChatStyle % 7]] forState:UIControlStateNormal];
+    FLog([NSString stringWithFormat:@"Evrensel chat stili secildi: %@", unm[universalChatStyle % 7]]);
+}
+- (void)sendUniversalChatMsg {
+    if (!chatGetInst || !chatSend) { FLog(@"Chat hazir degil - once odaya gir"); return; }
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🌐 Evrensel Mesaj Gönder"
+        message:@"Bu mesajda HTML etiketi (<) kullanılmaz; Unicode tipografi ve emojiler kullanılır.\nModsuz oyuncuların ekranında bile KALIN / NEON ve RENKLİ ROZETLİ görünür!" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"Mesajını yaz...";
+        tf.clearButtonMode = UITextFieldViewModeAlways;
+    }];
+
+    void (^sendWithStyle)(int style) = ^(int style) {
+        NSString *t = ac.textFields.firstObject.text;
+        if (!t || t.length == 0) return;
+        NSString *styled = universalWrapChat(t, style);
+        @try {
+            void* mgr = chatGetInst();
+            void* s = mkStr(styled);
+            if (mgr && s) chatSend(mgr, s);
+        } @catch (...) {}
+        FLog([NSString stringWithFormat:@"Evrensel mesaj gonderildi: %@", styled]);
+    };
+
+    [ac addAction:[UIAlertAction actionWithTitle:@"⚡ 1. Sans-Bold (Kalın Neon)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ sendWithStyle(0); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔥 2. Double-Struck (Hollow Neon)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ sendWithStyle(1); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"👑 3. Serif-Bold (Kraliyet Fontu)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ sendWithStyle(2); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"【★】4. Fullwidth Estetik" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ sendWithStyle(3); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"░▒▓ 5. Siber Bar Çerçeveli" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ sendWithStyle(4); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"╔═╗ 6. Cyber Çerçeveli" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ sendWithStyle(5); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔴🟡🔵 7. Canlı Renkli Emoji Rozet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ sendWithStyle(6); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
+}
+
 // YENI: Matrix / Glitch Chat Modlari
 - (void)tapMatrixChat {
     isMatrixChatEnabled = !isMatrixChatEnabled;
@@ -10310,6 +10476,7 @@ static NSString* rainbowWrap(NSString* text, int idx) {
     if ([k isEqualToString:@"antigrav"])  return isAntiGrav;
     if ([k isEqualToString:@"lowgrav"])   return isLowGravEnabled;
     if ([k isEqualToString:@"asciianim"]) return isAsciiAnimEnabled;
+    if ([k isEqualToString:@"universalchat"])return isUniversalChatEnabled;
     if ([k isEqualToString:@"matrixchat"])return isMatrixChatEnabled;
     if ([k isEqualToString:@"glitchchat"])return isGlitchChatEnabled;
     if ([k isEqualToString:@"carcolor"])  return isCarColorEnabled;
@@ -10324,6 +10491,7 @@ static NSString* rainbowWrap(NSString* text, int idx) {
     NSDictionary *m = @{@"godmode":@"tapGodmode",@"fly":@"tapFly",@"flyauto":@"tapFlyAuto",
       @"noclip":@"tapNoClip",@"drift":@"tapDrift",@"cruise":@"tapCruise",@"selektor":@"tapSelektor",
       @"antigrav":@"tapAntiGrav",@"lowgrav":@"tapLowGrav",@"asciianim":@"tapAsciiAnim",
+      @"universalchat":@"tapUniversalChat",
       @"matrixchat":@"tapMatrixChat",@"glitchchat":@"tapGlitchChat",@"carcolor":@"tapCarColor",
       @"popbangs":@"tapPopBangs",@"autohorn":@"tapAutoHorn",@"revlimiter":@"tapRevLimiter",
       @"brakeglow":@"tapBrakeGlow",@"nodamage":@"tapNoDamage"};
