@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 116.7
+#define FEW1N_VERSION 116.8
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -2023,18 +2023,112 @@ static void  w_chatSend(void *self, void *message) {
 static inline bool ptrOk(void* p);
 static inline bool unityAlive(void* obj);
 static NSString* readStr(void* il2s);
-// 1.4.4 Chat RichText zorlama — allText.richText = true ve <noparse> temizleme
+static void few1n_sbReplace(void* sb, NSString* oldS, NSString* newS) {
+    if (!ptrOk(sb)) return;
+    static void* m = NULL;
+    if (!m) {
+        void* klass = few1n_classAnyImage("System.Text", "StringBuilder");
+        if (klass) m = i_class_get_method_from_name(klass, "Replace", 2);
+    }
+    if (m && i_runtime_invoke) {
+        void* o = mkStr(oldS);
+        void* n = mkStr(newS);
+        if (o && n) {
+            void* args[2] = {o, n};
+            @try { i_runtime_invoke(m, sb, args, NULL); } @catch (...) {}
+        }
+    } else if (global_base) {
+        typedef void* (*sb_rep_fn)(void*, void*, void*, const void*);
+        sb_rep_fn fn = (sb_rep_fn)(global_base + 0x57586B0);
+        void* o = mkStr(oldS);
+        void* n = mkStr(newS);
+        if (o && n) { @try { fn(sb, o, n, NULL); } @catch (...) {} }
+    }
+}
+
+static void w_chat_klv(void* self) {
+    if (!ptrOk(self)) return;
+    static void* m = NULL;
+    if (!m) m = few1n_resolveOn(few1n_chatMgrClass(), "klv", 0);
+    if (m && i_runtime_invoke) {
+        @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+    } else if (global_base) {
+        typedef void (*klv_fn)(void*, const void*);
+        klv_fn fn = (klv_fn)(global_base + 0x3286354);
+        @try { fn(self, NULL); } @catch (...) {}
+    }
+}
+
+// 1.4.4 Chat RichText zorlama — allText & input richText = true ve <noparse> kuyruktan/StringBuilder'dan temizleme
 static void few1n_enableChatRichText(void) {
     @try {
         void* cm = w_chatGetInst();
         if (!ptrOk(cm)) return;
-        // ChatManager.chatUI @ 0x40
+
+        // 1. ChatUI elementleri (allText & input)
         void* cui = *(void**)((uintptr_t)cm + 0x40);
         if (ptrOk(cui)) {
+            // allText (TMP_Text) @ 0x20
             void* allText = *(void**)((uintptr_t)cui + 0x20);
             if (ptrOk(allText)) {
                 w_tmp_set_richText(allText, true);
-                *(bool*)((uintptr_t)allText + 0x342) = true;
+                *(bool*)((uintptr_t)allText + 0x342) = true; // m_isRichText
+            }
+            // input (TMP_InputField) @ 0x30 — RichText izni ver ve validasyonu kaldir (renk kodlarini serbestce yazabilsin)
+            void* inp = *(void**)((uintptr_t)cui + 0x30);
+            if (ptrOk(inp)) {
+                *(bool*)((uintptr_t)inp + 0x221) = true; // m_RichText
+                *(bool*)((uintptr_t)inp + 0x2D2) = true; // m_isRichTextEditingAllowed
+                *(int32_t*)((uintptr_t)inp + 0x188) = 0; // m_CharacterValidation = None
+            }
+            void* ozh = *(void**)((uintptr_t)cui + 0x50);
+            if (ptrOk(ozh)) {
+                w_tmp_set_richText(ozh, true);
+                *(bool*)((uintptr_t)ozh + 0x342) = true;
+            }
+        }
+
+        // 2. ChatManager.oyz (Queue<ChatManager.Line> @ 0x50) icindeki satirlardan <noparse> temizle
+        bool didCleanQueue = false;
+        void* oyz = *(void**)((uintptr_t)cm + 0x50);
+        if (ptrOk(oyz)) {
+            void* arr = *(void**)((uintptr_t)oyz + 0x10); // _array
+            int32_t size = *(int32_t*)((uintptr_t)oyz + 0x20); // _size
+            if (ptrOk(arr) && size > 0) {
+                uint32_t cap = *(uint32_t*)((uintptr_t)arr + 0x18); // array length
+                for (uint32_t i = 0; i < cap; i++) {
+                    uintptr_t elem = (uintptr_t)arr + 0x20 + (i * 16); // sizeof(ChatManager.Line) = 16
+                    void* strPtr = *(void**)(elem + 8); // Line.text
+                    if (ptrOk(strPtr)) {
+                        NSString *s = readStr(strPtr);
+                        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
+                            NSString *clean = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+                            clean = [clean stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+                            void* cleanIl = mkStr(clean);
+                            if (cleanIl) {
+                                *(void**)(elem + 8) = cleanIl;
+                                didCleanQueue = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. ChatManager.oza (StringBuilder @ 0x58) icinden <noparse> temizle
+        void* oza = *(void**)((uintptr_t)cm + 0x58);
+        if (ptrOk(oza)) {
+            few1n_sbReplace(oza, @"<noparse>", @"");
+            few1n_sbReplace(oza, @"</noparse>", @"");
+        }
+
+        // 4. Kuyruk temizlendiyse chat UI'sini aninda guncelle (renk kodlari aninda canlansin!)
+        if (didCleanQueue) {
+            w_chat_klv(cm);
+        } else if (ptrOk(cui)) {
+            // Fallback: allText uzerindeki mevcut metni kontrol et
+            void* allText = *(void**)((uintptr_t)cui + 0x20);
+            if (ptrOk(allText)) {
                 void* textObj = w_tmp_get_text(allText);
                 if (ptrOk(textObj)) {
                     NSString *cur = readStr(textObj);
@@ -2045,11 +2139,6 @@ static void few1n_enableChatRichText(void) {
                         if (newIl) w_tmp_set_text(allText, newIl);
                     }
                 }
-            }
-            void* ozh = *(void**)((uintptr_t)cui + 0x50);
-            if (ptrOk(ozh)) {
-                w_tmp_set_richText(ozh, true);
-                *(bool*)((uintptr_t)ozh + 0x342) = true;
             }
         }
     } @catch (...) {}
@@ -6076,13 +6165,82 @@ static void few1n_replyToRoomAiPrompt(NSString *prompt) {
     });
 }
 
-// ===== 1.4.4 CENSORSHIP & <noparse> BYPASS =====
-// 1.4.4'te Censorship.ra.opp(string) metodu '<' karakterini '<noparse><</noparse>' yapiyor ve küfürleri '***' ile sansürlüyor.
-// Bu hook ile kendi mesajlarimizda ve gelen mesajlarda sansür + <noparse> engeli tamamen kalkar!
+// ===== 1.4.4 CENSORSHIP & <noparse> BYPASS (TÜM CHAT SANSÜR & RENK ENGELİNİ KALDIRMA) =====
+static void* (*o_censorship_opn)(void*, int) = NULL;
+static void* h_censorship_opn(void* a, int b) {
+    if (ptrOk(a)) {
+        NSString *s = readStr(a);
+        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
+            s = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+            s = [s stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+            void* clean = mkStr(s);
+            if (clean) return clean;
+        }
+        return a;
+    }
+    return o_censorship_opn ? o_censorship_opn(a, b) : a;
+}
+
+static void* (*o_censorship_opo)(void*, int) = NULL;
+static void* h_censorship_opo(void* a, int b) {
+    if (ptrOk(a)) return a;
+    return o_censorship_opo ? o_censorship_opo(a, b) : a;
+}
+
 static void* (*o_censorship_opp)(void*) = NULL;
 static void* h_censorship_opp(void* inputStr) {
-    if (ptrOk(inputStr)) return inputStr;
+    if (ptrOk(inputStr)) {
+        NSString *s = readStr(inputStr);
+        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
+            s = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+            s = [s stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+            void* clean = mkStr(s);
+            if (clean) return clean;
+        }
+        return inputStr;
+    }
     return o_censorship_opp ? o_censorship_opp(inputStr) : inputStr;
+}
+
+static void* (*o_chat_klw)(void*, int) = NULL;
+static void* h_chat_klw(void* a, int b) {
+    if (ptrOk(a)) {
+        NSString *s = readStr(a);
+        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
+            s = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+            s = [s stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+            void* clean = mkStr(s);
+            if (clean) return clean;
+        }
+        return a;
+    }
+    return o_chat_klw ? o_chat_klw(a, b) : a;
+}
+
+static void (*o_chat_cie)(void*, void*, void*) = NULL;
+static void h_chat_cie(void* self, void* sender, void* msg) {
+    if (ptrOk(msg)) {
+        NSString *s = readStr(msg);
+        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
+            s = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+            s = [s stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+            void* clean = mkStr(s);
+            if (clean) msg = clean;
+        }
+    }
+    if (o_chat_cie) o_chat_cie(self, sender, msg);
+}
+
+static void (*o_tmp_setText_sb)(void*, void*) = NULL;
+static void h_tmp_setText_sb(void* self, void* sourceText) {
+    if (ptrOk(self)) {
+        *(bool*)((uintptr_t)self + 0x342) = true; // m_isRichText = true
+        if (ptrOk(sourceText)) {
+            few1n_sbReplace(sourceText, @"<noparse>", @"");
+            few1n_sbReplace(sourceText, @"</noparse>", @"");
+        }
+    }
+    if (o_tmp_setText_sb) o_tmp_setText_sb(self, sourceText);
 }
 
 static void h_chatSend(void* self, void* msg) {
@@ -6200,13 +6358,49 @@ static void h_chatSend(void* self, void* msg) {
                 few1n_replyToRoomAiPrompt(aiPrompt);
                 return;
             }
-            // 1.4.4: Eger kullanici bilerek renk etiketi (<color / <#) yazmadiysa temizle; renkli mesajlari koru
-            if (![orig containsString:@"<color"] && ![orig containsString:@"<#"]) {
-                NSString *cleaned = stripRichTextTags(orig);
-                if (cleaned.length > 0 && ![cleaned isEqualToString:orig]) {
-                    orig = cleaned;
-                    msg = mkStr(orig);
+            // 1.4.4: Renk etiketlerini akilli algila (<red>, <kirmizi>, <#FF0000>, <color=red>, vb.)
+            NSString *formatted = orig;
+            NSDictionary<NSString*, NSString*> *colorMap = @{
+                @"<red>": @"<color=red>",       @"</red>": @"</color>",
+                @"<kırmızı>": @"<color=red>",   @"</kırmızı>": @"</color>",
+                @"<kirmizi>": @"<color=red>",   @"</kirmizi>": @"</color>",
+                @"<green>": @"<color=green>",   @"</green>": @"</color>",
+                @"<yeşil>": @"<color=green>",   @"</yeşil>": @"</color>",
+                @"<yesil>": @"<color=green>",   @"</yesil>": @"</color>",
+                @"<blue>": @"<color=#00BFFF>",  @"</blue>": @"</color>",
+                @"<mavi>": @"<color=#00BFFF>",  @"</mavi>": @"</color>",
+                @"<yellow>": @"<color=yellow>", @"</yellow>": @"</color>",
+                @"<sarı>": @"<color=yellow>",   @"</sarı>": @"</color>",
+                @"<sari>": @"<color=yellow>",   @"</sari>": @"</color>",
+                @"<orange>": @"<color=orange>", @"</orange>": @"</color>",
+                @"<turuncu>": @"<color=orange>",@"</turuncu>": @"</color>",
+                @"<purple>": @"<color=purple>", @"</purple>": @"</color>",
+                @"<mor>": @"<color=purple>",    @"</mor>": @"</color>",
+                @"<pink>": @"<color=#FF69B4>",  @"</pink>": @"</color>",
+                @"<pembe>": @"<color=#FF69B4>", @"</pembe>": @"</color>",
+                @"<cyan>": @"<color=cyan>",     @"</cyan>": @"</color>",
+                @"<white>": @"<color=white>",   @"</white>": @"</color>",
+                @"<beyaz>": @"<color=white>",   @"</beyaz>": @"</color>",
+                @"<black>": @"<color=black>",   @"</black>": @"</color>",
+                @"<siyah>": @"<color=black>",   @"</siyah>": @"</color>"
+            };
+            for (NSString *key in colorMap) {
+                if ([formatted rangeOfString:key options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                    formatted = [formatted stringByReplacingOccurrencesOfString:key withString:colorMap[key] options:NSCaseInsensitiveSearch range:NSMakeRange(0, formatted.length)];
                 }
+            }
+            // Kapatilmamis renk etiketini otomatik </color> ile kapat (orn: <color=red>selam -> <color=red>selam</color>)
+            if (([formatted containsString:@"<color="] || [formatted containsString:@"<color "] || [formatted containsString:@"<#"])
+                && ![formatted containsString:@"</color>"]) {
+                formatted = [formatted stringByAppendingString:@"</color>"];
+            }
+            if ([formatted containsString:@"<noparse>"] || [formatted containsString:@"</noparse>"]) {
+                formatted = [formatted stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
+                formatted = [formatted stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+            }
+            if (![formatted isEqualToString:orig]) {
+                orig = formatted;
+                msg = mkStr(orig);
             }
             if (isUniversalChatEnabled) {
                 NSString *uMsg = universalWrapChat(orig, universalChatStyle);
@@ -15009,10 +15203,33 @@ static void InstallEverything(uintptr_t b) {
     if (!o_roomConnect && global_base) {
         safeHook((void*)(global_base + 0x5669A40), (void*)h_roomConnect, (void**)&o_roomConnect, "HR_UI_RoomListLine.eqm (direct RVA)");
     }
-    // 1.4.4 YENI HOOKLAR: Censorship (<noparse> bypass), RoomListLine.ghh (sifre oto-doldur), VoteKick (99 Evet + 0sn Cooldown + Tam Koruma)
-    safeHookByName("Censorship", "ra",                        "opp",                 1, (void*)h_censorship_opp,          (void**)&o_censorship_opp,          "Censorship.ra.opp (<noparse> bypass)");
+    // 1.4.4 YENI HOOKLAR: Censorship & Chat (<noparse> ve sansür engeli tamamen kalkar)
+    safeHookByName("Censorship", "ra", "opn", 2, (void*)h_censorship_opn, (void**)&o_censorship_opn, "Censorship.ra.opn (full censor bypass)");
+    if (!o_censorship_opn && global_base) {
+        safeHook((void*)(global_base + 0x3284EE0), (void*)h_censorship_opn, (void**)&o_censorship_opn, "Censorship.ra.opn (direct RVA)");
+    }
+    safeHookByName("Censorship", "ra", "opp", 1, (void*)h_censorship_opp, (void**)&o_censorship_opp, "Censorship.ra.opp (<noparse> bypass)");
     if (!o_censorship_opp && global_base) {
         safeHook((void*)(global_base + 0x32852FC), (void*)h_censorship_opp, (void**)&o_censorship_opp, "Censorship.ra.opp (direct RVA)");
+    }
+    safeHookByName("Censorship", "ra", "opo", 2, (void*)h_censorship_opo, (void**)&o_censorship_opo, "Censorship.ra.opo (censor bypass)");
+    if (!o_censorship_opo && global_base) {
+        safeHook((void*)(global_base + 0x3285260), (void*)h_censorship_opo, (void**)&o_censorship_opo, "Censorship.ra.opo (direct RVA)");
+    }
+    safeHookByName("", "ChatManager", "klw", 2, (void*)h_chat_klw, (void**)&o_chat_klw, "ChatManager.klw (chat filter bypass)");
+    if (!o_chat_klw && global_base) {
+        safeHook((void*)(global_base + 0x32858F4), (void*)h_chat_klw, (void**)&o_chat_klw, "ChatManager.klw (direct RVA)");
+    }
+    safeHookByName("", "ChatManager", "cie", 2, (void*)h_chat_cie, (void**)&o_chat_cie, "ChatManager.cie (chat line add)");
+    if (!o_chat_cie && global_base) {
+        safeHook((void*)(global_base + 0x3285910), (void*)h_chat_cie, (void**)&o_chat_cie, "ChatManager.cie (direct RVA)");
+    }
+    { static const char* const n[] = {"SetText",NULL};
+      static const char* pr[] = {"StringBuilder"};
+      safeHookBySig("TMPro", "TMP_Text", n, 1, "Void", pr, NULL,
+                    (void*)h_tmp_setText_sb, (void**)&o_tmp_setText_sb, "TMP_Text.SetText(StringBuilder)"); }
+    if (!o_tmp_setText_sb && global_base) {
+        safeHook((void*)(global_base + 0x68186C0), (void*)h_tmp_setText_sb, (void**)&o_tmp_setText_sb, "TMP_Text.SetText(StringBuilder) (direct RVA)");
     }
     safeHookByName("",           "HR_UI_RoomListLine",        "ghh",                 0, (void*)h_roomLineClick,           (void**)&o_roomLineClick,           "HR_UI_RoomListLine.ghh (1.4.4 Connect)");
     if (!o_roomLineClick && global_base) {
