@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.3
+#define FEW1N_VERSION 117.5
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -7537,7 +7537,6 @@ static UIViewController* few1n_topVC(void) {
     // v102: 6 yeni ozellik
     y = [self toggle:@"✨  Emissive Parlak Boya" sub:@"Aracın materyallerini HDR sarı-turuncu parlak yapar" key:@"emissive" atY:y action:@selector(tapEmissivePaint)];
     y = [self toggle:@"🔥  Egzoz Alev Sürekli" sub:@"RCCP_Exhaust.flameOnCutOff=true" key:@"exhaustflame" atY:y action:@selector(tapExhaustFlame)];
-    y = [self toggle:@"📺  Vidyo İsim Modu" sub:@"Rich text oyuncu isimlerini vidyo yap" key:@"vidyonames" atY:y action:@selector(tapVidyoNames)];
     // v114.61: 'Parça Sök & Fırlat' + 'Herkesi Sana Teleport' + 'Yabancı Aracı Ele Geçir' SILINDI (calismiyor)
     y = [self actionRow:@"✏️  Selektor Hizi Ayarla" color:C_CYAN atY:y action:@selector(editSelektorSpeed)];
     y = [self actionRow:@"\U0001F53C  ZIPLA (bas)" color:C_ON atY:y action:@selector(jumpTap)];
@@ -7554,11 +7553,9 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"💬  AI'ye Dogrudan Soru Sor (Pencereden)" color:C_GOLD atY:y action:@selector(askAiDirect)];
     y = [self actionRow:@"🤖  AI Bot Kurulumu (Grok / Groq)" color:C_ON atY:y action:@selector(editAiApiKey)];
     y = [self toggle:@"💬  AI Sohbet Modu" sub:@"/ai olmadan sadece 'AI', 'bot' veya 'Grok' hitaplarina cevap verir" key:@"aichat" atY:y action:@selector(tapAiChatMode)];
-    y = [self actionRow:@"🎨  AI Cevap Renkleri Sec (isim + cevap)" color:C_GOLD atY:y action:@selector(pickAiColors)];
     y = [self actionRow:@"🔓  HACKER AI: chat'e /hack <istek> yaz" color:C_RED atY:y action:@selector(showHackerAiInfo)];
     y = [self toggle:@"\U0001F4E2  Chat Spam" sub:@"50ms araligla mesaj" key:@"chatspam" atY:y action:@selector(tapChatSpam)];
     y = [self actionRow:@"✏️  Spam Yazisini Duzenle" color:C_CYAN atY:y action:@selector(editSpam)];
-    y = [self actionRow:@"🔥  Herkeste Renkli Chat (Modsuzlar Dahil)" color:C_GOLD atY:y action:@selector(pickEveryoneChatColor)];
     {
         UIView *ssrow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
         ssrow.backgroundColor = C_CARD; ssrow.layer.cornerRadius = 12;
@@ -7604,7 +7601,6 @@ static UIViewController* few1n_topVC(void) {
     }
     y = [self actionRow:@"📂  GIF/Resim Yukle → ASCII'ye Cevir" color:C_ON atY:y action:@selector(pickGifForAscii)];
     y = [self actionRow:@"▶️  GIF'i Chatte Oynat (baslat/durdur)" color:C_ACCENT atY:y action:@selector(playGifAscii)];
-    y = [self toggle:@"🌈  GIF Renkli Oynat" sub:@"Kapali=renksiz ASCII, Acik=gokkusagi" key:@"gifColored" atY:y action:@selector(tapGifColored)];
     // YENI: Hacker Chat Modlari
     y = [self toggle:@"🌐  Evrensel Chat (Herkeste Özel Font)" sub:@"Filtresiz: Modsuz oyuncuların ekranında bile kalın hacker fontu ve renkli rozetlerle görünür" key:@"universalchat" atY:y action:@selector(tapUniversalChat)];
     {
@@ -7638,7 +7634,6 @@ static UIViewController* few1n_topVC(void) {
     y = [self toggle:@"▶️  Sarki Sozunu Baslat" sub:@"Her satiri sirayla chate yazar" key:@"lyrics" atY:y action:@selector(tapLyrics)];
     y = [self actionRow:@"✏️  Elle Sarki Sozu Gir (cok satir)" color:C_CYAN atY:y action:@selector(editLyrics)];
     y = [self actionRow:@"⏱️  Satir Araligi Ayarla" color:C_CYAN atY:y action:@selector(editLyricsInterval)];
-    y = [self toggle:@"\U0001F308  Renkli Satirlar" sub:@"Her satir farkli renk" key:@"lyricsColor" atY:y action:@selector(tapLyricsColor)];
     y = [self toggle:@"\U0001F501  Bitince Basa Sar" sub:@"Sarki sozunu tekrarla" key:@"lyricsLoop" atY:y action:@selector(tapLyricsLoop)];
 
 
@@ -7681,7 +7676,6 @@ static UIViewController* few1n_topVC(void) {
     y = [self toggle:@"🤖  Otomatik Master" sub:@"Master gidince aninda geri al" key:@"automaster" atY:y action:@selector(tapAutoMaster)];
     y = [self toggle:@"🛡️  Anti-Kick" sub:@"Kicklenirsen odaya otomatik geri gir + master ol" key:@"antikick" atY:y action:@selector(tapAntiKick)];
     y = [self actionRow:@"⏱️  Oyun Hızı (TimeScale)" color:C_CYAN atY:y action:@selector(tapGameSpeed)];
-    y = [self actionRow:@"👥  Fake Çevrimici Sayısı (Lobi Görseli)" color:C_CYAN atY:y action:@selector(tapFakeOnline)];
     y = [self actionRow:@"👑  GERÇEK Master Ol (harita için ÖNCE bas)" color:C_GOLD atY:y action:@selector(becomeRealMasterMap)];   // v114.89: geri geldi
     y = [self actionRow:@"🗺️  Harita Değiştir (Y5 — çalışan)" color:C_GOLD atY:y action:@selector(mapListY5)];   // v114.87: sade Y5
     // v114.61: 'Kişi Aracı Klonla' SILINDI (calismiyor)
@@ -7689,7 +7683,6 @@ static UIViewController* few1n_topVC(void) {
     // Oda ismi degistirmek icin tek gercek yol: 🔄 Odayi Yeniden Olustur (asagida)
     y = [self actionRow:@"👥  Odadayken Max Oyuncu Değiştir (2-100)" color:C_GOLD atY:y action:@selector(changeMaxPlayersInRoom)];
     y = [self actionRow:@"🔄  Odayı YENİDEN OLUŞTUR (herkeste değişir)" color:C_RED atY:y action:@selector(recreateRoomWithNewName)];
-    y = [self actionRow:@"🏷️  Harita Metnini Değiştir (Kişi Sayısı Yanı - ADMIN vb.)" color:C_GOLD atY:y action:@selector(changeCustomMapLabel)];
     y = [self actionRow:@"🔒  Odayı Kilitle / Aç (IsOpen Toggle)" color:C_GOLD atY:y action:@selector(tapRoomLock)];
     y = [self actionRow:@"👁️  Odayı Gizle / Göster (IsVisible Toggle)" color:C_GOLD atY:y action:@selector(tapRoomHide)];
     y = [self actionRow:@"\U0001F511  Oda Sifresi Koy / Kaldir" color:C_GOLD atY:y action:@selector(tapRoomPassword)];
@@ -7700,7 +7693,6 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"🛡️  VoteKick Durumu (1.4.4 Kontrol)" color:C_CYAN atY:y action:@selector(voteKickDiagnostics)];
     y = [self actionRow:@"🎯  Belirli Oyuncuyu At (Sec ve Kick)" color:C_RED atY:y action:@selector(nativeKickPick)];
     y = [self actionRow:@"⚔️  Herkesi At (Mass Kick — master iken)" color:C_RED atY:y action:@selector(kickAllPlayers)];   // v115.0
-    y = [self actionRow:@"🏷️  Herkesin İsmini Değiştir" color:C_RED atY:y action:@selector(massNameChange)];   // v115.0
     y = [self actionRow:@"🧬  Photon Property Enjektörü (Seç — deneysel)" color:C_RED atY:y action:@selector(injectPropertyPick)];   // v115.0
     y = [self actionRow:@"🚫  Ban Listesi (geri geleni otomatik at)" color:C_RED atY:y action:@selector(manageBans)];
     // v114.61: 'HEDEFLİ BOMBA + CRASH' SILINDI (calismiyor)
@@ -7715,7 +7707,6 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"🏎️  Stance / Kamber — HERKESTE" color:C_GOLD atY:y action:@selector(setStanceMenu)];
     // v114.61: 'Gövde Parça HERKESTE' SILINDI (calismiyor)
     y = [self actionRow:@"🏁  Bitiş Çizgisine Işınlan (deneysel)" color:C_ON atY:y action:@selector(finishTeleport)];
-    y = [self actionRow:@"🎨  Renkli Oda Kur (Dinamik Stil Paneli)" color:C_GOLD atY:y action:@selector(createColoredRoom)];
     // v114.61: 'Exploit Ile Oda Kur (30 Yontem)' + 'Düz Özel İsimli Oda Kur' SILINDI (calismiyor)
     y = [self actionRow:@"\U0001F4A5  300 ODA AC (tek tus, 0.02sn)" color:C_RED atY:y action:@selector(spam300Rooms)];
     y = [self toggle:@"\U0001F4E5  Fake Oda Spam" sub:@"Kalici odalar birikir" key:@"roomspam" atY:y action:@selector(tapRoomSpam)];
