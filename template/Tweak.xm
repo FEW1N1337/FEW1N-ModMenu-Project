@@ -120,6 +120,11 @@ static bool isAlwaysLightsEnabled = false;   // v97: Farlar Surekli Acik geri ge
 static void* g_wheelGlowTypeObj = NULL;    // typeof(RCCP_WheelGlow)
 // v91: Hasar Yok — RCCP_Damage.Update hook ile
 static bool isNoDamageEnabled = false;
+// v117.7: Anti-Report, VoteKick Baslatani Gor, Polis Cakari, Gokkusagi Far/Neon
+static bool isAntiReportEnabled = true;
+static bool isVoteKickSnitchEnabled = true;
+static bool isPoliceStrobeEnabled = false;
+static bool isNeonLightsEnabled = false;
 // RCCP visual/state toggle'lar
 static bool isAutoHornEnabled = false;
 static bool isRevLimiterEnabled = false;
@@ -3271,8 +3276,113 @@ static void h_voteKickEndRPC(void* self, int vote, int target, unsigned char res
 }
 
 static void (*o_voteKickStartRPC)(void*, int, void*) = NULL;
+static void few1n_showBannerToast(NSString *title, NSString *msg, UIColor *accent) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *win = nil;
+            for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+                if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
+                    for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                        if (w.isKeyWindow) { win = w; break; }
+                    }
+                    if (!win && ((UIWindowScene *)s).windows.count > 0) win = ((UIWindowScene *)s).windows.firstObject;
+                    if (win) break;
+                }
+            }
+            if (!win) win = [UIApplication sharedApplication].keyWindow;
+            if (!win) return;
+
+            CGFloat topPad = 44.0;
+            if (@available(iOS 11.0, *)) {
+                if (win.safeAreaInsets.top > 10.0) topPad = win.safeAreaInsets.top + 6.0;
+            }
+            CGFloat bw = MIN(win.bounds.size.width - 32.0, 360.0);
+            CGFloat bx = (win.bounds.size.width - bw) * 0.5;
+            UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(bx, -80, bw, 58)];
+            banner.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.11 alpha:0.94];
+            banner.layer.cornerRadius = 14.0;
+            banner.layer.borderWidth = 1.5;
+            banner.layer.borderColor = (accent ?: [UIColor cyanColor]).CGColor;
+            banner.userInteractionEnabled = NO;
+
+            UILabel *tl = [[UILabel alloc] initWithFrame:CGRectMake(14, 7, bw - 28, 20)];
+            tl.text = title ?: @"FEW1N";
+            tl.textColor = accent ?: [UIColor cyanColor];
+            tl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+            [banner addSubview:tl];
+
+            UILabel *ml = [[UILabel alloc] initWithFrame:CGRectMake(14, 27, bw - 28, 24)];
+            ml.text = msg ?: @"";
+            ml.textColor = [UIColor whiteColor];
+            ml.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+            ml.adjustsFontSizeToFitWidth = YES;
+            ml.minimumScaleFactor = 0.75;
+            [banner addSubview:ml];
+
+            [win addSubview:banner];
+            [UIView animateWithDuration:0.28 animations:^{
+                banner.frame = CGRectMake(bx, topPad, bw, 58);
+            } completion:^(BOOL finished) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [UIView animateWithDuration:0.25 animations:^{
+                        banner.alpha = 0.0;
+                        banner.frame = CGRectMake(bx, -80, bw, 58);
+                    } completion:^(BOOL f2) {
+                        [banner removeFromSuperview];
+                    }];
+                });
+            }];
+        } @catch (...) {}
+    });
+}
+
+static NSString* few1n_playerNameForActor(int actor) {
+    if (actor <= 0 || !pn_getPlayerList || !ply_getActorNumber || !ply_getNickName) return [NSString stringWithFormat:@"#%d", actor];
+    @try {
+        void* pa = pn_getPlayerList();
+        if (!ptrOk(pa)) return [NSString stringWithFormat:@"#%d", actor];
+        int cnt = *(int*)((uintptr_t)pa + 0x18);
+        void** items = (void**)((uintptr_t)pa + 0x20);
+        for (int i = 0; i < cnt && i < 128; i++) {
+            void* p = items[i];
+            if (!ptrOk(p)) continue;
+            if (ply_getActorNumber(p) == actor) {
+                void* ns = ply_getNickName(p);
+                NSString *nick = ptrOk(ns) ? readStr(ns) : nil;
+                if (nick.length > 0) return nick;
+            }
+        }
+    } @catch (...) {}
+    return [NSString stringWithFormat:@"#%d", actor];
+}
+
 static void h_voteKickStartRPC(void* self, int target, void* info) {
     int myActor = (pn_getLocalPlayer && ply_getActorNumber) ? ply_getActorNumber(pn_getLocalPlayer()) : -1;
+    if (isVoteKickSnitchEnabled) {
+        @try {
+            void* sender = ptrOk(info) ? *(void**)((uintptr_t)info + 0x8) : NULL;
+            NSString *senderNick = @"?";
+            int senderActor = -1;
+            if (ptrOk(sender)) {
+                if (ply_getActorNumber) senderActor = ply_getActorNumber(sender);
+                if (ply_getNickName) {
+                    void* ns = ply_getNickName(sender);
+                    NSString *s = ptrOk(ns) ? readStr(ns) : nil;
+                    if (s.length > 0) senderNick = s;
+                }
+            }
+            NSString *targetNick = few1n_playerNameForActor(target);
+            if (myActor > 0 && target == myActor) {
+                NSString *m = [NSString stringWithFormat:@"Başlatan: %@ (#%d)", senderNick, senderActor];
+                FLog([NSString stringWithFormat:@"🚨 [OYLAMA] Sana karşı VoteKick başlatıldı! %@", m]);
+                few1n_showBannerToast(@"🚨 SANA OYLAMA BAŞLATILDI!", m, [UIColor colorWithRed:1.0 green:0.30 blue:0.42 alpha:1.0]);
+            } else {
+                NSString *m = [NSString stringWithFormat:@"%@ (#%d) → %@ (#%d)", senderNick, senderActor, targetNick, target];
+                FLog([NSString stringWithFormat:@"🗳️ [OYLAMA] %@", m]);
+                few1n_showBannerToast(@"🗳️ Oylama Başlatıldı", m, [UIColor colorWithRed:0.0 green:0.90 blue:1.0 alpha:1.0]);
+            }
+        } @catch (...) {}
+    }
     if (ptrOk(self)) few1n_resetVoteKickCooldowns(self);
     if (o_voteKickStartRPC) o_voteKickStartRPC(self, target, info);
     if (myActor > 0 && target == myActor) {
@@ -3288,11 +3398,29 @@ static void h_dummyKickRPC(void* self, void* playerName) {
     return;
 }
 
-// 1.4.4: Anti-Report (Rapor isteklerini düşür)
+// 1.4.4 + v117.7: Anti-Report (Rapor isteklerini düşür + raporlayanı bildir)
 static void (*o_reportRPC)(void*, unsigned char, void*, void*) = NULL;
 static void h_reportRPC(void* self, unsigned char reason, void* subject, void* info) {
-    FLog([NSString stringWithFormat:@"🛡️ Anti-Report: RaporRPC engellendi (sebep=%d)", (int)reason]);
-    return;
+    NSString *senderNick = @"?";
+    int senderActor = -1;
+    @try {
+        void* sender = ptrOk(info) ? *(void**)((uintptr_t)info + 0x8) : NULL;
+        if (ptrOk(sender)) {
+            if (ply_getActorNumber) senderActor = ply_getActorNumber(sender);
+            if (ply_getNickName) {
+                void* ns = ply_getNickName(sender);
+                NSString *s = ptrOk(ns) ? readStr(ns) : nil;
+                if (s.length > 0) senderNick = s;
+            }
+        }
+    } @catch (...) {}
+    if (isAntiReportEnabled) {
+        NSString *m = [NSString stringWithFormat:@"Raporlayan: %@ (#%d) | Sebep: %d", senderNick, senderActor, (int)reason];
+        FLog([NSString stringWithFormat:@"🛡️ Anti-Report: RaporRPC engellendi (%@)", m]);
+        few1n_showBannerToast(@"🛡️ Anti-Report Engellendi", m, [UIColor colorWithRed:1.0 green:0.80 blue:0.25 alpha:1.0]);
+        return;
+    }
+    if (o_reportRPC) o_reportRPC(self, reason, subject, info);
 }
 
 // 1.4.4: Tüm Araçları Aç (Free Garage)
@@ -6857,6 +6985,10 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 @property (nonatomic, strong) UIView *favOverlay;
 @property (nonatomic, strong) UIView *nanOverlay;
 - (void)tapAdBlock;
+- (void)tapAntiReport;
+- (void)tapVoteKickSnitch;
+- (void)tapPoliceStrobe;
+- (void)tapNeonLights;
 - (void)tapBrakeGlow;
 - (void)tapBrakeGlowDob;
 - (void)tapBrakeGlowMinTemp;
@@ -7892,6 +8024,8 @@ static UIViewController* few1n_topVC(void) {
     // v114.61: 'ODAYI KAPAT' + 'Odadaki Herkesi At (Mass Kick)' SILINDI (calismiyor)
     y = [self actionRow:@"🗳️  Normal Oylama Başlat (0sn Beklemesiz)" color:C_ON atY:y action:@selector(normalVoteKickPick)];
     y = [self toggle:@"🗳️  Oylamayı Full Evet Yap (Oto 99+)" sub:@"Açıkken tüm oylamaları 99 EVET yapar ve onaylar" key:@"votekickyes" atY:y action:@selector(tapVoteKickFullYes)];
+    y = [self toggle:@"🕵️  Oylamayı Başlatanı Göster" sub:@"Oylama açılınca başlatan kişinin adını ekranda gösterir" key:@"votekicksnitch" atY:y action:@selector(tapVoteKickSnitch)];
+    y = [self toggle:@"🛡️  Anti-Report (Raporlayanı Göster)" sub:@"Gelen raporları engeller ve kimin attığını ekranda gösterir" key:@"antireport" atY:y action:@selector(tapAntiReport)];
     y = [self actionRow:@"⚡  Aktif Oylamayı Anında 99 Evet Geçir" color:C_GOLD atY:y action:@selector(forceVoteKickFullYes)];
     y = [self actionRow:@"🛡️  VoteKick Durumu (1.4.4 Kontrol)" color:C_CYAN atY:y action:@selector(voteKickDiagnostics)];
     y = [self actionRow:@"🎯  Belirli Oyuncuyu At (Sec ve Kick)" color:C_RED atY:y action:@selector(nativeKickPick)];
@@ -8192,6 +8326,10 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"noclip"    on:isNoClip];
     [self setToggle:@"godmode"   on:isGodmode];
     [self setToggle:@"selektor"  on:isSelektor];
+    [self setToggle:@"policestrobe" on:isPoliceStrobeEnabled];
+    [self setToggle:@"neonlights" on:isNeonLightsEnabled];
+    [self setToggle:@"votekicksnitch" on:isVoteKickSnitchEnabled];
+    [self setToggle:@"antireport" on:isAntiReportEnabled];
     [self setToggle:@"antigrav"  on:isAntiGrav];
     [self setToggle:@"universalchat" on:isUniversalChatEnabled];
     [self setToggle:@"matrixchat" on:isMatrixChatEnabled];
@@ -8282,6 +8420,7 @@ static UIViewController* few1n_topVC(void) {
     few1n_applyColor();      // arac rengini uygula (onbellek materyaller - ucuz)
     few1n_applyGodmode();    // godmode: canCrash=false (hic kaza yapma)
     few1n_applySelektor();   // selektor: RCCP high/low beam hizli cakma
+    few1n_applyPoliceAndNeonLights(); // v117.7: Polis Cakari + Gokkusagi Far/Neon
     few1n_applyAlwaysLights(); // v97: Farlar Surekli Acik (offset 0x40/0x41)
     // ===== UCUS: havada GERCEK surus (gaz=ileri, fren=geri, direksiyon=don) - PURUZSUZ =====
     // Hepsi hiz/acisal-hiz (fizik) ile -> Photon dogal senkronlar -> baskalarinda titremez.
@@ -15210,6 +15349,10 @@ static void restoreSettings(void) {
     isRoomCrashActive      = false;
     panicCrash             = false;
     isAdBlockEnabled       = loadBool(@"adblock", true);   // v117.1: VARSAYILAN ACIK (tam reklam engelleme)
+    isAntiReportEnabled    = loadBool(@"antireport", true);
+    isVoteKickSnitchEnabled= loadBool(@"votekicksnitch", true);
+    isPoliceStrobeEnabled  = loadBool(@"policestrobe", false);
+    isNeonLightsEnabled    = loadBool(@"neonlights", false);
     customMoneyAmount      = loadInt(@"moneyAmount", 100000000);
     NSString* pt = loadStr(@"plateText", @"FEW1N");
     strncpy(customPlateText, pt.UTF8String, sizeof(customPlateText)-1); customPlateText[sizeof(customPlateText)-1]='\0';
