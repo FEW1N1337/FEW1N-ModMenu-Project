@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 116.9
+#define FEW1N_VERSION 117.0
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -7623,9 +7623,7 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"🔓  HACKER AI: chat'e /hack <istek> yaz" color:C_RED atY:y action:@selector(showHackerAiInfo)];
     y = [self toggle:@"\U0001F4E2  Chat Spam" sub:@"50ms araligla mesaj" key:@"chatspam" atY:y action:@selector(tapChatSpam)];
     y = [self actionRow:@"✏️  Spam Yazisini Duzenle" color:C_CYAN atY:y action:@selector(editSpam)];
-    y = [self actionRow:@"\U0001F3A8  Spam/Chat Rengi Sec (ozel hex)" color:C_CYAN atY:y action:@selector(pickSpamColor)];
     y = [self actionRow:@"🔥  Herkeste Renkli Chat (Modsuzlar Dahil)" color:C_GOLD atY:y action:@selector(pickEveryoneChatColor)];
-    y = [self actionRow:@"\U0001F58D  Renkli Mesaj Gonder (istedigin renkte)" color:C_ON atY:y action:@selector(sendColoredChat)];
     {
         UIView *ssrow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
         ssrow.backgroundColor = C_CARD; ssrow.layer.cornerRadius = 12;
@@ -7654,9 +7652,6 @@ static UIViewController* few1n_topVC(void) {
         [self.contentView addSubview:arow];
         y += 52;
     }
-    y = [self toggle:@"\U0001F308  ASCII Renk Dongusu" sub:@"Her kareyi farkli renkte gonder" key:@"asciicolor" atY:y action:@selector(tapAsciiColor)];
-    y = [self actionRow:@"🧪  Exploit Test (Chat Filtresi Atlat)" color:C_RED atY:y action:@selector(exploitChatTest)];
-    y = [self actionRow:@"🌈  TUM Oda Chatini Renklendir (secili renk)" color:C_ON atY:y action:@selector(colorAllChat)];
     // YENI: GIF -> ASCII (cihaz uzerinde cevirir, harici API yok)
     {
         UIView *grow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
