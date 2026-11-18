@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.5
+#define FEW1N_VERSION 117.6
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -7131,53 +7131,256 @@ static bool h_lbc_opJoinRandomOrCreateRoom(void* self, void* opJoinParams, void*
     return o_lbc_opJoinRandomOrCreateRoom ? o_lbc_opJoinRandomOrCreateRoom(self, opJoinParams, createRoomParams) : false;
 }
 
-// ===== CAS IL2CPP REKLAM HOOKS (CANLI REKLAM BOZUCU) =====
-static void (*o_casClientShowAd)(void*, int, void*) = NULL;
-static void h_casClientShowAd(void* self, int adType, void* placement) {
-    if (isAdBlockEnabled) { FLog(@"🚫 CASManagerClient.ShowAd engellendi"); return; }
-    if (o_casClientShowAd) o_casClientShowAd(self, adType, placement);
+// ===== v117.6 SIFIRDAN TAM REKLAM ENGELLEYICI (IL2CPP) =====
+// Katman 1: PlayerManager.isAdsRemoved (gog/goh/got)
+static bool (*o_pmGetAdsRemoved)(void*) = NULL;
+static bool h_pmGetAdsRemoved(void* self) {
+    if (isAdBlockEnabled) return true;
+    return o_pmGetAdsRemoved ? o_pmGetAdsRemoved(self) : false;
+}
+static void (*o_pmSetAdsRemoved)(void*, bool) = NULL;
+static void h_pmSetAdsRemoved(void* self, bool val) {
+    if (isAdBlockEnabled) val = true;
+    if (o_pmSetAdsRemoved) o_pmSetAdsRemoved(self, val);
+}
+static void (*o_pmSetAdsRemovedInt)(void*, bool) = NULL;
+static void h_pmSetAdsRemovedInt(void* self, bool val) {
+    if (isAdBlockEnabled) val = true;
+    if (o_pmSetAdsRemovedInt) o_pmSetAdsRemovedInt(self, val);
 }
 
+// Katman 2: CASAd (AdIntervalCounter & InterstitialAd)
+static void (*o_adIntervalCount)(void*) = NULL;
+static void h_adIntervalCount(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_adIntervalCount) o_adIntervalCount(self);
+}
+static void (*o_adIntervalJfu)(void*) = NULL;
+static void h_adIntervalJfu(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_adIntervalJfu) o_adIntervalJfu(self);
+}
+static void (*o_adIntervalJfv)(void) = NULL;
+static void h_adIntervalJfv(void) {
+    if (isAdBlockEnabled) return;
+    if (o_adIntervalJfv) o_adIntervalJfv();
+}
+static bool (*o_adIntervalGpq)(void*) = NULL;
+static bool h_adIntervalGpq(void* self) {
+    if (isAdBlockEnabled) return false;
+    return o_adIntervalGpq ? o_adIntervalGpq(self) : false;
+}
+static bool (*o_adIntervalJfw)(void*) = NULL;
+static bool h_adIntervalJfw(void* self) {
+    if (isAdBlockEnabled) return false;
+    return o_adIntervalJfw ? o_adIntervalJfw(self) : false;
+}
+
+static void (*o_casInterGpt)(void*) = NULL;
+static void h_casInterGpt(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_casInterGpt) o_casInterGpt(self);
+}
+static void (*o_casInterGpu)(void*) = NULL;
+static void h_casInterGpu(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_casInterGpu) o_casInterGpu(self);
+}
+static void (*o_casInterJgc)(void*, void*) = NULL;
+static void h_casInterJgc(void* self, void* a) {
+    if (isAdBlockEnabled) return;
+    if (o_casInterJgc) o_casInterJgc(self, a);
+}
+static void (*o_casInterJgd)(void*, void*) = NULL;
+static void h_casInterJgd(void* self, void* a) {
+    if (isAdBlockEnabled) return;
+    if (o_casInterJgd) o_casInterJgd(self, a);
+}
+
+// Katman 3: CAS.AdObject (Interstitial / AppOpen / Banner / ReturnToPlay / ConsentFlow)
+static bool (*o_interObjReady)(void*) = NULL;
+static bool h_interObjReady(void* self) {
+    if (isAdBlockEnabled) return false;
+    return o_interObjReady ? o_interObjReady(self) : false;
+}
+static void (*o_interObjLoad)(void*) = NULL;
+static void h_interObjLoad(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_interObjLoad) o_interObjLoad(self);
+}
+static void (*o_interObjPresent)(void*) = NULL;
+static void h_interObjPresent(void* self) {
+    if (isAdBlockEnabled) { FLog(@"🚫 InterstitialAdObject.Present engellendi"); return; }
+    if (o_interObjPresent) o_interObjPresent(self);
+}
+
+static void (*o_appOpenLoad)(void*) = NULL;
+static void h_appOpenLoad(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_appOpenLoad) o_appOpenLoad(self);
+}
+static bool (*o_appOpenIsLoaded)(void*) = NULL;
+static bool h_appOpenIsLoaded(void* self) {
+    if (isAdBlockEnabled) return false;
+    return o_appOpenIsLoaded ? o_appOpenIsLoaded(self) : false;
+}
+static void (*o_appOpenShow)(void*) = NULL;
+static void h_appOpenShow(void* self) {
+    if (isAdBlockEnabled) { FLog(@"🚫 AppOpenAdObject.Show engellendi"); return; }
+    if (o_appOpenShow) o_appOpenShow(self);
+}
+static void (*o_appOpenFg)(void*) = NULL;
+static void h_appOpenFg(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_appOpenFg) o_appOpenFg(self);
+}
+
+static void (*o_bannerLoad)(void*) = NULL;
+static void h_bannerLoad(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_bannerLoad) o_bannerLoad(self);
+}
+static void (*o_bannerRefresh)(void*) = NULL;
+static void h_bannerRefresh(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_bannerRefresh) o_bannerRefresh(self);
+}
+
+static bool (*o_rtpGet)(void*) = NULL;
+static bool h_rtpGet(void* self) {
+    if (isAdBlockEnabled) return false;
+    return o_rtpGet ? o_rtpGet(self) : false;
+}
+static void (*o_rtpSet)(void*, bool) = NULL;
+static void h_rtpSet(void* self, bool val) {
+    if (isAdBlockEnabled) val = false;
+    if (o_rtpSet) o_rtpSet(self, val);
+}
+
+static void (*o_consentShowReq)(void*) = NULL;
+static void h_consentShowReq(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_consentShowReq) o_consentShowReq(self);
+}
+static void (*o_consentShow)(void*) = NULL;
+static void h_consentShow(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_consentShow) o_consentShow(self);
+}
+
+// Katman 4: CAS.CASManagerBase, CAS.iOS.CASManagerClient, CASViewClient, CASExterns
+static void (*o_casBaseLoadAd)(void*, int) = NULL;
+static void h_casBaseLoadAd(void* self, int adType) {
+    if (isAdBlockEnabled) return;
+    if (o_casBaseLoadAd) o_casBaseLoadAd(self, adType);
+}
+static void (*o_casBaseShowAd)(void*, int) = NULL;
+static void h_casBaseShowAd(void* self, int adType) {
+    if (isAdBlockEnabled) { FLog(@"🚫 CASManagerBase.ShowAd engellendi"); return; }
+    if (o_casBaseShowAd) o_casBaseShowAd(self, adType);
+}
+static void* (*o_casBaseGetAdView)(void*, int) = NULL;
+static void* h_casBaseGetAdView(void* self, int size) {
+    if (isAdBlockEnabled) return NULL;
+    return o_casBaseGetAdView ? o_casBaseGetAdView(self, size) : NULL;
+}
+
+static void (*o_casClientEnableAd)(void*, int) = NULL;
+static void h_casClientEnableAd(void* self, int adType) {
+    if (isAdBlockEnabled) return;
+    if (o_casClientEnableAd) o_casClientEnableAd(self, adType);
+}
+static void (*o_casClientLoadAd)(void*, int) = NULL;
+static void h_casClientLoadAd(void* self, int adType) {
+    if (isAdBlockEnabled) return;
+    if (o_casClientLoadAd) o_casClientLoadAd(self, adType);
+}
 static bool (*o_casIsReadyAd)(void*, int) = NULL;
 static bool h_casIsReadyAd(void* self, int adType) {
     if (isAdBlockEnabled) return false;
     return o_casIsReadyAd ? o_casIsReadyAd(self, adType) : false;
 }
-
+static void (*o_casClientShowAd)(void*, int, void*) = NULL;
+static void h_casClientShowAd(void* self, int adType, void* placement) {
+    if (isAdBlockEnabled) { FLog(@"🚫 CASManagerClient.ShowAd engellendi"); return; }
+    if (o_casClientShowAd) o_casClientShowAd(self, adType, placement);
+}
+static void (*o_casClientAppReturn)(void*, bool) = NULL;
+static void h_casClientAppReturn(void* self, bool enable) {
+    if (isAdBlockEnabled) enable = false;
+    if (o_casClientAppReturn) o_casClientAppReturn(self, enable);
+}
 static void* (*o_casCreateAdView)(void*, int) = NULL;
 static void* h_casCreateAdView(void* self, int size) {
     if (isAdBlockEnabled) return NULL;
     return o_casCreateAdView ? o_casCreateAdView(self, size) : NULL;
 }
 
-static void (*o_casExternsShowAd)(intptr_t, int, void*) = NULL;
-static void h_casExternsShowAd(intptr_t managerRef, int type, void* placement) {
-    if (isAdBlockEnabled) { FLog(@"🚫 CASExterns.CASUShowAd engellendi"); return; }
-    if (o_casExternsShowAd) o_casExternsShowAd(managerRef, type, placement);
+static bool (*o_casViewIsReady)(void*) = NULL;
+static bool h_casViewIsReady(void* self) {
+    if (isAdBlockEnabled) return false;
+    return o_casViewIsReady ? o_casViewIsReady(self) : false;
+}
+static void (*o_casViewEnable)(void*) = NULL;
+static void h_casViewEnable(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_casViewEnable) o_casViewEnable(self);
+}
+static void (*o_casViewLoad)(void*) = NULL;
+static void h_casViewLoad(void* self) {
+    if (isAdBlockEnabled) return;
+    if (o_casViewLoad) o_casViewLoad(self);
+}
+static void (*o_casViewSetActive)(void*, bool) = NULL;
+static void h_casViewSetActive(void* self, bool active) {
+    if (isAdBlockEnabled) active = false;
+    if (o_casViewSetActive) o_casViewSetActive(self, active);
 }
 
+static void (*o_casExtEnable)(intptr_t, int) = NULL;
+static void h_casExtEnable(intptr_t managerRef, int adType) {
+    if (isAdBlockEnabled) return;
+    if (o_casExtEnable) o_casExtEnable(managerRef, adType);
+}
+static void (*o_casExtLoad)(intptr_t, int) = NULL;
+static void h_casExtLoad(intptr_t managerRef, int type) {
+    if (isAdBlockEnabled) return;
+    if (o_casExtLoad) o_casExtLoad(managerRef, type);
+}
 static bool (*o_casExternsIsReady)(intptr_t, int) = NULL;
 static bool h_casExternsIsReady(intptr_t managerRef, int type) {
     if (isAdBlockEnabled) return false;
     return o_casExternsIsReady ? o_casExternsIsReady(managerRef, type) : false;
 }
-
+static void (*o_casExternsShowAd)(intptr_t, int, void*) = NULL;
+static void h_casExternsShowAd(intptr_t managerRef, int type, void* placement) {
+    if (isAdBlockEnabled) { FLog(@"🚫 CASExterns.CASUShowAd engellendi"); return; }
+    if (o_casExternsShowAd) o_casExternsShowAd(managerRef, type, placement);
+}
 static void* (*o_casExternsCreateView)(intptr_t, void*, int) = NULL;
 static void* h_casExternsCreateView(intptr_t managerRef, void* client, int size) {
     if (isAdBlockEnabled) return NULL;
     return o_casExternsCreateView ? o_casExternsCreateView(managerRef, client, size) : NULL;
 }
-
-static void (*o_casAdCount)(void*) = NULL;
-static void h_casAdCount(void* self) {
-    if (isAdBlockEnabled) return; // Otomatik reklam sayacini durdur
-    if (o_casAdCount) o_casAdCount(self);
-}
-
-static void (*o_casInterNop)(void*) = NULL;
-static void h_casInterNop(void* self) {
+static void (*o_casExtEnableView)(intptr_t) = NULL;
+static void h_casExtEnableView(intptr_t viewRef) {
     if (isAdBlockEnabled) return;
-    if (o_casInterNop) o_casInterNop(self);
+    if (o_casExtEnableView) o_casExtEnableView(viewRef);
+}
+static void (*o_casExtPresentView)(intptr_t) = NULL;
+static void h_casExtPresentView(intptr_t viewRef) {
+    if (isAdBlockEnabled) return;
+    if (o_casExtPresentView) o_casExtPresentView(viewRef);
+}
+static void (*o_casExtLoadView)(intptr_t) = NULL;
+static void h_casExtLoadView(intptr_t viewRef) {
+    if (isAdBlockEnabled) return;
+    if (o_casExtLoadView) o_casExtLoadView(viewRef);
+}
+static void (*o_casExtAutoReturn)(intptr_t, bool) = NULL;
+static void h_casExtAutoReturn(intptr_t manager, bool enabled) {
+    if (isAdBlockEnabled) enabled = false;
+    if (o_casExtAutoReturn) o_casExtAutoReturn(manager, enabled);
 }
 
 // =============================================================
@@ -15186,33 +15389,117 @@ static void InstallEverything(uintptr_t b) {
         safeHook((void*)(global_base + 0x5B0D5D0), (void*)h_lbc_opJoinRandomOrCreateRoom, (void**)&o_lbc_opJoinRandomOrCreateRoom, "LoadBalancingClient.OpJoinRandomOrCreateRoom (direct RVA)");
     }
 
-    // CAS IL2CPP REKLAM HOOKS
-    safeHookByName("CAS", "CASManagerClient", "ShowAd", 2, (void*)h_casClientShowAd, (void**)&o_casClientShowAd, "CASManagerClient.ShowAd");
-    if (!o_casClientShowAd && global_base) safeHook((void*)(global_base + 0x32FDD1C), (void*)h_casClientShowAd, (void**)&o_casClientShowAd, "CASManagerClient.ShowAd (direct)");
+    // ===== v117.6 SIFIRDAN TAM REKLAM ENGELLEYICI HOOK KAYITLARI =====
+    // Katman 1: PlayerManager.isAdsRemoved
+    safeHookByName("", "PlayerManager", "gog", 0, (void*)h_pmGetAdsRemoved, (void**)&o_pmGetAdsRemoved, "PlayerManager.get_isAdsRemoved");
+    if (!o_pmGetAdsRemoved && global_base) safeHook((void*)(global_base + 0x5C43BA0), (void*)h_pmGetAdsRemoved, (void**)&o_pmGetAdsRemoved, "PlayerManager.get_isAdsRemoved (direct)");
+    safeHookByName("", "PlayerManager", "goh", 1, (void*)h_pmSetAdsRemoved, (void**)&o_pmSetAdsRemoved, "PlayerManager.set_isAdsRemoved");
+    if (!o_pmSetAdsRemoved && global_base) safeHook((void*)(global_base + 0x5C43BA8), (void*)h_pmSetAdsRemoved, (void**)&o_pmSetAdsRemoved, "PlayerManager.set_isAdsRemoved (direct)");
+    safeHookByName("", "PlayerManager", "got", 1, (void*)h_pmSetAdsRemovedInt, (void**)&o_pmSetAdsRemovedInt, "PlayerManager.got(isAdsRemoved)");
+    if (!o_pmSetAdsRemovedInt && global_base) safeHook((void*)(global_base + 0x5C3C060), (void*)h_pmSetAdsRemovedInt, (void**)&o_pmSetAdsRemovedInt, "PlayerManager.got (direct)");
 
-    safeHookByName("CAS", "CASManagerClient", "IsReadyAd", 1, (void*)h_casIsReadyAd, (void**)&o_casIsReadyAd, "CASManagerClient.IsReadyAd");
+    // Katman 2: CASAd (AdIntervalCounter & InterstitialAd)
+    safeHookByName("CASAd", "AdIntervalCounter", "Count", 0, (void*)h_adIntervalCount, (void**)&o_adIntervalCount, "AdIntervalCounter.Count");
+    if (!o_adIntervalCount && global_base) safeHook((void*)(global_base + 0x327D27C), (void*)h_adIntervalCount, (void**)&o_adIntervalCount, "AdIntervalCounter.Count (direct)");
+    safeHookByName("CASAd", "AdIntervalCounter", "jfu", 0, (void*)h_adIntervalJfu, (void**)&o_adIntervalJfu, "AdIntervalCounter.jfu");
+    if (!o_adIntervalJfu && global_base) safeHook((void*)(global_base + 0x327D878), (void*)h_adIntervalJfu, (void**)&o_adIntervalJfu, "AdIntervalCounter.jfu (direct)");
+    safeHookByName("CASAd", "AdIntervalCounter", "jfv", 0, (void*)h_adIntervalJfv, (void**)&o_adIntervalJfv, "AdIntervalCounter.jfv");
+    if (!o_adIntervalJfv && global_base) safeHook((void*)(global_base + 0x327D928), (void*)h_adIntervalJfv, (void**)&o_adIntervalJfv, "AdIntervalCounter.jfv (direct)");
+    safeHookByName("CASAd", "AdIntervalCounter", "gpq", 0, (void*)h_adIntervalGpq, (void**)&o_adIntervalGpq, "AdIntervalCounter.gpq");
+    if (!o_adIntervalGpq && global_base) safeHook((void*)(global_base + 0x327D7C0), (void*)h_adIntervalGpq, (void**)&o_adIntervalGpq, "AdIntervalCounter.gpq (direct)");
+    safeHookByName("CASAd", "AdIntervalCounter", "jfw", 0, (void*)h_adIntervalJfw, (void**)&o_adIntervalJfw, "AdIntervalCounter.jfw");
+    if (!o_adIntervalJfw && global_base) safeHook((void*)(global_base + 0x327D818), (void*)h_adIntervalJfw, (void**)&o_adIntervalJfw, "AdIntervalCounter.jfw (direct)");
+
+    safeHookByName("CASAd", "InterstitialAd", "gpt", 0, (void*)h_casInterGpt, (void**)&o_casInterGpt, "InterstitialAd.gpt");
+    if (!o_casInterGpt && global_base) safeHook((void*)(global_base + 0x327E18C), (void*)h_casInterGpt, (void**)&o_casInterGpt, "InterstitialAd.gpt (direct)");
+    safeHookByName("CASAd", "InterstitialAd", "gpu", 0, (void*)h_casInterGpu, (void**)&o_casInterGpu, "InterstitialAd.gpu");
+    if (!o_casInterGpu && global_base) safeHook((void*)(global_base + 0x327E1F4), (void*)h_casInterGpu, (void**)&o_casInterGpu, "InterstitialAd.gpu (direct)");
+    safeHookByName("CASAd", "InterstitialAd", "jgc", 1, (void*)h_casInterJgc, (void**)&o_casInterJgc, "InterstitialAd.jgc");
+    if (!o_casInterJgc && global_base) safeHook((void*)(global_base + 0x327E400), (void*)h_casInterJgc, (void**)&o_casInterJgc, "InterstitialAd.jgc (direct)");
+    safeHookByName("CASAd", "InterstitialAd", "jgd", 1, (void*)h_casInterJgd, (void**)&o_casInterJgd, "InterstitialAd.jgd");
+    if (!o_casInterJgd && global_base) safeHook((void*)(global_base + 0x327E604), (void*)h_casInterJgd, (void**)&o_casInterJgd, "InterstitialAd.jgd (direct)");
+
+    // Katman 3: CAS.AdObject
+    safeHookByName("CAS.AdObject", "InterstitialAdObject", "get_isAdReady", 0, (void*)h_interObjReady, (void**)&o_interObjReady, "InterstitialAdObject.get_isAdReady");
+    if (!o_interObjReady && global_base) safeHook((void*)(global_base + 0x330275C), (void*)h_interObjReady, (void**)&o_interObjReady, "InterstitialAdObject.get_isAdReady (direct)");
+    safeHookByName("CAS.AdObject", "InterstitialAdObject", "LoadAd", 0, (void*)h_interObjLoad, (void**)&o_interObjLoad, "InterstitialAdObject.LoadAd");
+    if (!o_interObjLoad && global_base) safeHook((void*)(global_base + 0x3302828), (void*)h_interObjLoad, (void**)&o_interObjLoad, "InterstitialAdObject.LoadAd (direct)");
+    safeHookByName("CAS.AdObject", "InterstitialAdObject", "Present", 0, (void*)h_interObjPresent, (void**)&o_interObjPresent, "InterstitialAdObject.Present");
+    if (!o_interObjPresent && global_base) safeHook((void*)(global_base + 0x33028F8), (void*)h_interObjPresent, (void**)&o_interObjPresent, "InterstitialAdObject.Present (direct)");
+
+    safeHookByName("CAS.AdObject", "AppOpenAdObject", "Load", 0, (void*)h_appOpenLoad, (void**)&o_appOpenLoad, "AppOpenAdObject.Load");
+    if (!o_appOpenLoad && global_base) safeHook((void*)(global_base + 0x32FF2C4), (void*)h_appOpenLoad, (void**)&o_appOpenLoad, "AppOpenAdObject.Load (direct)");
+    safeHookByName("CAS.AdObject", "AppOpenAdObject", "IsLoaded", 0, (void*)h_appOpenIsLoaded, (void**)&o_appOpenIsLoaded, "AppOpenAdObject.IsLoaded");
+    if (!o_appOpenIsLoaded && global_base) safeHook((void*)(global_base + 0x32FF394), (void*)h_appOpenIsLoaded, (void**)&o_appOpenIsLoaded, "AppOpenAdObject.IsLoaded (direct)");
+    safeHookByName("CAS.AdObject", "AppOpenAdObject", "Show", 0, (void*)h_appOpenShow, (void**)&o_appOpenShow, "AppOpenAdObject.Show");
+    if (!o_appOpenShow && global_base) safeHook((void*)(global_base + 0x32FF460), (void*)h_appOpenShow, (void**)&o_appOpenShow, "AppOpenAdObject.Show (direct)");
+    safeHookByName("CAS.AdObject", "AppOpenAdObject", "AppForeground", 0, (void*)h_appOpenFg, (void**)&o_appOpenFg, "AppOpenAdObject.AppForeground");
+    if (!o_appOpenFg && global_base) safeHook((void*)(global_base + 0x3300518), (void*)h_appOpenFg, (void**)&o_appOpenFg, "AppOpenAdObject.AppForeground (direct)");
+
+    safeHookByName("CAS.AdObject", "BannerAdObject", "LoadAd", 0, (void*)h_bannerLoad, (void**)&o_bannerLoad, "BannerAdObject.LoadAd");
+    if (!o_bannerLoad && global_base) safeHook((void*)(global_base + 0x3300FB8), (void*)h_bannerLoad, (void**)&o_bannerLoad, "BannerAdObject.LoadAd (direct)");
+    safeHookByName("CAS.AdObject", "BannerAdObject", "RefreshLinkWithAdView", 0, (void*)h_bannerRefresh, (void**)&o_bannerRefresh, "BannerAdObject.RefreshLinkWithAdView");
+    if (!o_bannerRefresh && global_base) safeHook((void*)(global_base + 0x33008FC), (void*)h_bannerRefresh, (void**)&o_bannerRefresh, "BannerAdObject.RefreshLinkWithAdView (direct)");
+
+    safeHookByName("CAS.AdObject", "ReturnToPlayAdObject", "get_allowReturnToPlayAd", 0, (void*)h_rtpGet, (void**)&o_rtpGet, "ReturnToPlayAdObject.get_allowReturnToPlayAd");
+    if (!o_rtpGet && global_base) safeHook((void*)(global_base + 0x330439C), (void*)h_rtpGet, (void**)&o_rtpGet, "ReturnToPlayAdObject.get_allowReturnToPlayAd (direct)");
+    safeHookByName("CAS.AdObject", "ReturnToPlayAdObject", "set_allowReturnToPlayAd", 1, (void*)h_rtpSet, (void**)&o_rtpSet, "ReturnToPlayAdObject.set_allowReturnToPlayAd");
+    if (!o_rtpSet && global_base) safeHook((void*)(global_base + 0x33043A4), (void*)h_rtpSet, (void**)&o_rtpSet, "ReturnToPlayAdObject.set_allowReturnToPlayAd (direct)");
+
+    safeHookByName("CAS.AdObject", "ConsentFlowAdObject", "ShowIfRequired", 0, (void*)h_consentShowReq, (void**)&o_consentShowReq, "ConsentFlowAdObject.ShowIfRequired");
+    if (!o_consentShowReq && global_base) safeHook((void*)(global_base + 0x330200C), (void*)h_consentShowReq, (void**)&o_consentShowReq, "ConsentFlowAdObject.ShowIfRequired (direct)");
+    safeHookByName("CAS.AdObject", "ConsentFlowAdObject", "Show", 0, (void*)h_consentShow, (void**)&o_consentShow, "ConsentFlowAdObject.Show");
+    if (!o_consentShow && global_base) safeHook((void*)(global_base + 0x330217C), (void*)h_consentShow, (void**)&o_consentShow, "ConsentFlowAdObject.Show (direct)");
+
+    // Katman 4: CAS & CAS.iOS
+    safeHookByName("CAS", "CASManagerBase", "LoadAd", 1, (void*)h_casBaseLoadAd, (void**)&o_casBaseLoadAd, "CASManagerBase.LoadAd");
+    if (!o_casBaseLoadAd && global_base) safeHook((void*)(global_base + 0x32F7AF0), (void*)h_casBaseLoadAd, (void**)&o_casBaseLoadAd, "CASManagerBase.LoadAd (direct)");
+    safeHookByName("CAS", "CASManagerBase", "ShowAd", 1, (void*)h_casBaseShowAd, (void**)&o_casBaseShowAd, "CASManagerBase.ShowAd");
+    if (!o_casBaseShowAd && global_base) safeHook((void*)(global_base + 0x32F8154), (void*)h_casBaseShowAd, (void**)&o_casBaseShowAd, "CASManagerBase.ShowAd (direct)");
+    safeHookByName("CAS", "CASManagerBase", "GetAdView", 1, (void*)h_casBaseGetAdView, (void**)&o_casBaseGetAdView, "CASManagerBase.GetAdView");
+    if (!o_casBaseGetAdView && global_base) safeHook((void*)(global_base + 0x32F8168), (void*)h_casBaseGetAdView, (void**)&o_casBaseGetAdView, "CASManagerBase.GetAdView (direct)");
+
+    safeHookByName("CAS.iOS", "CASManagerClient", "EnableAd", 1, (void*)h_casClientEnableAd, (void**)&o_casClientEnableAd, "CASManagerClient.EnableAd");
+    if (!o_casClientEnableAd && global_base) safeHook((void*)(global_base + 0x32FDCAC), (void*)h_casClientEnableAd, (void**)&o_casClientEnableAd, "CASManagerClient.EnableAd (direct)");
+    safeHookByName("CAS.iOS", "CASManagerClient", "LoadAdNetive", 1, (void*)h_casClientLoadAd, (void**)&o_casClientLoadAd, "CASManagerClient.LoadAdNetive");
+    if (!o_casClientLoadAd && global_base) safeHook((void*)(global_base + 0x32FDD14), (void*)h_casClientLoadAd, (void**)&o_casClientLoadAd, "CASManagerClient.LoadAdNetive (direct)");
+    safeHookByName("CAS.iOS", "CASManagerClient", "IsReadyAd", 1, (void*)h_casIsReadyAd, (void**)&o_casIsReadyAd, "CASManagerClient.IsReadyAd");
     if (!o_casIsReadyAd && global_base) safeHook((void*)(global_base + 0x32FDCF4), (void*)h_casIsReadyAd, (void**)&o_casIsReadyAd, "CASManagerClient.IsReadyAd (direct)");
-
-    safeHookByName("CAS", "CASManagerClient", "CreateAdView", 1, (void*)h_casCreateAdView, (void**)&o_casCreateAdView, "CASManagerClient.CreateAdView");
+    safeHookByName("CAS.iOS", "CASManagerClient", "ShowAd", 2, (void*)h_casClientShowAd, (void**)&o_casClientShowAd, "CASManagerClient.ShowAd");
+    if (!o_casClientShowAd && global_base) safeHook((void*)(global_base + 0x32FDD1C), (void*)h_casClientShowAd, (void**)&o_casClientShowAd, "CASManagerClient.ShowAd (direct)");
+    safeHookByName("CAS.iOS", "CASManagerClient", "SetAppReturnAdsEnabled", 1, (void*)h_casClientAppReturn, (void**)&o_casClientAppReturn, "CASManagerClient.SetAppReturnAdsEnabled");
+    if (!o_casClientAppReturn && global_base) safeHook((void*)(global_base + 0x32FDD98), (void*)h_casClientAppReturn, (void**)&o_casClientAppReturn, "CASManagerClient.SetAppReturnAdsEnabled (direct)");
+    safeHookByName("CAS.iOS", "CASManagerClient", "CreateAdView", 1, (void*)h_casCreateAdView, (void**)&o_casCreateAdView, "CASManagerClient.CreateAdView");
     if (!o_casCreateAdView && global_base) safeHook((void*)(global_base + 0x32FDDA8), (void*)h_casCreateAdView, (void**)&o_casCreateAdView, "CASManagerClient.CreateAdView (direct)");
 
-    safeHookByName("CAS", "CASExterns", "CASUShowAd", 3, (void*)h_casExternsShowAd, (void**)&o_casExternsShowAd, "CASExterns.CASUShowAd");
-    if (!o_casExternsShowAd && global_base) safeHook((void*)(global_base + 0x32FC2A4), (void*)h_casExternsShowAd, (void**)&o_casExternsShowAd, "CASExterns.CASUShowAd (direct)");
+    safeHookByName("CAS.iOS", "CASViewClient", "get_isReady", 0, (void*)h_casViewIsReady, (void**)&o_casViewIsReady, "CASViewClient.get_isReady");
+    if (!o_casViewIsReady && global_base) safeHook((void*)(global_base + 0x32FEAE0), (void*)h_casViewIsReady, (void**)&o_casViewIsReady, "CASViewClient.get_isReady (direct)");
+    safeHookByName("CAS.iOS", "CASViewClient", "Enable", 0, (void*)h_casViewEnable, (void**)&o_casViewEnable, "CASViewClient.Enable");
+    if (!o_casViewEnable && global_base) safeHook((void*)(global_base + 0x32FED2C), (void*)h_casViewEnable, (void**)&o_casViewEnable, "CASViewClient.Enable (direct)");
+    safeHookByName("CAS.iOS", "CASViewClient", "LoadNative", 0, (void*)h_casViewLoad, (void**)&o_casViewLoad, "CASViewClient.LoadNative");
+    if (!o_casViewLoad && global_base) safeHook((void*)(global_base + 0x32FED44), (void*)h_casViewLoad, (void**)&o_casViewLoad, "CASViewClient.LoadNative (direct)");
+    safeHookByName("CAS.iOS", "CASViewClient", "SetActive", 1, (void*)h_casViewSetActive, (void**)&o_casViewSetActive, "CASViewClient.SetActive");
+    if (!o_casViewSetActive && global_base) safeHook((void*)(global_base + 0x32FED4C), (void*)h_casViewSetActive, (void**)&o_casViewSetActive, "CASViewClient.SetActive (direct)");
 
-    safeHookByName("CAS", "CASExterns", "CASUIsAdReady", 2, (void*)h_casExternsIsReady, (void**)&o_casExternsIsReady, "CASExterns.CASUIsAdReady");
+    safeHookByName("CAS.iOS", "CASExterns", "CASUEnableAdType", 2, (void*)h_casExtEnable, (void**)&o_casExtEnable, "CASExterns.CASUEnableAdType");
+    if (!o_casExtEnable && global_base) safeHook((void*)(global_base + 0x32FC1B4), (void*)h_casExtEnable, (void**)&o_casExtEnable, "CASExterns.CASUEnableAdType (direct)");
+    safeHookByName("CAS.iOS", "CASExterns", "CASULoadAd", 2, (void*)h_casExtLoad, (void**)&o_casExtLoad, "CASExterns.CASULoadAd");
+    if (!o_casExtLoad && global_base) safeHook((void*)(global_base + 0x32FC23C), (void*)h_casExtLoad, (void**)&o_casExtLoad, "CASExterns.CASULoadAd (direct)");
+    safeHookByName("CAS.iOS", "CASExterns", "CASUIsAdReady", 2, (void*)h_casExternsIsReady, (void**)&o_casExternsIsReady, "CASExterns.CASUIsAdReady");
     if (!o_casExternsIsReady && global_base) safeHook((void*)(global_base + 0x32FC240), (void*)h_casExternsIsReady, (void**)&o_casExternsIsReady, "CASExterns.CASUIsAdReady (direct)");
-
-    safeHookByName("CAS", "CASExterns", "CASUCreateAdView", 3, (void*)h_casExternsCreateView, (void**)&o_casExternsCreateView, "CASExterns.CASUCreateAdView");
+    safeHookByName("CAS.iOS", "CASExterns", "CASUShowAd", 3, (void*)h_casExternsShowAd, (void**)&o_casExternsShowAd, "CASExterns.CASUShowAd");
+    if (!o_casExternsShowAd && global_base) safeHook((void*)(global_base + 0x32FC25C), (void*)h_casExternsShowAd, (void**)&o_casExternsShowAd, "CASExterns.CASUShowAd (direct)");
+    safeHookByName("CAS.iOS", "CASExterns", "CASUCreateAdView", 3, (void*)h_casExternsCreateView, (void**)&o_casExternsCreateView, "CASExterns.CASUCreateAdView");
     if (!o_casExternsCreateView && global_base) safeHook((void*)(global_base + 0x32FC2DC), (void*)h_casExternsCreateView, (void**)&o_casExternsCreateView, "CASExterns.CASUCreateAdView (direct)");
+    safeHookByName("CAS.iOS", "CASExterns", "CASUEnableAdView", 1, (void*)h_casExtEnableView, (void**)&o_casExtEnableView, "CASExterns.CASUEnableAdView");
+    if (!o_casExtEnableView && global_base) safeHook((void*)(global_base + 0x32FC33C), (void*)h_casExtEnableView, (void**)&o_casExtEnableView, "CASExterns.CASUEnableAdView (direct)");
+    safeHookByName("CAS.iOS", "CASExterns", "CASUPresentAdView", 1, (void*)h_casExtPresentView, (void**)&o_casExtPresentView, "CASExterns.CASUPresentAdView");
+    if (!o_casExtPresentView && global_base) safeHook((void*)(global_base + 0x32FC344), (void*)h_casExtPresentView, (void**)&o_casExtPresentView, "CASExterns.CASUPresentAdView (direct)");
+    safeHookByName("CAS.iOS", "CASExterns", "CASULoadAdView", 1, (void*)h_casExtLoadView, (void**)&o_casExtLoadView, "CASExterns.CASULoadAdView");
+    if (!o_casExtLoadView && global_base) safeHook((void*)(global_base + 0x32FC390), (void*)h_casExtLoadView, (void**)&o_casExtLoadView, "CASExterns.CASULoadAdView (direct)");
+    safeHookByName("CAS.iOS", "CASExterns", "CASUSetAutoShowAdOnAppReturn", 2, (void*)h_casExtAutoReturn, (void**)&o_casExtAutoReturn, "CASExterns.CASUSetAutoShowAdOnAppReturn");
+    if (!o_casExtAutoReturn && global_base) safeHook((void*)(global_base + 0x32FC3B4), (void*)h_casExtAutoReturn, (void**)&o_casExtAutoReturn, "CASExterns.CASUSetAutoShowAdOnAppReturn (direct)");
 
-    safeHookByName("CASAd", "AdIntervalCounter", "Count", 0, (void*)h_casAdCount, (void**)&o_casAdCount, "AdIntervalCounter.Count");
-    if (!o_casAdCount && global_base) safeHook((void*)(global_base + 0x327D27C), (void*)h_casAdCount, (void**)&o_casAdCount, "AdIntervalCounter.Count (direct)");
-
-    safeHookByName("CASAd", "InterstitialAd", "gpt", 0, (void*)h_casInterNop, (void**)&o_casInterNop, "InterstitialAd.gpt");
-    if (!o_casInterNop && global_base) safeHook((void*)(global_base + 0x327E18C), (void*)h_casInterNop, (void**)&o_casInterNop, "InterstitialAd.gpt (direct)");
-
-    safeHookByName("CASAd", "InterstitialAd", "gpu", 0, (void*)h_casInterNop, (void**)&o_casInterNop, "InterstitialAd.gpu");
-    if (!o_casInterNop && global_base) safeHook((void*)(global_base + 0x327E1F4), (void*)h_casInterNop, (void**)&o_casInterNop, "InterstitialAd.gpu (direct)");
 
     // Unity / Photon / TMP core (isim korunmuş)
     safeHookByName("UnityEngine",     "Time",           "set_timeScale",   1, (void*)h_setTimeScale,    (void**)&o_setTimeScale,    "Time.set_timeScale");
@@ -15389,6 +15676,8 @@ static void few1n_applyNativeAdBlock(void) {
     // ===== GOOGLE ADMOB (GAD) =====
     swizzleToNop(@"GADInterstitialAd", @"presentFromRootViewController:");
     swizzleClassToNop(@"GADInterstitialAd", @"loadWithAdUnitID:request:completionHandler:");
+    swizzleToNop(@"GADAppOpenAd", @"presentFromRootViewController:");
+    swizzleClassToNop(@"GADAppOpenAd", @"loadWithAdUnitID:request:completionHandler:");
     swizzleToNop(@"GADRewardedAd", @"presentFromRootViewController:userDidEarnRewardHandler:");
     swizzleClassToNop(@"GADRewardedAd", @"loadWithAdUnitID:request:completionHandler:");
     swizzleToNop(@"GADBannerView", @"loadRequest:");
@@ -15468,9 +15757,34 @@ static void few1n_applyNativeAdBlock(void) {
     swizzleToNop(@"YMAInterstitialAd", @"show");
     swizzleToNop(@"YMARewardedAd", @"show");
 
+    // ===== UIViewController REKLAM SUNUMU FILTRESI (SON SAVUNMA HATTI) =====
+    {
+        Method pm = class_getInstanceMethod([UIViewController class], @selector(presentViewController:animated:completion:));
+        if (pm) {
+            static IMP origPresentIMP = NULL;
+            origPresentIMP = method_getImplementation(pm);
+            method_setImplementation(pm, imp_implementationWithBlock(^(UIViewController* _self, UIViewController* vc, BOOL animated, void(^completion)(void)) {
+                if (isAdBlockEnabled && vc) {
+                    NSString *cn = NSStringFromClass([vc class]);
+                    NSArray *adPrefixes = @[@"GAD", @"CAS", @"AL", @"MAInterstitial", @"MARewarded", @"Vungle", @"UnityAds", @"UADS", @"FBAd", @"FBInterstitial", @"IMInterstitial", @"MTG", @"BUNative", @"BURewarded", @"YMA", @"Chartboost", @"CHB"];
+                    for (NSString *pfx in adPrefixes) {
+                        if ([cn hasPrefix:pfx]) {
+                            FLog([NSString stringWithFormat:@"🚫 Reklam VC engellendi: %@", cn]);
+                            if (completion) completion();
+                            return;
+                        }
+                    }
+                }
+                if (origPresentIMP) {
+                    ((void(*)(id, SEL, UIViewController*, BOOL, void(^)(void)))origPresentIMP)(_self, @selector(presentViewController:animated:completion:), vc, animated, completion);
+                }
+            }));
+        }
+    }
+
     // ===== UIView TABANLI BANNER TEMIZLIGI =====
     few1n_after(5.0, ^{
-        NSArray *bannerClasses = @[@"GADBannerView", @"MAAdView", @"FBAdView", @"IMBanner", @"CASBannerView"];
+        NSArray *bannerClasses = @[@"GADBannerView", @"MAAdView", @"FBAdView", @"IMBanner", @"CASBannerView", @"CASView"];
         for (NSString *clsName in bannerClasses) {
             Class cls = NSClassFromString(clsName);
             if (!cls) continue;
@@ -15480,16 +15794,18 @@ static void few1n_applyNativeAdBlock(void) {
                 IMP origImp = method_getImplementation(m);
                 method_setImplementation(m, imp_implementationWithBlock(^(UIView* _self) {
                     if (origImp) ((void(*)(id, SEL))origImp)(_self, @selector(didMoveToWindow));
-                    _self.hidden = YES;
-                    _self.alpha = 0;
-                    _self.frame = CGRectZero;
+                    if (isAdBlockEnabled) {
+                        _self.hidden = YES;
+                        _self.alpha = 0;
+                        _self.frame = CGRectZero;
+                    }
                 }));
             }
         }
         FLog(@"🚫 Banner gizleme hooklari kuruldu");
     });
 
-    FLog(@"🚫 Reklam bozucu: tum SDK'lar engellendi (AdMob/AppLovin/CAS/Unity/IronSource/FB/InMobi/Vungle/Chartboost/Mintegral/Pangle/Yandex)");
+    FLog(@"🚫 Reklam bozucu: tum IL2CPP + Native SDK + UIKit katmanlari aktif");
 }
 
 %ctor {
