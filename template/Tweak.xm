@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 116.8
+#define FEW1N_VERSION 116.9
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -6243,6 +6243,68 @@ static void h_tmp_setText_sb(void* self, void* sourceText) {
     if (o_tmp_setText_sb) o_tmp_setText_sb(self, sourceText);
 }
 
+static NSString *g_baseUserNick = nil;
+static NSString* few1n_extractColorHex(NSString* str) {
+    if (!str || str.length == 0) return nil;
+    NSString *lower = [str lowercaseString];
+    if ([lower containsString:@"red"] || [lower containsString:@"kirmizi"] || [lower containsString:@"kırmızı"]) return @"FF0000";
+    if ([lower containsString:@"green"] || [lower containsString:@"yesil"] || [lower containsString:@"yeşil"]) return @"00FF00";
+    if ([lower containsString:@"blue"] || [lower containsString:@"mavi"]) return @"00BFFF";
+    if ([lower containsString:@"cyan"]) return @"00FFFF";
+    if ([lower containsString:@"yellow"] || [lower containsString:@"sari"] || [lower containsString:@"sarı"]) return @"FFFF00";
+    if ([lower containsString:@"orange"] || [lower containsString:@"turuncu"]) return @"FFA500";
+    if ([lower containsString:@"purple"] || [lower containsString:@"mor"]) return @"A020F0";
+    if ([lower containsString:@"pink"] || [lower containsString:@"pembe"]) return @"FF69B4";
+    if ([lower containsString:@"white"] || [lower containsString:@"beyaz"]) return @"FFFFFF";
+    
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"#([0-9a-fA-F]{6})" options:0 error:nil];
+    NSTextCheckingResult *match = [regex firstMatchInString:str options:0 range:NSMakeRange(0, str.length)];
+    if (match && match.numberOfRanges > 1) {
+        return [str substringWithRange:[match rangeAtIndex:1]].uppercaseString;
+    }
+    return nil;
+}
+
+static void few1n_applyGlobalChatColor(NSString *hexColor) {
+    void (*setNickFn)(void*) = pn_setNickName ?: w_pn_setNickName;
+    if (!setNickFn) return;
+    if (!g_baseUserNick || g_baseUserNick.length == 0) {
+        void* (*getMeFn)(void) = pn_getLocalPlayer ?: w_pn_getLocalPlayer;
+        void* (*getNickFn)(void*) = ply_getNickName ?: w_ply_getNickName;
+        if (getMeFn && getNickFn) {
+            void* me = getMeFn();
+            if (me) {
+                void* nObj = getNickFn(me);
+                if (ptrOk(nObj)) {
+                    NSString *raw = readStr(nObj);
+                    if (raw.length > 0) g_baseUserNick = stripRichTextTags(raw);
+                }
+            }
+        }
+        if (!g_baseUserNick || g_baseUserNick.length == 0) g_baseUserNick = @"FEW1N";
+    }
+    
+    NSString *bleedNick;
+    if (!hexColor || [hexColor.uppercaseString isEqualToString:@"RESET"] || hexColor.length == 0) {
+        bleedNick = g_baseUserNick;
+    } else {
+        // Sonu kapatilmamis renk etiketi: Photon NickName uzerinden modsuz alicilarin ekraninda
+        // hem isim hem de arkasindan eklenen tum mesaj o renge boyanir!
+        bleedNick = [NSString stringWithFormat:@"<#%@>%@", hexColor, g_baseUserNick];
+    }
+    
+    void* ns = mkStr(bleedNick);
+    if (ns) {
+        setNickFn(ns);
+        void* (*pmGetInst)(void) = playerManagerGetInst ?: w_playerManagerGetInst;
+        void (*pmUpdNick)(void*, void*) = pm_updateNicknameInternal ?: w_pm_updateNicknameInternal;
+        if (pmGetInst && pmUpdNick) {
+            @try { void* pm = pmGetInst(); if (pm) pmUpdNick(pm, ns); } @catch (...) {}
+        }
+        FLog([NSString stringWithFormat:@"🔥 Herkeste Renkli Chat ismi ayarlandi: %@", bleedNick]);
+    }
+}
+
 static void h_chatSend(void* self, void* msg) {
     few1n_enableChatRichText();
     fChat++;
@@ -6357,6 +6419,23 @@ static void h_chatSend(void* self, void* msg) {
             if (aiPrompt) {
                 few1n_replyToRoomAiPrompt(aiPrompt);
                 return;
+            }
+            // /renk <renk> komutu: Odadaki modsuzlar dahil tum oyuncular icin chat rengini ayarla
+            if ([orig.lowercaseString hasPrefix:@"/renk "] || [orig.lowercaseString isEqualToString:@"/renk"]) {
+                NSString *arg = orig.length > 6 ? [orig substringFromIndex:6] : @"";
+                arg = [arg stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                if ([arg.lowercaseString isEqualToString:@"reset"] || [arg.lowercaseString isEqualToString:@"normal"] || arg.length == 0) {
+                    few1n_applyGlobalChatColor(@"RESET");
+                } else {
+                    NSString *hex = few1n_extractColorHex(arg);
+                    if (hex) few1n_applyGlobalChatColor(hex);
+                }
+                return;
+            }
+            // Eger kullanici renk kodu yazdiysa (orn: <red>, <color=red>, <#FF0000>), NickName rengini de otomatik senkronla (modsuzlar da renkli gorsun!)
+            NSString *detectedHex = few1n_extractColorHex(orig);
+            if (detectedHex && ([orig containsString:@"<"] || [orig containsString:@"#"])) {
+                few1n_applyGlobalChatColor(detectedHex);
             }
             // 1.4.4: Renk etiketlerini akilli algila (<red>, <kirmizi>, <#FF0000>, <color=red>, vb.)
             NSString *formatted = orig;
@@ -7545,6 +7624,7 @@ static UIViewController* few1n_topVC(void) {
     y = [self toggle:@"\U0001F4E2  Chat Spam" sub:@"50ms araligla mesaj" key:@"chatspam" atY:y action:@selector(tapChatSpam)];
     y = [self actionRow:@"✏️  Spam Yazisini Duzenle" color:C_CYAN atY:y action:@selector(editSpam)];
     y = [self actionRow:@"\U0001F3A8  Spam/Chat Rengi Sec (ozel hex)" color:C_CYAN atY:y action:@selector(pickSpamColor)];
+    y = [self actionRow:@"🔥  Herkeste Renkli Chat (Modsuzlar Dahil)" color:C_GOLD atY:y action:@selector(pickEveryoneChatColor)];
     y = [self actionRow:@"\U0001F58D  Renkli Mesaj Gonder (istedigin renkte)" color:C_ON atY:y action:@selector(sendColoredChat)];
     {
         UIView *ssrow = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,44)];
@@ -9435,16 +9515,17 @@ static UIViewController* few1n_topVC(void) {
 }
 - (void)sendMatrixMsg { [self promptStyledSend:0]; }
 - (void)sendGlitchMsg { [self promptStyledSend:1]; }
-// Istedigin mesaji, sectigin renkte gonder (herkes gorur - exploit'in kullandigi richText)
+// Istedigin mesaji, sectigin renkte gonder (modsuzlar dahil HERKES renkli gorur)
 - (void)sendColoredChat {
     if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F3A8 Renkli Mesaj Gonder"
-        message:@"Yazdigin mesaj SENIN rengin ile gider (herkes gorur)" preferredStyle:UIAlertControllerStyleAlert];
+        message:@"Yazdigin mesaj SENIN rengin ile gider (modsuz oyuncular dahil HERKES renkli gorur)" preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"mesajin..."; tf.clearButtonMode = UITextFieldViewModeAlways; }];
     [ac addAction:[UIAlertAction actionWithTitle:@"Gonder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         NSString *t = ac.textFields.firstObject.text;
         if (t.length == 0) return;
         NSString *col = [NSString stringWithUTF8String:spamColorHex];
+        few1n_applyGlobalChatColor(col);
         NSString *msg = [NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", col, t];
         @try { void* mgr = chatGetInst(); void* s = mkStr(msg); if (mgr && s) chatSend(mgr, s); } @catch (...) {}
         FLog([NSString stringWithFormat:@"Renkli mesaj gonderildi (#%@)", col]);
@@ -9452,18 +9533,37 @@ static UIViewController* few1n_topVC(void) {
     [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
 }
-// TUM ODA CHATINI senin sectigin renge boya (kapatilmamis renk tag'i -> tum mesajlar boyanir)
+
+// TUM ODA CHATINI senin sectigin renge boya (kapatilmamis renk tag'i -> modsuz oyuncular dahil tum mesajlar boyanir)
 - (void)colorAllChat {
-    if (!chatGetInst || !chatSend) { FLog(@"Chat hazir degil - odaya gir"); return; }
     NSString *col = [NSString stringWithUTF8String:spamColorHex];
-    @try {
-        void* mgr = chatGetInst();
-        // TEMIZ kapatilmamis renk etiketi -> sonraki TUM mesajlar bu renkte olur.
-        // Oyun renk etiketini render ediyor (filtre yok), o yuzden kod YAZISI gorunmez, sadece renk.
-        NSString *msg = [NSString stringWithFormat:@"<color=#%@>", col];
-        void* s = mkStr(msg); if (mgr && s) chatSend(mgr, s);
-    } @catch (...) {}
-    FLog([NSString stringWithFormat:@"Oda chati #%@ rengine boyandi (herkes gorur)", col]);
+    few1n_applyGlobalChatColor(col);
+    FLog([NSString stringWithFormat:@"🔥 Oda chati #%@ rengine boyandi (modsuzlar dahil herkes gorur)", col]);
+}
+
+// 🔥 Herkeste Renkli Chat Menusu: Modsuz 1.4.4 oyuncularinin ekraninda dahi ismin ve mesajin secilen renkte cikar!
+- (void)pickEveryoneChatColor {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🔥 Herkeste Renkli Chat"
+        message:@"Seçtiğin renk modsuz oyuncular DAHİL odadaki HERKESİN ekranında hem isminde hem de mesajlarında görünür!"
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    NSArray *colors = @[
+        @{@"name": @"🔴 Parlak Kırmızı",   @"hex": @"FF0000"},
+        @{@"name": @"🟢 Canlı Yeşil",     @"hex": @"00FF00"},
+        @{@"name": @"🔵 Neon Cyan / Mavi", @"hex": @"00FFFF"},
+        @{@"name": @"🟡 Güneş Sarısı",    @"hex": @"FFFF00"},
+        @{@"name": @"🟣 Büyülü Mor",      @"hex": @"A020F0"},
+        @{@"name": @"🟠 Ateş Turuncusu",  @"hex": @"FFA500"},
+        @{@"name": @"🌸 Neon Pembe",      @"hex": @"FF69B4"},
+        @{@"name": @"⚪ Normal / Sıfırla", @"hex": @"RESET"}
+    ];
+    for (NSDictionary *c in colors) {
+        [ac addAction:[UIAlertAction actionWithTitle:c[@"name"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            few1n_applyGlobalChatColor(c[@"hex"]);
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:ac];
 }
 - (void)sendChatTemplate {
     if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
