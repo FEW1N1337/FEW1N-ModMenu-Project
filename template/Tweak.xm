@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.0
+#define FEW1N_VERSION 117.1
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -103,7 +103,8 @@ static bool isRoomCrashActive = false;
 static int  nanCrashMode = 0;        // 0=kapali 1=yerel 2=uzak 3=oda
 static bool panicCrash = false;      // aninda cokert
 // ==== REKLAM BOZUCU ====
-static bool isAdBlockEnabled = false;  // v96: VARSAYILAN KAPALI - kullanici bug yaratiyor dedi
+static bool isAdBlockEnabled = true;   // v117.1: VARSAYILAN ACIK (tam reklam engelleme)
+static void few1n_applyNativeAdBlock(void);
 // ==== UCUS D-PAD (ekran kumandasi - mod butonlariyla ucus, g_myRccp gerekmez) ====
 static bool isFlyPadShown = false;
 static bool g_dpFwd=false, g_dpBack=false, g_dpLeft=false, g_dpRight=false, g_dpUp=false, g_dpDown=false;
@@ -1930,15 +1931,22 @@ static void* w_rinfo_getName(void *self) {
     @try { return i_runtime_invoke(m, self, NULL, NULL); } @catch (...) { return NULL; }
 }
 static void w_room_setMaxPlayers(void *self, int v) {
+    if (!self) return;
+    @try { *(int*)((uintptr_t)self + OFFR_ROOM_MAXPLAYERS) = v; } @catch (...) {}
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "set_MaxPlayers", 1); }
-    if (!m || !i_runtime_invoke || !self) return;
-    @try { unsigned char b = (unsigned char)v; void *args[1]={&b}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    if (!m || !i_runtime_invoke) return;
+    @try { int v_int = v; void *args[1]={&v_int}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
 }
 static int  w_room_getMaxPlayers(void *self) {
+    if (!self) return 0;
+    @try {
+        int mem = *(int*)((uintptr_t)self + OFFR_ROOM_MAXPLAYERS);
+        if (mem > 0) return mem;
+    } @catch (...) {}
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "get_MaxPlayers", 0); }
-    if (!m || !i_runtime_invoke || !self) return 0;
+    if (!m || !i_runtime_invoke) return 0;
     @try { return few1n_unboxInt(i_runtime_invoke(m, self, NULL, NULL)); } @catch (...) { return 0; }
 }
 static void w_room_setIsOpen(void *self, bool on) {
@@ -7195,54 +7203,93 @@ static void h_createRoomBtn(void* self) {
     if (o_createRoomBtn) o_createRoomBtn(self);   // yedek: normal akis
 }
 
+// ===== PHOTON ODA KURMA & MAX OYUNCU HOOKLARI =====
+static bool (*o_pn_createRoom_hook)(void*, void*, void*, void*) = NULL;
+static bool h_pn_createRoom_hook(void* name, void* opts, void* typedLobby, void* expectedUsers) {
+    if (!opts && i_object_new && g_roomOptionsClass) {
+        opts = i_object_new(g_roomOptionsClass);
+        if (opts) {
+            *(bool*)((uintptr_t)opts + OFFR_ROPT_ISVISIBLE) = true;
+            *(bool*)((uintptr_t)opts + OFFR_ROPT_ISOPEN) = true;
+        }
+    }
+    if (opts && roomMaxPlayers > 0) {
+        *(int*)((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;
+        FLog([NSString stringWithFormat:@"🔥 [CreateRoom Hook] RoomOptions.MaxPlayers = %d yapıldı!", roomMaxPlayers]);
+    }
+    return o_pn_createRoom_hook ? o_pn_createRoom_hook(name, opts, typedLobby, expectedUsers) : false;
+}
+
+static bool (*o_pn_joinOrCreateRoom_hook)(void*, void*, void*, void*) = NULL;
+static bool h_pn_joinOrCreateRoom_hook(void* name, void* opts, void* typedLobby, void* expectedUsers) {
+    if (opts && roomMaxPlayers > 0) {
+        *(int*)((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;
+        FLog([NSString stringWithFormat:@"🔥 [JoinOrCreateRoom Hook] RoomOptions.MaxPlayers = %d yapıldı!", roomMaxPlayers]);
+    }
+    return o_pn_joinOrCreateRoom_hook ? o_pn_joinOrCreateRoom_hook(name, opts, typedLobby, expectedUsers) : false;
+}
+
+static void (*o_onCreatedRoom)(void*) = NULL;
+static void h_onCreatedRoom(void* self) {
+    if (o_onCreatedRoom) o_onCreatedRoom(self);
+    @try {
+        if (roomMaxPlayers > 0 && pn_getCurrentRoom && room_setMaxPlayers) {
+            void* room = pn_getCurrentRoom();
+            if (room) {
+                room_setMaxPlayers(room, roomMaxPlayers);
+                FLog([NSString stringWithFormat:@"🔥 [OnCreatedRoom] Oda kuruldu -> MaxPlayers %d mühürlendi!", roomMaxPlayers]);
+            }
+        }
+    } @catch (...) {}
+}
+
 // ===== CAS IL2CPP REKLAM HOOKS (CANLI REKLAM BOZUCU) =====
-static void (*o_casShowAd)(void*, int, void*) = NULL;
-static void h_casShowAd(void* self, int adType, void* method) {
-    if (isAdBlockEnabled) { FLog(@"\U0001F6AB il2cpp CAS ShowAd ENGELLENDI"); return; }
-    if (o_casShowAd) o_casShowAd(self, adType, method);
+static void (*o_casClientShowAd)(void*, int, void*) = NULL;
+static void h_casClientShowAd(void* self, int adType, void* placement) {
+    if (isAdBlockEnabled) { FLog(@"🚫 CASManagerClient.ShowAd engellendi"); return; }
+    if (o_casClientShowAd) o_casClientShowAd(self, adType, placement);
 }
 
-static void (*o_casClientShowAd)(void*, int, void*, void*) = NULL;
-static void h_casClientShowAd(void* self, int adType, void* placement, void* method) {
-    if (isAdBlockEnabled) { FLog(@"\U0001F6AB il2cpp CAS Client ShowAd ENGELLENDI"); return; }
-    if (o_casClientShowAd) o_casClientShowAd(self, adType, placement, method);
-}
-
-static bool (*o_casIsReadyAd)(void*, int, void*) = NULL;
-static bool h_casIsReadyAd(void* self, int adType, void* method) {
+static bool (*o_casIsReadyAd)(void*, int) = NULL;
+static bool h_casIsReadyAd(void* self, int adType) {
     if (isAdBlockEnabled) return false;
-    return o_casIsReadyAd ? o_casIsReadyAd(self, adType, method) : false;
+    return o_casIsReadyAd ? o_casIsReadyAd(self, adType) : false;
 }
 
-static void (*o_casExternsShowAd)(intptr_t, int, void*, void*) = NULL;
-static void h_casExternsShowAd(intptr_t managerRef, int type, void* placement, void* method) {
-    if (isAdBlockEnabled) { FLog(@"\U0001F6AB il2cpp CAS Externs ShowAd ENGELLENDI"); return; }
-    if (o_casExternsShowAd) o_casExternsShowAd(managerRef, type, placement, method);
+static void* (*o_casCreateAdView)(void*, int) = NULL;
+static void* h_casCreateAdView(void* self, int size) {
+    if (isAdBlockEnabled) return NULL;
+    return o_casCreateAdView ? o_casCreateAdView(self, size) : NULL;
 }
 
-// OYUNUN KENDI CASAd WRAPPER HOOKLARI (Otomatik reklam engelleme)
-static void (*o_casAdCount)(void*, void*) = NULL;
-static void h_casAdCount(void* self, void* method) {
+static void (*o_casExternsShowAd)(intptr_t, int, void*) = NULL;
+static void h_casExternsShowAd(intptr_t managerRef, int type, void* placement) {
+    if (isAdBlockEnabled) { FLog(@"🚫 CASExterns.CASUShowAd engellendi"); return; }
+    if (o_casExternsShowAd) o_casExternsShowAd(managerRef, type, placement);
+}
+
+static bool (*o_casExternsIsReady)(intptr_t, int) = NULL;
+static bool h_casExternsIsReady(intptr_t managerRef, int type) {
+    if (isAdBlockEnabled) return false;
+    return o_casExternsIsReady ? o_casExternsIsReady(managerRef, type) : false;
+}
+
+static void* (*o_casExternsCreateView)(intptr_t, void*, int) = NULL;
+static void* h_casExternsCreateView(intptr_t managerRef, void* client, int size) {
+    if (isAdBlockEnabled) return NULL;
+    return o_casExternsCreateView ? o_casExternsCreateView(managerRef, client, size) : NULL;
+}
+
+static void (*o_casAdCount)(void*) = NULL;
+static void h_casAdCount(void* self) {
     if (isAdBlockEnabled) return; // Otomatik reklam sayacini durdur
-    if (o_casAdCount) o_casAdCount(self, method);
+    if (o_casAdCount) o_casAdCount(self);
 }
 
-static void (*o_casInterGin)(void*, void*) = NULL;
-static void h_casInterGin(void* self, void* method) {
+static void (*o_casInterNop)(void*) = NULL;
+static void h_casInterNop(void* self) {
     if (isAdBlockEnabled) return;
-    if (o_casInterGin) o_casInterGin(self, method);
-}
-
-static void (*o_casInterGio)(void*, void*) = NULL;
-static void h_casInterGio(void* self, void* method) {
-    if (isAdBlockEnabled) return;
-    if (o_casInterGio) o_casInterGio(self, method);
-}
-
-static void (*o_casRewardPresent)(void*, void*) = NULL;
-static void h_casRewardPresent(void* self, void* method) {
-    if (isAdBlockEnabled) { FLog(@"\U0001F6AB Rewarded reklam engellendi"); return; }
-    if (o_casRewardPresent) o_casRewardPresent(self, method);
+    if (o_casInterNop) o_casInterNop(self);
 }
 
 // =============================================================
@@ -12453,8 +12500,8 @@ static bool isCarPaintActive = false;
 static char customCarPaintHex[32] = "#FF0000";
 
 - (void)pickRoomMax:(UIButton*)b {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"\U0001F465 Oda Max Oyuncu"
-        message:@"Kac kisilik? Istedigin sayiyi yaz (2-255):" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"👥 Oda Max Oyuncu"
+        message:@"Kaç kişilik? İstediğin sayıyı yaz (2-100):\n(Hem kuracağın yeni odalarda hem de mevcut odanda anında geçerli olur)" preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){
         tf.keyboardType = UIKeyboardTypeNumberPad;
         tf.text = [NSString stringWithFormat:@"%d", roomMaxPlayers];
@@ -12464,13 +12511,23 @@ static char customCarPaintHex[32] = "#FF0000";
     [ac addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
         int v = [ac.textFields.firstObject.text intValue];
         if (v < 2)   v = 2;
-        if (v > 255) v = 255;
+        if (v > 100) v = 100;
         roomMaxPlayers = v;
         saveInt(@"roomMaxP", roomMaxPlayers);
-        [b setTitle:[NSString stringWithFormat:@"\U0001F465 Oda Max Oyuncu: %d", roomMaxPlayers] forState:UIControlStateNormal];
-        FLog([NSString stringWithFormat:@"Oda max oyuncu: %d (elle)", roomMaxPlayers]);
+        [b setTitle:[NSString stringWithFormat:@"👥 Oda Max Oyuncu: %d", roomMaxPlayers] forState:UIControlStateNormal];
+        FLog([NSString stringWithFormat:@"👥 Oda max oyuncu: %d ayarlandı", roomMaxPlayers]);
+
+        // Eğer şu an odadaysak anında odaya da uygula!
+        if (pn_getInRoom && pn_getInRoom()) {
+            void* room = pn_getCurrentRoom ? pn_getCurrentRoom() : NULL;
+            if (room && room_setMaxPlayers) {
+                few1n_claimMaster();
+                room_setMaxPlayers(room, v);
+                FLog([NSString stringWithFormat:@"👥 Mevcut odaya Max Oyuncu %d uygulandı!", v]);
+            }
+        }
     }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Iptal" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
     [self present:ac];
 }
 
@@ -14517,7 +14574,10 @@ static void few1n_joinTargetRoom(NSString *nm) {
 - (void)tapAdBlock {
     isAdBlockEnabled = !isAdBlockEnabled;
     saveBool(@"adblock", isAdBlockEnabled);
-    FLog(isAdBlockEnabled ? @"\U0001F6AB Reklam bozucu ACIK - il2cpp + native aninda aktif!" : @"\U0001F6AB Reklam bozucu KAPALI");
+    if (isAdBlockEnabled) {
+        few1n_applyNativeAdBlock();
+    }
+    FLog(isAdBlockEnabled ? @"🚫 Reklam bozucu ACIK - il2cpp + native aninda aktif!" : @"🚫 Reklam bozucu KAPALI");
     [self refreshUI];
 }
 
@@ -15069,7 +15129,7 @@ static void restoreSettings(void) {
     isNanCrashEnabled      = false;
     isRoomCrashActive      = false;
     panicCrash             = false;
-    isAdBlockEnabled       = loadBool(@"adblock", false);  // v96: VARSAYILAN KAPALI (bug yaratiyordu)
+    isAdBlockEnabled       = loadBool(@"adblock", true);   // v117.1: VARSAYILAN ACIK (tam reklam engelleme)
     customMoneyAmount      = loadInt(@"moneyAmount", 100000000);
     NSString* pt = loadStr(@"plateText", @"FEW1N");
     strncpy(customPlateText, pt.UTF8String, sizeof(customPlateText)-1); customPlateText[sizeof(customPlateText)-1]='\0';
@@ -15226,6 +15286,48 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("", "HR_PhotonLobbyManager",  "OnCreateRoomFailed",     2, (void*)h_onCreateFail,           (void**)&o_onCreateFail,          "HR_PhotonLobbyManager.OnCreateRoomFailed");
     safeHookByName("", "HR_PhotonLobbyManager",  "OnJoinRoomFailed",       2, (void*)h_onJoinFail,             (void**)&o_onJoinFail,            "HR_PhotonLobbyManager.OnJoinRoomFailed");
     safeHookByName("", "HR_PhotonLobbyManager",  "CreateRoomButton",       0, (void*)h_createRoomBtn,          (void**)&o_createRoomBtn,         "HR_PhotonLobbyManager.CreateRoomButton");
+
+    // PhotonNetwork CreateRoom & JoinOrCreateRoom hooks (MaxPlayers force)
+    safeHookByName("Photon.Pun", "PhotonNetwork", "CreateRoom", 4, (void*)h_pn_createRoom_hook, (void**)&o_pn_createRoom_hook, "PhotonNetwork.CreateRoom (MaxPlayers Force)");
+    if (!o_pn_createRoom_hook && global_base) {
+        safeHook((void*)(global_base + 0x5B3194C), (void*)h_pn_createRoom_hook, (void**)&o_pn_createRoom_hook, "PhotonNetwork.CreateRoom (direct RVA)");
+    }
+    safeHookByName("Photon.Pun", "PhotonNetwork", "JoinOrCreateRoom", 4, (void*)h_pn_joinOrCreateRoom_hook, (void**)&o_pn_joinOrCreateRoom_hook, "PhotonNetwork.JoinOrCreateRoom (MaxPlayers Force)");
+    if (!o_pn_joinOrCreateRoom_hook && global_base) {
+        safeHook((void*)(global_base + 0x5B31E5C), (void*)h_pn_joinOrCreateRoom_hook, (void**)&o_pn_joinOrCreateRoom_hook, "PhotonNetwork.JoinOrCreateRoom (direct RVA)");
+    }
+    safeHookByName("", "HR_PhotonLobbyManager", "OnCreatedRoom", 0, (void*)h_onCreatedRoom, (void**)&o_onCreatedRoom, "HR_PhotonLobbyManager.OnCreatedRoom");
+    if (!o_onCreatedRoom && global_base) {
+        safeHook((void*)(global_base + 0x565CED8), (void*)h_onCreatedRoom, (void**)&o_onCreatedRoom, "HR_PhotonLobbyManager.OnCreatedRoom (direct RVA)");
+    }
+
+    // CAS IL2CPP REKLAM HOOKS
+    safeHookByName("CAS", "CASManagerClient", "ShowAd", 2, (void*)h_casClientShowAd, (void**)&o_casClientShowAd, "CASManagerClient.ShowAd");
+    if (!o_casClientShowAd && global_base) safeHook((void*)(global_base + 0x32FDD1C), (void*)h_casClientShowAd, (void**)&o_casClientShowAd, "CASManagerClient.ShowAd (direct)");
+
+    safeHookByName("CAS", "CASManagerClient", "IsReadyAd", 1, (void*)h_casIsReadyAd, (void**)&o_casIsReadyAd, "CASManagerClient.IsReadyAd");
+    if (!o_casIsReadyAd && global_base) safeHook((void*)(global_base + 0x32FDCF4), (void*)h_casIsReadyAd, (void**)&o_casIsReadyAd, "CASManagerClient.IsReadyAd (direct)");
+
+    safeHookByName("CAS", "CASManagerClient", "CreateAdView", 1, (void*)h_casCreateAdView, (void**)&o_casCreateAdView, "CASManagerClient.CreateAdView");
+    if (!o_casCreateAdView && global_base) safeHook((void*)(global_base + 0x32FDDA8), (void*)h_casCreateAdView, (void**)&o_casCreateAdView, "CASManagerClient.CreateAdView (direct)");
+
+    safeHookByName("CAS", "CASExterns", "CASUShowAd", 3, (void*)h_casExternsShowAd, (void**)&o_casExternsShowAd, "CASExterns.CASUShowAd");
+    if (!o_casExternsShowAd && global_base) safeHook((void*)(global_base + 0x32FC2A4), (void*)h_casExternsShowAd, (void**)&o_casExternsShowAd, "CASExterns.CASUShowAd (direct)");
+
+    safeHookByName("CAS", "CASExterns", "CASUIsAdReady", 2, (void*)h_casExternsIsReady, (void**)&o_casExternsIsReady, "CASExterns.CASUIsAdReady");
+    if (!o_casExternsIsReady && global_base) safeHook((void*)(global_base + 0x32FC240), (void*)h_casExternsIsReady, (void**)&o_casExternsIsReady, "CASExterns.CASUIsAdReady (direct)");
+
+    safeHookByName("CAS", "CASExterns", "CASUCreateAdView", 3, (void*)h_casExternsCreateView, (void**)&o_casExternsCreateView, "CASExterns.CASUCreateAdView");
+    if (!o_casExternsCreateView && global_base) safeHook((void*)(global_base + 0x32FC2DC), (void*)h_casExternsCreateView, (void**)&o_casExternsCreateView, "CASExterns.CASUCreateAdView (direct)");
+
+    safeHookByName("CASAd", "AdIntervalCounter", "Count", 0, (void*)h_casAdCount, (void**)&o_casAdCount, "AdIntervalCounter.Count");
+    if (!o_casAdCount && global_base) safeHook((void*)(global_base + 0x327D27C), (void*)h_casAdCount, (void**)&o_casAdCount, "AdIntervalCounter.Count (direct)");
+
+    safeHookByName("CASAd", "InterstitialAd", "gpt", 0, (void*)h_casInterNop, (void**)&o_casInterNop, "InterstitialAd.gpt");
+    if (!o_casInterNop && global_base) safeHook((void*)(global_base + 0x327E18C), (void*)h_casInterNop, (void**)&o_casInterNop, "InterstitialAd.gpt (direct)");
+
+    safeHookByName("CASAd", "InterstitialAd", "gpu", 0, (void*)h_casInterNop, (void**)&o_casInterNop, "InterstitialAd.gpu");
+    if (!o_casInterNop && global_base) safeHook((void*)(global_base + 0x327E1F4), (void*)h_casInterNop, (void**)&o_casInterNop, "InterstitialAd.gpu (direct)");
 
     // Unity / Photon / TMP core (isim korunmuş)
     safeHookByName("UnityEngine",     "Time",           "set_timeScale",   1, (void*)h_setTimeScale,    (void**)&o_setTimeScale,    "Time.set_timeScale");
@@ -15402,145 +15504,144 @@ static void few1n_poll(void) {
 
 
 
+static void few1n_applyNativeAdBlock(void) {
+    static BOOL applied = NO;
+    if (applied) return;
+    applied = YES;
+    FLog(@"🚫 Reklam bozucu AKTİF - tüm SDK'lar engelleniyor");
+
+    // Reklam SDK metodlarini NOP'la. Tek helper + yon parametresi:
+    //   'i' = instance metod (nil dondur), 'c' = class metod (nil dondur),
+    //   'b' = bool (instance ya da class - hangisi varsa) NO dondur.
+    void (^adNop)(NSString*, NSString*, char) = ^(NSString* cls, NSString* sel, char kind) {
+        Class c = NSClassFromString(cls);
+        if (!c) return;
+        SEL s = NSSelectorFromString(sel);
+        Method m = (kind == 'c') ? class_getClassMethod(c, s) : class_getInstanceMethod(c, s);
+        if (!m && kind == 'b') m = class_getClassMethod(c, s);
+        if (!m) return;
+        IMP nop = (kind == 'b')
+            ? imp_implementationWithBlock(^BOOL(id _self){ (void)_self; return NO; })
+            : imp_implementationWithBlock(^id  (id _self){ (void)_self; return nil; });
+        method_setImplementation(m, nop);
+    };
+    void (^swizzleToNop)(NSString*, NSString*)      = ^(NSString* cls, NSString* sel){ adNop(cls, sel, 'i'); };
+    void (^swizzleClassToNop)(NSString*, NSString*) = ^(NSString* cls, NSString* sel){ adNop(cls, sel, 'c'); };
+    void (^swizzleToBoolFalse)(NSString*, NSString*) = ^(NSString* cls, NSString* sel){ adNop(cls, sel, 'b'); };
+
+    // ===== GOOGLE ADMOB (GAD) =====
+    swizzleToNop(@"GADInterstitialAd", @"presentFromRootViewController:");
+    swizzleClassToNop(@"GADInterstitialAd", @"loadWithAdUnitID:request:completionHandler:");
+    swizzleToNop(@"GADRewardedAd", @"presentFromRootViewController:userDidEarnRewardHandler:");
+    swizzleClassToNop(@"GADRewardedAd", @"loadWithAdUnitID:request:completionHandler:");
+    swizzleToNop(@"GADBannerView", @"loadRequest:");
+    swizzleToNop(@"GADRewardedInterstitialAd", @"presentFromRootViewController:userDidEarnRewardHandler:");
+    swizzleClassToNop(@"GADRewardedInterstitialAd", @"loadWithAdUnitID:request:completionHandler:");
+
+    // ===== APPLOVIN (MAX) =====
+    swizzleToNop(@"MAInterstitialAd", @"showAd");
+    swizzleToNop(@"MAInterstitialAd", @"showAdForPlacement:");
+    swizzleToNop(@"MAInterstitialAd", @"loadAd");
+    swizzleToNop(@"MARewardedAd", @"showAd");
+    swizzleToNop(@"MARewardedAd", @"showAdForPlacement:");
+    swizzleToNop(@"MARewardedAd", @"loadAd");
+    swizzleToNop(@"MAAdView", @"loadAd");
+    swizzleToNop(@"MAAdView", @"startAutoRefresh");
+    swizzleToBoolFalse(@"MAInterstitialAd", @"isReady");
+    swizzleToBoolFalse(@"MARewardedAd", @"isReady");
+
+    // ===== CLEVER ADS SOLUTIONS (CAS - ana mediation) =====
+    swizzleToNop(@"CASMediationManager", @"presentInterstitialFromRootViewController:");
+    swizzleToNop(@"CASMediationManager", @"presentRewardedAdFromRootViewController:");
+    swizzleToNop(@"CASMediationManager", @"loadInterstitial");
+    swizzleToNop(@"CASMediationManager", @"loadRewardedAd");
+    swizzleToNop(@"CASBannerView", @"loadNextAd");
+    swizzleToBoolFalse(@"CASMediationManager", @"isInterstitialReady");
+    swizzleToBoolFalse(@"CASMediationManager", @"isRewardedAdReady");
+
+    // ===== UNITY ADS =====
+    swizzleClassToNop(@"UnityAds", @"show:placementId:showDelegate:");
+    swizzleClassToNop(@"UnityAds", @"show:placementId:");
+    swizzleClassToNop(@"UnityAds", @"load:loadDelegate:");
+    swizzleToBoolFalse(@"UnityAds", @"isReady");
+    swizzleClassToNop(@"UnityAds", @"initialize:testMode:initializationDelegate:");
+
+    // ===== IRONSOURCE =====
+    swizzleClassToNop(@"IronSource", @"showInterstitialWithViewController:");
+    swizzleClassToNop(@"IronSource", @"showRewardedVideoWithViewController:");
+    swizzleClassToNop(@"IronSource", @"loadInterstitial");
+    swizzleToBoolFalse(@"IronSource", @"hasRewardedVideo");
+    swizzleToBoolFalse(@"IronSource", @"hasInterstitial");
+    swizzleClassToNop(@"ISAd", @"showWithViewController:");
+
+    // ===== FACEBOOK AUDIENCE NETWORK =====
+    swizzleToNop(@"FBInterstitialAd", @"showAdFromRootViewController:");
+    swizzleToNop(@"FBInterstitialAd", @"loadAd");
+    swizzleToNop(@"FBRewardedVideoAd", @"showAdFromRootViewController:");
+    swizzleToNop(@"FBRewardedVideoAd", @"loadAd");
+    swizzleToNop(@"FBAdView", @"loadAd");
+    swizzleToBoolFalse(@"FBInterstitialAd", @"isAdValid");
+    swizzleToBoolFalse(@"FBRewardedVideoAd", @"isAdValid");
+
+    // ===== INMOBI =====
+    swizzleToNop(@"IMInterstitial", @"show");
+    swizzleToNop(@"IMInterstitial", @"load");
+    swizzleToNop(@"IMBanner", @"load");
+    swizzleToBoolFalse(@"IMInterstitial", @"isReady");
+
+    // ===== VUNGLE =====
+    swizzleClassToNop(@"VungleSDK", @"playAd:options:placementID:error:");
+    swizzleToBoolFalse(@"VungleSDK", @"isAdCachedForPlacementID:");
+
+    // ===== CHARTBOOST =====
+    swizzleClassToNop(@"Chartboost", @"showInterstitial:");
+    swizzleClassToNop(@"Chartboost", @"showRewardedVideo:");
+    swizzleToBoolFalse(@"Chartboost", @"hasInterstitial:");
+    swizzleToBoolFalse(@"Chartboost", @"hasRewardedVideo:");
+
+    // ===== MINTEGRAL =====
+    swizzleToNop(@"MTGInterstitialAdManager", @"showFromViewController:");
+    swizzleToNop(@"MTGRewardAdManager", @"showVideo:delegate:");
+
+    // ===== PANGLE (ByteDance) =====
+    swizzleToNop(@"BUNativeExpressInterstitialAd", @"showAdFromRootViewController:");
+    swizzleToNop(@"BURewardedVideoAd", @"showAdFromRootViewController:");
+
+    // ===== YANDEX =====
+    swizzleToNop(@"YMAInterstitialAd", @"show");
+    swizzleToNop(@"YMARewardedAd", @"show");
+
+    // ===== UIView TABANLI BANNER TEMIZLIGI =====
+    few1n_after(5.0, ^{
+        NSArray *bannerClasses = @[@"GADBannerView", @"MAAdView", @"FBAdView", @"IMBanner", @"CASBannerView"];
+        for (NSString *clsName in bannerClasses) {
+            Class cls = NSClassFromString(clsName);
+            if (!cls) continue;
+            SEL sel = @selector(didMoveToWindow);
+            Method m = class_getInstanceMethod(cls, sel);
+            if (m) {
+                IMP origImp = method_getImplementation(m);
+                method_setImplementation(m, imp_implementationWithBlock(^(UIView* _self) {
+                    if (origImp) ((void(*)(id, SEL))origImp)(_self, @selector(didMoveToWindow));
+                    _self.hidden = YES;
+                    _self.alpha = 0;
+                    _self.frame = CGRectZero;
+                }));
+            }
+        }
+        FLog(@"🚫 Banner gizleme hooklari kuruldu");
+    });
+
+    FLog(@"🚫 Reklam bozucu: tum SDK'lar engellendi (AdMob/AppLovin/CAS/Unity/IronSource/FB/InMobi/Vungle/Chartboost/Mintegral/Pangle/Yandex)");
+}
+
 %ctor {
     few1n_setupCrashGuard();
     FLog(@"v" @FEW1N_STR(FEW1N_VERSION) @" basladi, UnityFramework araniyor...");
     restoreSettings();
 
-    // ===== REKLAM BOZUCU: TUM reklam SDK'larini engelle (Obj-C runtime swizzle) =====
-    // Bu blok il2cpp'ye BAGIMLI DEGIL - native Obj-C siniflarini hooklar.
-    // Oyun yukseltilse bile reklam SDK siniflari ayni kalir → kalici cozum.
     if (isAdBlockEnabled) {
-        FLog(@"\U0001F6AB Reklam bozucu AKTIF - tum SDK'lar engelleniyor");
-
-        // Reklam SDK metodlarini NOP'la. Tek helper + yon parametresi:
-        //   'i' = instance metod (nil dondur), 'c' = class metod (nil dondur),
-        //   'b' = bool (instance ya da class - hangisi varsa) NO dondur.
-        // Not: block variadic '...' ObjC block ABI'sinde tanimsiz; fazla arg'lar
-        // ARM64 caller-cleanup ile zaten yok sayilir, block sadece self alsin.
-        void (^adNop)(NSString*, NSString*, char) = ^(NSString* cls, NSString* sel, char kind) {
-            Class c = NSClassFromString(cls);
-            if (!c) return;
-            SEL s = NSSelectorFromString(sel);
-            Method m = (kind == 'c') ? class_getClassMethod(c, s) : class_getInstanceMethod(c, s);
-            if (!m && kind == 'b') m = class_getClassMethod(c, s);
-            if (!m) return;
-            IMP nop = (kind == 'b')
-                ? imp_implementationWithBlock(^BOOL(id _self){ (void)_self; return NO; })
-                : imp_implementationWithBlock(^id  (id _self){ (void)_self; return nil; });
-            method_setImplementation(m, nop);
-        };
-        void (^swizzleToNop)(NSString*, NSString*)      = ^(NSString* cls, NSString* sel){ adNop(cls, sel, 'i'); };
-        void (^swizzleClassToNop)(NSString*, NSString*) = ^(NSString* cls, NSString* sel){ adNop(cls, sel, 'c'); };
-        void (^swizzleToBoolFalse)(NSString*, NSString*) = ^(NSString* cls, NSString* sel){ adNop(cls, sel, 'b'); };
-
-        // ===== GOOGLE ADMOB (GAD) =====
-        swizzleToNop(@"GADInterstitialAd", @"presentFromRootViewController:");
-        swizzleClassToNop(@"GADInterstitialAd", @"loadWithAdUnitID:request:completionHandler:");
-        swizzleToNop(@"GADRewardedAd", @"presentFromRootViewController:userDidEarnRewardHandler:");
-        swizzleClassToNop(@"GADRewardedAd", @"loadWithAdUnitID:request:completionHandler:");
-        swizzleToNop(@"GADBannerView", @"loadRequest:");
-        swizzleToNop(@"GADRewardedInterstitialAd", @"presentFromRootViewController:userDidEarnRewardHandler:");
-        swizzleClassToNop(@"GADRewardedInterstitialAd", @"loadWithAdUnitID:request:completionHandler:");
-
-        // ===== APPLOVIN (MAX) =====
-        swizzleToNop(@"MAInterstitialAd", @"showAd");
-        swizzleToNop(@"MAInterstitialAd", @"showAdForPlacement:");
-        swizzleToNop(@"MAInterstitialAd", @"loadAd");
-        swizzleToNop(@"MARewardedAd", @"showAd");
-        swizzleToNop(@"MARewardedAd", @"showAdForPlacement:");
-        swizzleToNop(@"MARewardedAd", @"loadAd");
-        swizzleToNop(@"MAAdView", @"loadAd");
-        swizzleToNop(@"MAAdView", @"startAutoRefresh");
-        swizzleToBoolFalse(@"MAInterstitialAd", @"isReady");
-        swizzleToBoolFalse(@"MARewardedAd", @"isReady");
-
-        // ===== CLEVER ADS SOLUTIONS (CAS - ana mediation) =====
-        swizzleToNop(@"CASMediationManager", @"presentInterstitialFromRootViewController:");
-        swizzleToNop(@"CASMediationManager", @"presentRewardedAdFromRootViewController:");
-        swizzleToNop(@"CASMediationManager", @"loadInterstitial");
-        swizzleToNop(@"CASMediationManager", @"loadRewardedAd");
-        swizzleToNop(@"CASBannerView", @"loadNextAd");
-        swizzleToBoolFalse(@"CASMediationManager", @"isInterstitialReady");
-        swizzleToBoolFalse(@"CASMediationManager", @"isRewardedAdReady");
-
-        // ===== UNITY ADS =====
-        swizzleClassToNop(@"UnityAds", @"show:placementId:showDelegate:");
-        swizzleClassToNop(@"UnityAds", @"show:placementId:");
-        swizzleClassToNop(@"UnityAds", @"load:loadDelegate:");
-        swizzleToBoolFalse(@"UnityAds", @"isReady");
-        swizzleClassToNop(@"UnityAds", @"initialize:testMode:initializationDelegate:");
-
-        // ===== IRONSOURCE =====
-        swizzleClassToNop(@"IronSource", @"showInterstitialWithViewController:");
-        swizzleClassToNop(@"IronSource", @"showRewardedVideoWithViewController:");
-        swizzleClassToNop(@"IronSource", @"loadInterstitial");
-        swizzleToBoolFalse(@"IronSource", @"hasRewardedVideo");
-        swizzleToBoolFalse(@"IronSource", @"hasInterstitial");
-        swizzleClassToNop(@"ISAd", @"showWithViewController:");
-
-        // ===== FACEBOOK AUDIENCE NETWORK =====
-        swizzleToNop(@"FBInterstitialAd", @"showAdFromRootViewController:");
-        swizzleToNop(@"FBInterstitialAd", @"loadAd");
-        swizzleToNop(@"FBRewardedVideoAd", @"showAdFromRootViewController:");
-        swizzleToNop(@"FBRewardedVideoAd", @"loadAd");
-        swizzleToNop(@"FBAdView", @"loadAd");
-        swizzleToBoolFalse(@"FBInterstitialAd", @"isAdValid");
-        swizzleToBoolFalse(@"FBRewardedVideoAd", @"isAdValid");
-
-        // ===== INMOBI =====
-        swizzleToNop(@"IMInterstitial", @"show");
-        swizzleToNop(@"IMInterstitial", @"load");
-        swizzleToNop(@"IMBanner", @"load");
-        swizzleToBoolFalse(@"IMInterstitial", @"isReady");
-
-        // ===== VUNGLE =====
-        swizzleClassToNop(@"VungleSDK", @"playAd:options:placementID:error:");
-        swizzleToBoolFalse(@"VungleSDK", @"isAdCachedForPlacementID:");
-
-        // ===== CHARTBOOST =====
-        swizzleClassToNop(@"Chartboost", @"showInterstitial:");
-        swizzleClassToNop(@"Chartboost", @"showRewardedVideo:");
-        swizzleToBoolFalse(@"Chartboost", @"hasInterstitial:");
-        swizzleToBoolFalse(@"Chartboost", @"hasRewardedVideo:");
-
-        // ===== MINTEGRAL =====
-        swizzleToNop(@"MTGInterstitialAdManager", @"showFromViewController:");
-        swizzleToNop(@"MTGRewardAdManager", @"showVideo:delegate:");
-
-        // ===== PANGLE (ByteDance) =====
-        swizzleToNop(@"BUNativeExpressInterstitialAd", @"showAdFromRootViewController:");
-        swizzleToNop(@"BURewardedVideoAd", @"showAdFromRootViewController:");
-
-        // ===== YANDEX =====
-        swizzleToNop(@"YMAInterstitialAd", @"show");
-        swizzleToNop(@"YMARewardedAd", @"show");
-
-        // ===== UIView TABANLI BANNER TEMIZLIGI =====
-        // GADBannerView, MAAdView, FBAdView gibi banner'lari gomulunce otomatik gizle
-        few1n_after(5.0, ^{
-            // Banner siniflarinin instance'larini gizle (varsa)
-            NSArray *bannerClasses = @[@"GADBannerView", @"MAAdView", @"FBAdView", @"IMBanner", @"CASBannerView"];
-            for (NSString *clsName in bannerClasses) {
-                Class cls = NSClassFromString(clsName);
-                if (!cls) continue;
-                // didMoveToWindow hook'u: banner ekrana eklenince gizle
-                SEL sel = @selector(didMoveToWindow);
-                Method m = class_getInstanceMethod(cls, sel);
-                if (m) {
-                    IMP origImp = method_getImplementation(m);
-                    method_setImplementation(m, imp_implementationWithBlock(^(UIView* _self) {
-                        if (origImp) ((void(*)(id, SEL))origImp)(_self, @selector(didMoveToWindow));
-                        _self.hidden = YES;
-                        _self.alpha = 0;
-                        _self.frame = CGRectZero;
-                    }));
-                }
-            }
-            FLog(@"\U0001F6AB Banner gizleme hooklari kuruldu");
-        });
-
-        FLog(@"\U0001F6AB Reklam bozucu: tum SDK'lar engellendi (AdMob/AppLovin/CAS/Unity/IronSource/FB/InMobi/Vungle/Chartboost/Mintegral/Pangle/Yandex)");
+        few1n_applyNativeAdBlock();
     }
 
     few1n_after(3.0, ^{ few1n_poll(); });
