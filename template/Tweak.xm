@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.1
+#define FEW1N_VERSION 117.2
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -2067,89 +2067,10 @@ static void w_chat_klv(void* self) {
     }
 }
 
-// 1.4.4 Chat RichText zorlama — allText & input richText = true ve <noparse> kuyruktan/StringBuilder'dan temizleme
+// 1.4.4 Vanilla Chat Modu: Yerel <noparse> temizligi ve richText zorlamasi kaldirildi.
+// Diger unmodded oyuncular gibi chat tamamen normal / orijinal gorunur.
 static void few1n_enableChatRichText(void) {
-    @try {
-        void* cm = w_chatGetInst();
-        if (!ptrOk(cm)) return;
-
-        // 1. ChatUI elementleri (allText & input)
-        void* cui = *(void**)((uintptr_t)cm + 0x40);
-        if (ptrOk(cui)) {
-            // allText (TMP_Text) @ 0x20
-            void* allText = *(void**)((uintptr_t)cui + 0x20);
-            if (ptrOk(allText)) {
-                w_tmp_set_richText(allText, true);
-                *(bool*)((uintptr_t)allText + 0x342) = true; // m_isRichText
-            }
-            // input (TMP_InputField) @ 0x30 — RichText izni ver ve validasyonu kaldir (renk kodlarini serbestce yazabilsin)
-            void* inp = *(void**)((uintptr_t)cui + 0x30);
-            if (ptrOk(inp)) {
-                *(bool*)((uintptr_t)inp + 0x221) = true; // m_RichText
-                *(bool*)((uintptr_t)inp + 0x2D2) = true; // m_isRichTextEditingAllowed
-                *(int32_t*)((uintptr_t)inp + 0x188) = 0; // m_CharacterValidation = None
-            }
-            void* ozh = *(void**)((uintptr_t)cui + 0x50);
-            if (ptrOk(ozh)) {
-                w_tmp_set_richText(ozh, true);
-                *(bool*)((uintptr_t)ozh + 0x342) = true;
-            }
-        }
-
-        // 2. ChatManager.oyz (Queue<ChatManager.Line> @ 0x50) icindeki satirlardan <noparse> temizle
-        bool didCleanQueue = false;
-        void* oyz = *(void**)((uintptr_t)cm + 0x50);
-        if (ptrOk(oyz)) {
-            void* arr = *(void**)((uintptr_t)oyz + 0x10); // _array
-            int32_t size = *(int32_t*)((uintptr_t)oyz + 0x20); // _size
-            if (ptrOk(arr) && size > 0) {
-                uint32_t cap = *(uint32_t*)((uintptr_t)arr + 0x18); // array length
-                for (uint32_t i = 0; i < cap; i++) {
-                    uintptr_t elem = (uintptr_t)arr + 0x20 + (i * 16); // sizeof(ChatManager.Line) = 16
-                    void* strPtr = *(void**)(elem + 8); // Line.text
-                    if (ptrOk(strPtr)) {
-                        NSString *s = readStr(strPtr);
-                        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
-                            NSString *clean = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-                            clean = [clean stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-                            void* cleanIl = mkStr(clean);
-                            if (cleanIl) {
-                                *(void**)(elem + 8) = cleanIl;
-                                didCleanQueue = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. ChatManager.oza (StringBuilder @ 0x58) icinden <noparse> temizle
-        void* oza = *(void**)((uintptr_t)cm + 0x58);
-        if (ptrOk(oza)) {
-            few1n_sbReplace(oza, @"<noparse>", @"");
-            few1n_sbReplace(oza, @"</noparse>", @"");
-        }
-
-        // 4. Kuyruk temizlendiyse chat UI'sini aninda guncelle (renk kodlari aninda canlansin!)
-        if (didCleanQueue) {
-            w_chat_klv(cm);
-        } else if (ptrOk(cui)) {
-            // Fallback: allText uzerindeki mevcut metni kontrol et
-            void* allText = *(void**)((uintptr_t)cui + 0x20);
-            if (ptrOk(allText)) {
-                void* textObj = w_tmp_get_text(allText);
-                if (ptrOk(textObj)) {
-                    NSString *cur = readStr(textObj);
-                    if (cur.length > 0 && ([cur containsString:@"<noparse>"] || [cur containsString:@"</noparse>"])) {
-                        NSString *unparsed = [cur stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-                        unparsed = [unparsed stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-                        void* newIl = mkStr(unparsed);
-                        if (newIl) w_tmp_set_text(allText, newIl);
-                    }
-                }
-            }
-        }
-    } @catch (...) {}
+    // no-op (vanilla)
 }
 
 // ====== PlayerManager (para — sunucu-kilitli ama getters visual için) ======
@@ -6173,81 +6094,34 @@ static void few1n_replyToRoomAiPrompt(NSString *prompt) {
     });
 }
 
-// ===== 1.4.4 CENSORSHIP & <noparse> BYPASS (TÜM CHAT SANSÜR & RENK ENGELİNİ KALDIRMA) =====
+// ===== 1.4.4 CENSORSHIP & CHAT (Vanilla Mod — Yerel sansür/noparse modifikasyonu kaldırıldı) =====
 static void* (*o_censorship_opn)(void*, int) = NULL;
 static void* h_censorship_opn(void* a, int b) {
-    if (ptrOk(a)) {
-        NSString *s = readStr(a);
-        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
-            s = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-            s = [s stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-            void* clean = mkStr(s);
-            if (clean) return clean;
-        }
-        return a;
-    }
     return o_censorship_opn ? o_censorship_opn(a, b) : a;
 }
 
 static void* (*o_censorship_opo)(void*, int) = NULL;
 static void* h_censorship_opo(void* a, int b) {
-    if (ptrOk(a)) return a;
     return o_censorship_opo ? o_censorship_opo(a, b) : a;
 }
 
 static void* (*o_censorship_opp)(void*) = NULL;
 static void* h_censorship_opp(void* inputStr) {
-    if (ptrOk(inputStr)) {
-        NSString *s = readStr(inputStr);
-        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
-            s = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-            s = [s stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-            void* clean = mkStr(s);
-            if (clean) return clean;
-        }
-        return inputStr;
-    }
     return o_censorship_opp ? o_censorship_opp(inputStr) : inputStr;
 }
 
 static void* (*o_chat_klw)(void*, int) = NULL;
 static void* h_chat_klw(void* a, int b) {
-    if (ptrOk(a)) {
-        NSString *s = readStr(a);
-        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
-            s = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-            s = [s stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-            void* clean = mkStr(s);
-            if (clean) return clean;
-        }
-        return a;
-    }
     return o_chat_klw ? o_chat_klw(a, b) : a;
 }
 
 static void (*o_chat_cie)(void*, void*, void*) = NULL;
 static void h_chat_cie(void* self, void* sender, void* msg) {
-    if (ptrOk(msg)) {
-        NSString *s = readStr(msg);
-        if (s.length > 0 && ([s containsString:@"<noparse>"] || [s containsString:@"</noparse>"])) {
-            s = [s stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-            s = [s stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-            void* clean = mkStr(s);
-            if (clean) msg = clean;
-        }
-    }
     if (o_chat_cie) o_chat_cie(self, sender, msg);
 }
 
 static void (*o_tmp_setText_sb)(void*, void*) = NULL;
 static void h_tmp_setText_sb(void* self, void* sourceText) {
-    if (ptrOk(self)) {
-        *(bool*)((uintptr_t)self + 0x342) = true; // m_isRichText = true
-        if (ptrOk(sourceText)) {
-            few1n_sbReplace(sourceText, @"<noparse>", @"");
-            few1n_sbReplace(sourceText, @"</noparse>", @"");
-        }
-    }
     if (o_tmp_setText_sb) o_tmp_setText_sb(self, sourceText);
 }
 
@@ -6314,7 +6188,6 @@ static void few1n_applyGlobalChatColor(NSString *hexColor) {
 }
 
 static void h_chatSend(void* self, void* msg) {
-    few1n_enableChatRichText();
     fChat++;
     if (msg) {
         NSString *orig = readStr(msg);
@@ -6481,10 +6354,6 @@ static void h_chatSend(void* self, void* msg) {
                 && ![formatted containsString:@"</color>"]) {
                 formatted = [formatted stringByAppendingString:@"</color>"];
             }
-            if ([formatted containsString:@"<noparse>"] || [formatted containsString:@"</noparse>"]) {
-                formatted = [formatted stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-                formatted = [formatted stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-            }
             if (![formatted isEqualToString:orig]) {
                 orig = formatted;
                 msg = mkStr(orig);
@@ -6604,14 +6473,6 @@ static void h_tmpSetText(void* self, void* textStr) {
             if (str && [str containsString:@"FEW1N NUKE"]) {
                 // Kendi cihazımız nuke metnini render etmez -> Yerel çökme engellenir!
                 return;
-            }
-            // 1.4.4 FIX: Oyun chat ve isimlerde '<' karakterini '<noparse><</noparse>' icine aliyor.
-            // <noparse> etiketlerini silerek renk kodlarinin (TMPro RichText) tekrar calismasini sagla!
-            if (str && ([str containsString:@"<noparse>"] || [str containsString:@"</noparse>"])) {
-                str = [str stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""];
-                str = [str stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
-                void* cleanStr = mkStr(str);
-                if (cleanStr) textStr = cleanStr;
             }
             // v102: VIDYO ISIM MODU - kisa nickname'leri buyuk ve kirmizi yap
             if (isVidyoNamesEnabled && str && str.length >= 2 && str.length <= 20
@@ -8182,7 +8043,6 @@ static UIViewController* few1n_topVC(void) {
 - (void)frameTick {
     enforceScale();          // her ekran frame'inde timeScale'i zorla
     few1n_tickVoteKickFullYes(); // 1.4.4: 0sn oylama kilidi sifirla + oylamayi oto 99 EVET yap
-    few1n_enableChatRichText();  // 1.4.4: chat richText + <noparse> temizle
     // ===== OTOMATIK KARSILAMA: odaya YENI girince (false->true kenari) mesaj at =====
     // Optimizasyon: sadece ozellik ACIKKEN poll et (kapaliyken her frame cagri yok)
     if (isAutoGreetEnabled && pn_getInRoom) {
@@ -9128,7 +8988,6 @@ static UIViewController* few1n_topVC(void) {
     enforceScale();
     few1n_findCar();   // sadece arama (throttle'li); uygulama frameTick'te
     few1n_forcePlate(); // ozel plaka acikken il2cpp ile zorla (hook olu)
-    few1n_enableChatRichText(); // 1.4.4 Chat richText her tick'te acik tut
     few1n_tickVoteKickFullYes(); // 1.4.4 Oylama aktifse evet sayisini otomatik full yap + 0sn kilit sifirla
     few1n_forceNos();    // v114.28: NOS super guc acikken her frame max nitro
     few1n_enforceBans(); // v114.37: banli oyuncular geri gelirse otomatik tekrar at
@@ -15399,34 +15258,6 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("", "HR_UI_RoomListLine",   "eqm", 0, (void*)h_roomConnect,   (void**)&o_roomConnect,   "HR_UI_RoomListLine.Connect (obf eqm)");
     if (!o_roomConnect && global_base) {
         safeHook((void*)(global_base + 0x5669A40), (void*)h_roomConnect, (void**)&o_roomConnect, "HR_UI_RoomListLine.eqm (direct RVA)");
-    }
-    // 1.4.4 YENI HOOKLAR: Censorship & Chat (<noparse> ve sansür engeli tamamen kalkar)
-    safeHookByName("Censorship", "ra", "opn", 2, (void*)h_censorship_opn, (void**)&o_censorship_opn, "Censorship.ra.opn (full censor bypass)");
-    if (!o_censorship_opn && global_base) {
-        safeHook((void*)(global_base + 0x3284EE0), (void*)h_censorship_opn, (void**)&o_censorship_opn, "Censorship.ra.opn (direct RVA)");
-    }
-    safeHookByName("Censorship", "ra", "opp", 1, (void*)h_censorship_opp, (void**)&o_censorship_opp, "Censorship.ra.opp (<noparse> bypass)");
-    if (!o_censorship_opp && global_base) {
-        safeHook((void*)(global_base + 0x32852FC), (void*)h_censorship_opp, (void**)&o_censorship_opp, "Censorship.ra.opp (direct RVA)");
-    }
-    safeHookByName("Censorship", "ra", "opo", 2, (void*)h_censorship_opo, (void**)&o_censorship_opo, "Censorship.ra.opo (censor bypass)");
-    if (!o_censorship_opo && global_base) {
-        safeHook((void*)(global_base + 0x3285260), (void*)h_censorship_opo, (void**)&o_censorship_opo, "Censorship.ra.opo (direct RVA)");
-    }
-    safeHookByName("", "ChatManager", "klw", 2, (void*)h_chat_klw, (void**)&o_chat_klw, "ChatManager.klw (chat filter bypass)");
-    if (!o_chat_klw && global_base) {
-        safeHook((void*)(global_base + 0x32858F4), (void*)h_chat_klw, (void**)&o_chat_klw, "ChatManager.klw (direct RVA)");
-    }
-    safeHookByName("", "ChatManager", "cie", 2, (void*)h_chat_cie, (void**)&o_chat_cie, "ChatManager.cie (chat line add)");
-    if (!o_chat_cie && global_base) {
-        safeHook((void*)(global_base + 0x3285910), (void*)h_chat_cie, (void**)&o_chat_cie, "ChatManager.cie (direct RVA)");
-    }
-    { static const char* const n[] = {"SetText",NULL};
-      static const char* pr[] = {"StringBuilder"};
-      safeHookBySig("TMPro", "TMP_Text", n, 1, "Void", pr, NULL,
-                    (void*)h_tmp_setText_sb, (void**)&o_tmp_setText_sb, "TMP_Text.SetText(StringBuilder)"); }
-    if (!o_tmp_setText_sb && global_base) {
-        safeHook((void*)(global_base + 0x68186C0), (void*)h_tmp_setText_sb, (void**)&o_tmp_setText_sb, "TMP_Text.SetText(StringBuilder) (direct RVA)");
     }
     safeHookByName("",           "HR_UI_RoomListLine",        "ghh",                 0, (void*)h_roomLineClick,           (void**)&o_roomLineClick,           "HR_UI_RoomListLine.ghh (1.4.4 Connect)");
     if (!o_roomLineClick && global_base) {
