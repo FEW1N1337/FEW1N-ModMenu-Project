@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 116.6
+#define FEW1N_VERSION 116.7
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -37,22 +37,31 @@
 //  Tum offsetler YENI dump.cs'ten (metadata v39) cikarilip, uye
 //  isimleri karisik oldugu icin YAPIYA/imzaya gore eslendi.
 // ============================================================
-//  OFFSET TABLE (yeni Unity6 dump, dogrulandi)
+//  OFFSET TABLE (yeni Unity 6 / metadata v39 dump, script.json dogrulandi)
 // ------------------------------------------------------------
-// Time.set_timeScale(float)                -> 0x6771918
-// PhotonNetwork.CloseConnection(Player)    -> 0x5938844
-// PhotonNetwork.set_NickName(string)       -> 0x5933940
-// ChatManager.get_Instance()               -> 0x31A6168
-// ChatManager.Send(string)                 -> 0x31A626C
-// CarNitro.get_nitroAmount() [obf: fda]    -> 0x54CFE14
-// CarNitro.set_nitroAmount(float)[obf: fdb]-> 0x54CFE1C
-// CarDriveSystem.Move(f,f,f,f) [obf: fca]  -> 0x54CCAA0
-// PlateVariant.Change(PlateHolder)[obf:ghs] -> metadata ile isimden cozulur
-// HR_UI_RoomListLine.Connect() [obf: elv]  -> 0x54B32F4   (password @ self+0x50)
-// HR_PhotonLobbyManager.get_Instance()[eke]-> 0x54A8098   (passwordInput@+0x50, passwordOnConnectInput@+0x60)
-// TMP_InputField.set_text(string)          -> 0x65F4CC8
-// PlayerManager zinciri IL2CPP metadata ile isimden cozulur (sabit RVA yok):
-// gns() instance, goc() bakiye, gor(int) para ekle, goo() senkron, gos(string) isim.
+// Time.set_timeScale(float)                -> 0x6981584
+// PhotonNetwork.CloseConnection(Player)    -> 0x5B30644
+// PhotonNetwork.set_NickName(string)       -> 0x5B2B674
+// PhotonNetwork.get_NickName()             -> 0x5B2B5F4
+// PhotonNetwork.JoinRoom(string, ...)      -> 0x5B3244C
+// PhotonNetwork.LeaveRoom(bool)            -> 0x5B330D8
+// PhotonNetwork.SetMasterClient(Player)    -> 0x5B3093C
+// ChatManager.get_Instance() [obf: fzi]    -> 0x32853A0
+// ChatManager.Send(string)                 -> 0x3285640
+// ChatManager.fzk(string) [gelen chat]     -> 0x3285D00
+// CarNitro.get_nitroAmount() [obf: fhp]    -> 0x56870A4
+// CarNitro.set_nitroAmount(float)[obf: fhq]-> 0x56870AC
+// CarNitro.NitroOn() / NitroOff()          -> 0x56870B4 / 0x5687158
+// CarDriveSystem.Move(f,f,f,f) [obf: fgp]  -> 0x5683D30
+// PlateVariant.Change(PlateHolder)[obf:ghs]-> 0x56D9528
+// HR_UI_RoomListLine.eqm() [Connect]       -> 0x5669A40   (password @ self+0x58)
+// HR_UI_RoomListLine.eqn() [Setup]         -> 0x565FBD8
+// HR_PhotonLobbyManager.eov() [Instance]   -> 0x565B058   (passwordInput@+0x68, passwordOnConnectInput@+0x78)
+// TMP_InputField.set_text(string)          -> 0x6802BA4
+// TMP_Text.set_richText(bool)              -> 0x681423C
+// PlayerManager zinciri:
+// gns() 0x5C2D5BC instance, goc() 0x5C43B80 bakiye, gor(int) 0x5C440A0 para ekle,
+// goo() 0x5C2D71C senkron, gos(string) 0x5C3D21C isim.
 // ============================================================
 
 struct PlateHolder { void* c; void* t; };   // c@0x0, t@0x8
@@ -2666,7 +2675,7 @@ static void  (*chatSend)(void* self, void* msg) = NULL;
 static void  (*tmp_set_text)(void* self, void* msg) = NULL;
 static void* (*tmp_get_text)(void* self) = NULL;   // TMP_InputField.get_text
 // v84: TMP_Text.set_richText — oda listesinde renk tag'larinin render edilmesi icin
-static void  (*tmp_set_richText)(void* self, bool value) = NULL;   // 0x66017B8
+static void  (*tmp_set_richText)(void* self, bool value) = NULL;   // 0x681423C
 static void* (*rinfo_getName)(void* self) = NULL;  // RoomInfo.get_Name (ham oda ismi)
 static void  (*pn_setNickName)(void* name) = NULL;
 static void* (*lobbyGetInst)(void) = NULL;
@@ -2679,41 +2688,41 @@ static void  (*pm_addMoney)(void* self, int amount) = NULL;
 static void  (*lobby_createRoom)(void* self) = NULL;   // HR_PhotonLobbyManager.CreateRoomButton
 static void  (*lobby_leaveRoom)(void* self) = NULL;    // HR_PhotonLobbyManager.LeaveRoom
 static bool  (*pn_createRoom)(void* name, void* opts, void* lobby, void* users) = NULL; // PhotonNetwork.CreateRoom
-static bool  (*pn_joinRoom)(void* name, void* users) = NULL;   // PhotonNetwork.JoinRoom 0x593A64C (goz at)
-static bool  (*pn_getInRoom)(void) = NULL;                     // PhotonNetwork.get_InRoom 0x5934FA4 (oda tespiti)
-static bool  (*pn_getConnReady)(void) = NULL;                  // PhotonNetwork.get_IsConnectedAndReady 0x59333A8 (oda kurma on-kosulu)
-static void* (*pn_getCurrentRoom)(void) = NULL;               // PhotonNetwork.get_CurrentRoom 0x592DA0C
-static void  (*room_setMaxPlayers)(void*, int) = NULL;        // Room.set_MaxPlayers 0x5927B70 (mevcut odayi buyut)
-static int   (*room_getMaxPlayers)(void*) = NULL;             // Room.get_MaxPlayers 0x5927B68
-static void  (*room_setIsOpen)(void*, bool) = NULL;           // Room.set_IsOpen 0x59279B0 (kilitli/acik)
-static void  (*room_setIsVisible)(void*, bool) = NULL;        // Room.set_IsVisible 0x5927A90 (gorunur/gorunmez)
-static bool  (*room_setCustomProperties)(void*, void*, void*, void*) = NULL;  // Room.SetCustomProperties 0x5916158 (sifre)
+static bool  (*pn_joinRoom)(void* name, void* users) = NULL;   // PhotonNetwork.JoinRoom 0x5B3244C (goz at)
+static bool  (*pn_getInRoom)(void) = NULL;                     // PhotonNetwork.get_InRoom 0x5B2CCD8 (oda tespiti)
+static bool  (*pn_getConnReady)(void) = NULL;                  // PhotonNetwork.get_IsConnectedAndReady 0x5B2B0DC (oda kurma on-kosulu)
+static void* (*pn_getCurrentRoom)(void) = NULL;               // PhotonNetwork.get_CurrentRoom 0x5B25790
+static void  (*room_setMaxPlayers)(void*, int) = NULL;        // Room.set_MaxPlayers 0x5B1F9FC (mevcut odayi buyut)
+static int   (*room_getMaxPlayers)(void*) = NULL;             // Room.get_MaxPlayers 0x5B1F9F4
+static void  (*room_setIsOpen)(void*, bool) = NULL;           // Room.set_IsOpen 0x5B1F83C (kilitli/acik)
+static void  (*room_setIsVisible)(void*, bool) = NULL;        // Room.set_IsVisible 0x5B1F91C (gorunur/gorunmez)
+static bool  (*room_setCustomProperties)(void*, void*, void*, void*) = NULL;  // Room.SetCustomProperties 0x5B20478 (sifre)
 // oda durumu (kalici)
 static bool  isRoomLocked = false;
 static bool  isRoomInvisible = false;
 static char  roomPasswordText[64] = "";
 static void* g_fAutoSyncScene = NULL;   // PhotonNetwork.automaticallySyncScene static field (harita sync)
-static void* (*pn_getNickName)(void) = NULL;                   // PhotonNetwork.get_NickName 0x59338C0 (isim kaydet)
-static bool  (*pn_leaveRoom)(bool) = NULL;                     // PhotonNetwork.LeaveRoom 0x593B2D8 (goz at cikis)
-static bool  (*pn_setMasterClient)(void* player) = NULL;       // PhotonNetwork.SetMasterClient
-static bool  (*room_getIsOpen)(void*) = NULL;                  // Room.get_IsOpen 0x59279A8
-static bool  (*room_getIsVisible)(void*) = NULL;               // Room.get_IsVisible 0x5927A88
+static void* (*pn_getNickName)(void) = NULL;                   // PhotonNetwork.get_NickName 0x5B2B5F4 (isim kaydet)
+static bool  (*pn_leaveRoom)(bool) = NULL;                     // PhotonNetwork.LeaveRoom 0x5B330D8 (goz at cikis)
+static bool  (*pn_setMasterClient)(void* player) = NULL;       // PhotonNetwork.SetMasterClient 0x5B3093C
+static bool  (*room_getIsOpen)(void*) = NULL;                  // Room.get_IsOpen 0x5B1F834
+static bool  (*room_getIsVisible)(void*) = NULL;               // Room.get_IsVisible 0x5B1F914
 // NOT: room_setIsOpen ve room_setIsVisible yukarida (874-875) tanimli — burada tekrar tanimlama.
-static bool  (*pn_loadLevelStr)(void* name) = NULL;             // PhotonNetwork.LoadLevel(string) 0x5941D94
-static bool  (*pn_loadLevelInt)(int index) = NULL;              // PhotonNetwork.LoadLevel(int) 0x5941B64
-static void  (*hrMainStartRace)(void* self) = NULL;              // HR_MainMenuHandler.StartRace() 0x549130C
-static void  (*unity_LoadSceneStr)(void* name) = NULL;           // UnityEngine.SceneManager.LoadScene(string) 0x6781268
-static void  (*unity_LoadSceneInt)(int idx) = NULL;              // UnityEngine.SceneManager.LoadScene(int) 0x6781430
-static void* (*pn_getActiveSceneName)(void) = NULL;             // SceneManagerHelper.get_ActiveSceneName 0x59618B0
-static int   (*pn_getActiveSceneBuildIndex)(void) = NULL;        // SceneManagerHelper.get_ActiveSceneBuildIndex 0x5961920
+static bool  (*pn_loadLevelStr)(void* name) = NULL;             // PhotonNetwork.LoadLevel(string) 0x5B39B94
+static bool  (*pn_loadLevelInt)(int index) = NULL;              // PhotonNetwork.LoadLevel(int) 0x5B39964
+static void  (*hrMainStartRace)(void* self) = NULL;              // HR_MainMenuHandler.StartRace() 0x563B810
+static void  (*unity_LoadSceneStr)(void* name) = NULL;           // UnityEngine.SceneManager.LoadScene(string) 0x6991460
+static void  (*unity_LoadSceneInt)(int idx) = NULL;              // UnityEngine.SceneManager.LoadScene(int) 0x6991628
+static void* (*pn_getActiveSceneName)(void) = NULL;             // SceneManagerHelper.get_ActiveSceneName 0x5B595A8
+static int   (*pn_getActiveSceneBuildIndex)(void) = NULL;        // SceneManagerHelper.get_ActiveSceneBuildIndex 0x5B59618
 // ==== ODADAKI OYUNCULAR (script.json dogrulandi) ====
-static void* (*pn_getPlayerList)(void) = NULL;      // PhotonNetwork.get_PlayerList -> Player[]  0x59339D0
-static void* (*pn_getPlayerListOthers)(void) = NULL; // PhotonNetwork.get_PlayerListOthers (kendisi haric) 0x5933B88
-static void* (*pn_getLocalPlayer)(void) = NULL;     // PhotonNetwork.get_LocalPlayer 0x5933814 (master miyim kontrolu)
-static void* (*ply_getNickName)(void*) = NULL;      // Player.get_NickName          0x5924574
-static int   (*ply_getActorNumber)(void*) = NULL;   // Player.get_ActorNumber       0x592455C
-static bool  (*ply_getIsMaster)(void*) = NULL;      // Player.get_IsMasterClient    0x5924640
-static void* (*ply_getUserId)(void*) = NULL;        // Player.get_UserId            0x5924630
+static void* (*pn_getPlayerList)(void) = NULL;      // PhotonNetwork.get_PlayerList -> Player[]  0x5B2B704
+static void* (*pn_getPlayerListOthers)(void) = NULL; // PhotonNetwork.get_PlayerListOthers (kendisi haric) 0x5B2B8BC
+static void* (*pn_getLocalPlayer)(void) = NULL;     // PhotonNetwork.get_LocalPlayer 0x5B2B548 (master miyim kontrolu)
+static void* (*ply_getNickName)(void*) = NULL;      // Player.get_NickName          0x5B1C400
+static int   (*ply_getActorNumber)(void*) = NULL;   // Player.get_ActorNumber       0x5B1C3E8
+static bool  (*ply_getIsMaster)(void*) = NULL;      // Player.get_IsMasterClient    0x5B1C4CC
+static void* (*ply_getUserId)(void*) = NULL;        // Player.get_UserId            0x5B1C4BC
 // HR_PhotonLobbyManager.EnableCarSelectionMenu() - oyun ici arac degistirme  0x54ABFD4
 static void  (*lobby_carSelectMenu)(void*) = NULL;
 static void  (*pn_raiseEvent)(unsigned char, void*, bool, void*) = NULL;
@@ -3280,7 +3289,7 @@ static bool h_carManager_gna(void* self, void* carName) {
 
 static bool g_isManualKick = false;
 static bool (*o_closeConnection)(void*) = NULL;
-static bool (*pn_closeConnection)(void*) = NULL;   // PhotonNetwork.CloseConnection DIREKT (hook olmadan) 0x5938844
+static bool (*pn_closeConnection)(void*) = NULL;   // PhotonNetwork.CloseConnection DIREKT (hook olmadan) 0x5B30644
 static bool h_closeConnection(void* kickPlayer) {
     fConn++;
     if (g_isManualKick) return o_closeConnection ? o_closeConnection(kickPlayer) : false;
@@ -14931,29 +14940,59 @@ static void InstallEverything(uintptr_t b) {
 
     // Unity / Photon / TMP core (isim korunmuş)
     safeHookByName("UnityEngine",     "Time",           "set_timeScale",   1, (void*)h_setTimeScale,    (void**)&o_setTimeScale,    "Time.set_timeScale");
+    if (!o_setTimeScale && global_base) {
+        safeHook((void*)(global_base + 0x6981584), (void*)h_setTimeScale, (void**)&o_setTimeScale, "Time.set_timeScale (direct RVA)");
+    }
     safeHookByName("Photon.Pun",      "PhotonNetwork",  "CloseConnection", 1, (void*)h_closeConnection, (void**)&o_closeConnection, "PhotonNetwork.CloseConnection");
+    if (!o_closeConnection && global_base) {
+        safeHook((void*)(global_base + 0x5B30644), (void*)h_closeConnection, (void**)&o_closeConnection, "PhotonNetwork.CloseConnection (direct RVA)");
+    }
     safeHookByName("TMPro",           "TMP_Text",       "set_text",        1, (void*)h_tmpSetText,      (void**)&o_tmpSetText,      "TMP_Text.set_text");
+    if (!o_tmpSetText && global_base) {
+        safeHook((void*)(global_base + 0x68123FC), (void*)h_tmpSetText, (void**)&o_tmpSetText, "TMP_Text.set_text (direct RVA)");
+    }
     safeHookByName("",                "ChatManager",    "Send",            1, (void*)h_chatSend,        (void**)&o_chatSend,        "ChatManager.Send");
+    if (!o_chatSend && global_base) {
+        safeHook((void*)(global_base + 0x3285640), (void*)h_chatSend, (void**)&o_chatSend, "ChatManager.Send (direct RVA)");
+    }
 
     // CarPlayerInput.FixedUpdate ismi korunmuş (Unity engine method)
     safeHookByName("", "CarPlayerInput", "FixedUpdate", 0, (void*)h_playerInputFixed, (void**)&o_playerInputFixed, "CarPlayerInput.FixedUpdate *ANA*");
+    if (!o_playerInputFixed && global_base) {
+        safeHook((void*)(global_base + 0x5687E50), (void*)h_playerInputFixed, (void**)&o_playerInputFixed, "CarPlayerInput.FixedUpdate (direct RVA)");
+    }
 
     // SmoothSync classes — Update ismi Unity engine metotu, korunmuş
     safeHookByName("", "SmoothSyncRCC",  "Update", 0, (void*)h_smRCC, (void**)&o_smRCC, "SmoothSyncRCC.Update");
+    if (!o_smRCC && global_base) {
+        safeHook((void*)(global_base + 0x5C593F4), (void*)h_smRCC, (void**)&o_smRCC, "SmoothSyncRCC.Update (direct RVA)");
+    }
     safeHookByName("", "SmoothSyncPUN2", "Update", 0, (void*)h_smPUN, (void**)&o_smPUN, "SmoothSyncPUN2.Update");
+    if (!o_smPUN && global_base) {
+        safeHook((void*)(global_base + 0x5C51790), (void*)h_smPUN, (void**)&o_smPUN, "SmoothSyncPUN2.Update (direct RVA)");
+    }
 
     // RCCP_CarController.Update — eski "RCCP.Update" adlandırması
     safeHookByName("", "RCCP_CarController", "Update", 0, (void*)h_rccpUpdate, (void**)&o_rccpUpdate, "RCCP_CarController.Update (rb yakala)");
+    if (!o_rccpUpdate && global_base) {
+        safeHook((void*)(global_base + 0x5BC48E0), (void*)h_rccpUpdate, (void**)&o_rccpUpdate, "RCCP_CarController.Update (direct RVA)");
+    }
 
-    // Obfuscated metotlar (1.4.3 dump'tan mangled name)
+    // Obfuscated metotlar (1.4.4 dump'tan mangled name)
     { static const char* const n[] = {"fgp","Move",NULL};
       static const char* pr[] = {"Single","Single","Single","Single"};
       safeHookBySig("", "CarDriveSystem", n, 4, "Void", pr, NULL,
                     (void*)h_driveMove, (void**)&o_driveMove, "CarDriveSystem.Move"); }
+    if (!o_driveMove && global_base) {
+        safeHook((void*)(global_base + 0x5683D30), (void*)h_driveMove, (void**)&o_driveMove, "CarDriveSystem.fgp (direct RVA)");
+    }
     { static const char* const n[] = {"ghs","Change",NULL};
       static const char* pr[] = {"PlateHolder"};
       safeHookBySig("", "PlateVariant", n, 1, "Void", pr, NULL,
                     (void*)h_plateChange, (void**)&o_plateChange, "PlateVariant.Change"); }
+    if (!o_plateChange && global_base) {
+        safeHook((void*)(global_base + 0x56D9528), (void*)h_plateChange, (void**)&o_plateChange, "PlateVariant.ghs (direct RVA)");
+    }
     // v114.26: void(String) ChatManager'da 3 metoda uyuyor (Send/SendRPC/fzk).
     // Send public API, SendRPC [PunRPC] — Photon onu ISIMLE cozdugu icin ikisi de
     // obfuscate edilemez. Eleyince geriye tek basina obfuscated olan kaliyor.
@@ -14962,6 +15001,9 @@ static void InstallEverything(uintptr_t b) {
       static const char* const ex[] = {"Send","SendRPC",NULL};
       safeHookBySig("", "ChatManager", n, 1, "Void", pr, ex,
                     (void*)h_chatFup, (void**)&o_chatFup, "ChatManager.fup (gelen chat)"); }
+    if (!o_chatFup && global_base) {
+        safeHook((void*)(global_base + 0x3285D00), (void*)h_chatFup, (void**)&o_chatFup, "ChatManager.fzk (direct RVA)");
+    }
     // NOT: void() imzasi bu sinifta 3 metoda uyuyor (Start/eqm/eqo) — imza fallback'i YOK.
     safeHookByName("", "HR_UI_RoomListLine",   "eqm", 0, (void*)h_roomConnect,   (void**)&o_roomConnect,   "HR_UI_RoomListLine.Connect (obf eqm)");
     if (!o_roomConnect && global_base) {
@@ -15017,10 +15059,15 @@ static void InstallEverything(uintptr_t b) {
       static const char* pr[] = {"String","String","Byte","Byte","String","RoomInfo"};
       safeHookBySig("", "HR_UI_RoomListLine", n, 6, "Void", pr, NULL,
                     (void*)h_roomLineSetup, (void**)&o_roomLineSetup, "HR_UI_RoomListLine.Setup"); }
+    if (!o_roomLineSetup && global_base) {
+        safeHook((void*)(global_base + 0x565FBD8), (void*)h_roomLineSetup, (void**)&o_roomLineSetup, "HR_UI_RoomListLine.eqn (direct RVA)");
+    }
 
-    // Nitro getterlari: RCCP_Nos.get/set_amount — obfuscated. Eski hardcoded offset (0x54CFE14/1C)
-    // hâlâ 1.4.3'te bozuk olabilir. Skip — SONSUZ NOS özelliği zaten il2cpp field write ile de çalışıyor.
-    // safeHookByName("", "RCCP_Nos", "?", 0, (void*)h_getNitro, (void**)&o_getNitro, "RCCP_Nos.get_nitroAmount");
+    // Nitro getter: CarNitro.fhp (0x56870A4) — script.json ile dogrulandi
+    safeHookByName("", "CarNitro", "fhp", 0, (void*)h_getNitro, (void**)&o_getNitro, "CarNitro.fhp (get_nitroAmount)");
+    if (!o_getNitro && global_base) {
+        safeHook((void*)(global_base + 0x56870A4), (void*)h_getNitro, (void**)&o_getNitro, "CarNitro.fhp (direct RVA)");
+    }
 
     // PlayerManager.AddMoney — obfuscated + sunucu-kilitli. Skip.
     // CAS reklam hookları — obj-c swizzle zaten yapıyor (%ctor içinde). Skip.
