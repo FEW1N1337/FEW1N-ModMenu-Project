@@ -5784,6 +5784,84 @@ static void few1n_applySelektor(void) {
     } @catch (...) {}
 }
 
+static void few1n_applyPoliceAndNeonLights(void) {
+    if (!isPoliceStrobeEnabled && !isNeonLightsEnabled) return;
+    if (g_myLights && !unityAlive(g_myLights)) g_myLights = NULL;
+    if (!unityAlive(g_myLights)) {
+        static int pTick = 0;
+        if ((pTick++ % 15) != 0) return;
+        if (!g_rccpLightsType || !g_mFindObjectsPlural || !i_runtime_invoke || !unityAlive(g_rb)) return;
+        @try {
+            Vec3 myPos; rbGetPosIl(g_rb, &myPos);
+            void* a[1]; a[0] = g_rccpLightsType;
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            if (!ptrOk(arr)) return;
+            int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
+            if (cnt < 0 || cnt > 256) return;
+            void** ls = (void**)((uintptr_t)arr + 0x20);
+            void* best = NULL; float bestD = 1e18f;
+            for (int i = 0; i < cnt; i++) {
+                void* L = ls[i]; if (!unityAlive(L)) continue;
+                Vec3 p; if (!few1n_objPos(L, &p)) continue;
+                float dx=p.x-myPos.x,dy=p.y-myPos.y,dz=p.z-myPos.z; float d=dx*dx+dy*dy+dz*dz;
+                if (d < bestD) { bestD = d; best = L; }
+            }
+            if (ptrOk(best) && bestD < 100.0f) g_myLights = best;
+        } @catch (...) {}
+        return;
+    }
+    @try {
+        static int strobeTick = 0;
+        static float neonHue = 0.0f;
+        strobeTick++;
+
+        void* listObj = *(void**)((uintptr_t)g_myLights + 0x38); // List<RCCP_Light> lights
+        void** lightItems = NULL;
+        int lightCnt = 0;
+        if (ptrOk(listObj)) {
+            void* itemsArr = *(void**)((uintptr_t)listObj + 0x10);
+            lightCnt = *(int*)((uintptr_t)listObj + 0x18);
+            if (ptrOk(itemsArr) && lightCnt > 0 && lightCnt <= 64) {
+                lightItems = (void**)((uintptr_t)itemsArr + 0x20);
+            }
+        }
+
+        if (isPoliceStrobeEnabled) {
+            int phase = (strobeTick / 2) % 6; // 0,1 = Kirmizi+Sol | 2 = off | 3,4 = Mavi+Sag | 5 = off
+            bool isRed  = (phase == 0 || phase == 1);
+            bool isBlue = (phase == 3 || phase == 4);
+            *(unsigned char*)((uintptr_t)g_myLights + 0x44) = isRed ? 1 : 0;   // indicatorsLeft
+            *(unsigned char*)((uintptr_t)g_myLights + 0x45) = isBlue ? 1 : 0;  // indicatorsRight
+            *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_HIGHBEAM) = (isRed || isBlue) ? 1 : 0;
+            *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_LOWBEAM)  = 1;
+
+            if (lightItems) {
+                Color4 redC  = {1.6f, 0.05f, 0.05f, 1.0f};
+                Color4 blueC = {0.05f, 0.45f, 1.8f, 1.0f};
+                Color4 col   = isRed ? redC : (isBlue ? blueC : (Color4){0.1f, 0.1f, 0.2f, 1.0f});
+                for (int i = 0; i < lightCnt; i++) {
+                    void* rl = lightItems[i];
+                    if (!unityAlive(rl)) continue;
+                    *(Color4*)((uintptr_t)rl + 0x70) = col; // RCCP_Light.emissiveColor
+                }
+            }
+        } else if (isNeonLightsEnabled) {
+            neonHue += 0.02f;
+            if (neonHue >= 1.0f) neonHue -= 1.0f;
+            Color4 nc = hueToRGB(neonHue);
+            nc.r *= 1.6f; nc.g *= 1.6f; nc.b *= 1.6f; nc.a = 1.0f;
+            *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_LOWBEAM) = 1;
+            if (lightItems) {
+                for (int i = 0; i < lightCnt; i++) {
+                    void* rl = lightItems[i];
+                    if (!unityAlive(rl)) continue;
+                    *(Color4*)((uintptr_t)rl + 0x70) = nc;
+                }
+            }
+        }
+    } @catch (...) {}
+}
+
 // ===== GERCEK COZUM: CarPlayerInput.FixedUpdate (SADECE YEREL OYUNCU) =====
 // script.json + il2cpp.h ile dogrulandi:
 //   CarPlayerInput$$FixedUpdate = RVA 0x54D0BC0  (88935360)
@@ -14797,6 +14875,34 @@ static void few1n_joinTargetRoom(NSString *nm) {
         few1n_applyNativeAdBlock();
     }
     FLog(isAdBlockEnabled ? @"🚫 Reklam bozucu ACIK - il2cpp + native aninda aktif!" : @"🚫 Reklam bozucu KAPALI");
+    [self refreshUI];
+}
+
+- (void)tapAntiReport {
+    isAntiReportEnabled = !isAntiReportEnabled;
+    saveBool(@"antireport", isAntiReportEnabled);
+    [self refreshUI];
+}
+
+- (void)tapVoteKickSnitch {
+    isVoteKickSnitchEnabled = !isVoteKickSnitchEnabled;
+    saveBool(@"votekicksnitch", isVoteKickSnitchEnabled);
+    [self refreshUI];
+}
+
+- (void)tapPoliceStrobe {
+    isPoliceStrobeEnabled = !isPoliceStrobeEnabled;
+    if (isPoliceStrobeEnabled) isNeonLightsEnabled = false;
+    saveBool(@"policestrobe", isPoliceStrobeEnabled);
+    saveBool(@"neonlights", isNeonLightsEnabled);
+    [self refreshUI];
+}
+
+- (void)tapNeonLights {
+    isNeonLightsEnabled = !isNeonLightsEnabled;
+    if (isNeonLightsEnabled) isPoliceStrobeEnabled = false;
+    saveBool(@"neonlights", isNeonLightsEnabled);
+    saveBool(@"policestrobe", isPoliceStrobeEnabled);
     [self refreshUI];
 }
 
