@@ -6174,19 +6174,14 @@ static void few1n_applyGlobalChatColor(NSString *hexColor) {
     if (!hexColor || [hexColor.uppercaseString isEqualToString:@"RESET"] || hexColor.length == 0) {
         bleedNick = g_baseUserNick;
     } else {
-        // Sonu kapatilmamis renk etiketi: Photon NickName uzerinden modsuz alicilarin ekraninda
-        // hem isim hem de arkasindan eklenen tum mesaj o renge boyanir!
-        bleedNick = [NSString stringWithFormat:@"<#%@>%@", hexColor, g_baseUserNick];
+        // Cift renk etiketi: Oyun "<color=...>[Nick]</color>: msg" seklinde tek </color> kapatsa bile
+        // ikinci etiket acik kalir ve tum mesaj secilen renge boyanir!
+        bleedNick = [NSString stringWithFormat:@"<#%@><#%@>%@", hexColor, hexColor, g_baseUserNick];
     }
     
     void* ns = mkStr(bleedNick);
     if (ns) {
         setNickFn(ns);
-        void* (*pmGetInst)(void) = playerManagerGetInst ?: w_playerManagerGetInst;
-        void (*pmUpdNick)(void*, void*) = pm_updateNicknameInternal ?: w_pm_updateNicknameInternal;
-        if (pmGetInst && pmUpdNick) {
-            @try { void* pm = pmGetInst(); if (pm) pmUpdNick(pm, ns); } @catch (...) {}
-        }
         FLog([NSString stringWithFormat:@"🔥 Herkeste Renkli Chat ismi ayarlandi: %@", bleedNick]);
     }
 }
