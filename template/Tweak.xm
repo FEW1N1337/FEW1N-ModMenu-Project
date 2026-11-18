@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.2
+#define FEW1N_VERSION 117.3
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -1932,11 +1932,15 @@ static void* w_rinfo_getName(void *self) {
 }
 static void w_room_setMaxPlayers(void *self, int v) {
     if (!self) return;
-    @try { *(int*)((uintptr_t)self + OFFR_ROOM_MAXPLAYERS) = v; } @catch (...) {}
+    // Photon Room.set_MaxPlayers sadece (value != this.maxPlayers) ise sunucuya paket atar!
+    // Once farkli bir deger (-1) yazarak sunucuya OpSetPropertiesOfRoom gitmesini garanti et:
+    @try { *(int*)((uintptr_t)self + OFFR_ROOM_MAXPLAYERS) = -1; } @catch (...) {}
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "set_MaxPlayers", 1); }
-    if (!m || !i_runtime_invoke) return;
-    @try { int v_int = v; void *args[1]={&v_int}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    if (m && i_runtime_invoke) {
+        @try { int v_int = v; void *args[1]={&v_int}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    }
+    @try { *(int*)((uintptr_t)self + OFFR_ROOM_MAXPLAYERS) = v; } @catch (...) {}
 }
 static int  w_room_getMaxPlayers(void *self) {
     if (!self) return 0;
@@ -7102,6 +7106,34 @@ static void h_onCreatedRoom(void* self) {
             }
         }
     } @catch (...) {}
+}
+
+static bool (*o_lbc_opCreateRoom)(void*, void*) = NULL;
+static bool h_lbc_opCreateRoom(void* self, void* enterRoomParams) {
+    @try {
+        if (ptrOk(enterRoomParams) && roomMaxPlayers > 0) {
+            void* opts = *(void**)((uintptr_t)enterRoomParams + 0x18); // EnterRoomParams.RoomOptions
+            if (ptrOk(opts)) {
+                *(int*)((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;
+                FLog([NSString stringWithFormat:@"🔥 [OpCreateRoom] RoomOptions.MaxPlayers = %d zorlandı!", roomMaxPlayers]);
+            }
+        }
+    } @catch (...) {}
+    return o_lbc_opCreateRoom ? o_lbc_opCreateRoom(self, enterRoomParams) : false;
+}
+
+static bool (*o_lbc_opJoinRandomOrCreateRoom)(void*, void*, void*) = NULL;
+static bool h_lbc_opJoinRandomOrCreateRoom(void* self, void* opJoinParams, void* createRoomParams) {
+    @try {
+        if (ptrOk(createRoomParams) && roomMaxPlayers > 0) {
+            void* opts = *(void**)((uintptr_t)createRoomParams + 0x18); // EnterRoomParams.RoomOptions
+            if (ptrOk(opts)) {
+                *(int*)((uintptr_t)opts + OFFR_ROPT_MAXPLAYERS) = roomMaxPlayers;
+                FLog([NSString stringWithFormat:@"🔥 [OpJoinRandomOrCreateRoom] RoomOptions.MaxPlayers = %d zorlandı!", roomMaxPlayers]);
+            }
+        }
+    } @catch (...) {}
+    return o_lbc_opJoinRandomOrCreateRoom ? o_lbc_opJoinRandomOrCreateRoom(self, opJoinParams, createRoomParams) : false;
 }
 
 // ===== CAS IL2CPP REKLAM HOOKS (CANLI REKLAM BOZUCU) =====
@@ -15158,6 +15190,14 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("", "HR_PhotonLobbyManager", "OnCreatedRoom", 0, (void*)h_onCreatedRoom, (void**)&o_onCreatedRoom, "HR_PhotonLobbyManager.OnCreatedRoom");
     if (!o_onCreatedRoom && global_base) {
         safeHook((void*)(global_base + 0x565CED8), (void*)h_onCreatedRoom, (void**)&o_onCreatedRoom, "HR_PhotonLobbyManager.OnCreatedRoom (direct RVA)");
+    }
+    safeHookByName("Photon.Realtime", "LoadBalancingClient", "OpCreateRoom", 1, (void*)h_lbc_opCreateRoom, (void**)&o_lbc_opCreateRoom, "LoadBalancingClient.OpCreateRoom");
+    if (!o_lbc_opCreateRoom && global_base) {
+        safeHook((void*)(global_base + 0x5B0D76C), (void*)h_lbc_opCreateRoom, (void**)&o_lbc_opCreateRoom, "LoadBalancingClient.OpCreateRoom (direct RVA)");
+    }
+    safeHookByName("Photon.Realtime", "LoadBalancingClient", "OpJoinRandomOrCreateRoom", 2, (void*)h_lbc_opJoinRandomOrCreateRoom, (void**)&o_lbc_opJoinRandomOrCreateRoom, "LoadBalancingClient.OpJoinRandomOrCreateRoom");
+    if (!o_lbc_opJoinRandomOrCreateRoom && global_base) {
+        safeHook((void*)(global_base + 0x5B0D5D0), (void*)h_lbc_opJoinRandomOrCreateRoom, (void**)&o_lbc_opJoinRandomOrCreateRoom, "LoadBalancingClient.OpJoinRandomOrCreateRoom (direct RVA)");
     }
 
     // CAS IL2CPP REKLAM HOOKS
