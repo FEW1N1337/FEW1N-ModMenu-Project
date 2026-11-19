@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.9
+#define FEW1N_VERSION 117.10
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -5781,6 +5781,10 @@ static void few1n_applySelektor(void) {
         unsigned char on = (((g_selTick / rate) % 2) == 0) ? 1 : 0;   // hiz menuden ayarli
         *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_HIGHBEAM) = on;   // highBeamHeadlights
         *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_LOWBEAM) = on;   // lowBeamHeadlights (gorunurluk icin)
+        if (unityAlive(g_myRccp)) {
+            *(unsigned char*)((uintptr_t)g_myRccp + 0x19C) = on; // lowBeamLights
+            *(unsigned char*)((uintptr_t)g_myRccp + 0x19D) = on; // highBeamLights
+        }
     } @catch (...) {}
 }
 
@@ -5834,6 +5838,12 @@ static void few1n_applyPoliceAndNeonLights(void) {
             *(unsigned char*)((uintptr_t)g_myLights + 0x45) = isBlue ? 1 : 0;  // indicatorsRight
             *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_HIGHBEAM) = (isRed || isBlue) ? 1 : 0;
             *(unsigned char*)((uintptr_t)g_myLights + OFFR_LIGHTS_LOWBEAM)  = 1;
+            if (unityAlive(g_myRccp)) {
+                *(unsigned char*)((uintptr_t)g_myRccp + 0x19C) = 1; // lowBeamLights
+                *(unsigned char*)((uintptr_t)g_myRccp + 0x19D) = (isRed || isBlue) ? 1 : 0; // highBeamLights
+                *(unsigned char*)((uintptr_t)g_myRccp + 0x19E) = isRed ? 1 : 0;  // indicatorsLeftLights
+                *(unsigned char*)((uintptr_t)g_myRccp + 0x19F) = isBlue ? 1 : 0; // indicatorsRightLights
+            }
 
             if (lightItems) {
                 Color4 redC  = {1.6f, 0.05f, 0.05f, 1.0f};
