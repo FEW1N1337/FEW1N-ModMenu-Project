@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.6
+#define FEW1N_VERSION 117.8
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -7901,6 +7901,8 @@ static UIViewController* few1n_topVC(void) {
     y = [self toggle:@"\U0001F47B  No-Clip (Araclardan Gec)" sub:@"Trafikten/duvardan gec - godmode gibi ama fiziksel gecis" key:@"noclip" atY:y action:@selector(tapNoClip)];
     y = [self toggle:@"\U0001F6E1  GODMODE (Kaza Yapma)" sub:@"Trafige carpsan bile olmezsin" key:@"godmode" atY:y action:@selector(tapGodmode)];
     y = [self toggle:@"\U0001F4A1  Hizli Selektor (far cakma)" sub:@"On farlari hizli ac/kapat (RCCP)" key:@"selektor" atY:y action:@selector(tapSelektor)];
+    y = [self toggle:@"🚨  Polis Çakarı (Kırmızı/Mavi)" sub:@"Ön far ve sinyalleri kırmızı/mavi polis çakarı yapar" key:@"policestrobe" atY:y action:@selector(tapPoliceStrobe)];
+    y = [self toggle:@"🌈  Gökkuşağı Far / Neon" sub:@"Araç far ve ışıklarını akıcı gökkuşağı renginde yakar" key:@"neonlights" atY:y action:@selector(tapNeonLights)];
     y = [self toggle:@"🔥  Pop & Bangs (Egzoz Alev Patlatma)" sub:@"Vites veya gaz birakmada egzoz alev/patlama efekti" key:@"popbangs" atY:y action:@selector(tapPopBangs)];
     y = [self toggle:@"🔊  Otomatik Havali Korna" sub:@"Ritmik havalı korna calar (herkese duyulur)" key:@"autohorn" atY:y action:@selector(tapAutoHorn)];
     y = [self toggle:@"🔥  Surekli Sari Balata" sub:@"Fren yapmadan sari glow: dob(1e9) + kalici esik birlikte" key:@"brakeglow" atY:y action:@selector(tapBrakeGlow)];
