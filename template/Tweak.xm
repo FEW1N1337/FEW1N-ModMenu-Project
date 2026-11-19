@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.8
+#define FEW1N_VERSION 117.9
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -16017,7 +16017,7 @@ static void few1n_applyNativeAdBlock(void) {
             method_setImplementation(pm, imp_implementationWithBlock(^(UIViewController* _self, UIViewController* vc, BOOL animated, void(^completion)(void)) {
                 if (isAdBlockEnabled && vc) {
                     NSString *cn = NSStringFromClass([vc class]);
-                    NSArray *adPrefixes = @[@"GAD", @"CAS", @"AL", @"MAInterstitial", @"MARewarded", @"Vungle", @"UnityAds", @"UADS", @"FBAd", @"FBInterstitial", @"IMInterstitial", @"MTG", @"BUNative", @"BURewarded", @"YMA", @"Chartboost", @"CHB"];
+                    NSArray *adPrefixes = @[@"GAD", @"CAS", @"ALAd", @"ALInterstitial", @"ALIncentivized", @"ALAppOpen", @"MAInterstitial", @"MARewarded", @"Vungle", @"UnityAds", @"UADS", @"FBAd", @"FBInterstitial", @"IMInterstitial", @"MTG", @"BUNative", @"BURewarded", @"YMA", @"Chartboost", @"CHB"];
                     for (NSString *pfx in adPrefixes) {
                         if ([cn hasPrefix:pfx]) {
                             FLog([NSString stringWithFormat:@"🚫 Reklam VC engellendi: %@", cn]);
@@ -16043,14 +16043,17 @@ static void few1n_applyNativeAdBlock(void) {
             Method m = class_getInstanceMethod(cls, sel);
             if (m) {
                 IMP origImp = method_getImplementation(m);
-                method_setImplementation(m, imp_implementationWithBlock(^(UIView* _self) {
+                IMP newImp = imp_implementationWithBlock(^(UIView* _self) {
                     if (origImp) ((void(*)(id, SEL))origImp)(_self, @selector(didMoveToWindow));
-                    if (isAdBlockEnabled) {
+                    if (isAdBlockEnabled && [_self isKindOfClass:cls]) {
                         _self.hidden = YES;
                         _self.alpha = 0;
                         _self.frame = CGRectZero;
                     }
-                }));
+                });
+                if (!class_addMethod(cls, sel, newImp, method_getTypeEncoding(m))) {
+                    method_setImplementation(m, newImp);
+                }
             }
         }
         FLog(@"🚫 Banner gizleme hooklari kuruldu");
