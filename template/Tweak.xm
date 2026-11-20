@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.11
+#define FEW1N_VERSION 117.12
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -128,6 +128,8 @@ static bool isNeonLightsEnabled = false;
 // RCCP visual/state toggle'lar
 static bool isAutoHornEnabled = false;
 static bool isRevLimiterEnabled = false;
+static bool isHazardLightsEnabled = false;
+static bool isGhostNoHitEnabled = false;
 static bool isCruiseEnabled = false;    // hiz sabitleyici (cruise control)
 static float cruiseSpeedKmh = 180.0f;   // hedef sabit hiz (km/h)
 static void* g_rb = NULL;               // arabanin Rigidbody'si (h_driveMove'da yakalanir)
@@ -2293,10 +2295,15 @@ static void w_photonMgrLoadLevel(void *sceneStr, bool addressable) {
 // SmoothSyncRCC — hiçbiri obfuscated değil.
 static void w_cps_TeleportCar_RPC(void* self, Vec3 pos, Quaternion rot, void* methodInfo) {
     static void *m = NULL;
-    if (!m) { void *c = few1n_classAnyImage("", "CarPhotonSync"); m = few1n_resolveOn(c, "TeleportCar_RPC", 2); }
+    if (!m) { void *c = few1n_classAnyImage("", "CarPhotonSync"); m = few1n_resolveOn(c, "TeleportCar_RPC", 4); }
     if (!m || !i_runtime_invoke || !self) return;
     (void)methodInfo;
-    @try { void *args[2] = { &pos, &rot }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try {
+        Vec3 vel = {0.0f, 0.0f, 0.0f};
+        uint8_t fakeInfo[24] = {0};
+        void *args[4] = { &pos, &rot, &vel, fakeInfo };
+        i_runtime_invoke(m, self, args, NULL);
+    } @catch (...) {}
 }
 static void w_rbps_TeleportCar_RPC(void* self, Vec3 pos, Quaternion rot, void* methodInfo) {
     static void *m = NULL;
@@ -2318,6 +2325,12 @@ static void w_ssrcc_RpcTeleport(void* self, Vec3 pos, Vec3 rot, Vec3 scale, floa
     if (!m || !i_runtime_invoke || !self) return;
     (void)methodInfo;
     @try { float ft = t; void *args[4] = { &pos, &rot, &scale, &ft }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+}
+static void few1n_clearSmoothSyncBuffer(void* ssrcc) {
+    static void *m = NULL;
+    if (!m) { void *c = few1n_classAnyImage("Smooth", "SmoothSyncRCC"); m = few1n_resolveOn(c, "RpcClearBuffer", 0); }
+    if (!m || !i_runtime_invoke || !unityAlive(ssrcc)) return;
+    @try { i_runtime_invoke(m, ssrcc, NULL, NULL); } @catch (...) {}
 }
 
 // TMP_Text.richText = true  (Unity rich text acigini geri ac)
@@ -2553,13 +2566,16 @@ static void safeHook(void* target, void* replacement, void** original, const cha
     // hooklar calisir; sideload'da NULL kalir -> *original NULL (yukarida set edildi) ->
     // asagidaki FAIL dali g_hooksDead=true yapar -> il2cpp yolu devreye girer.
     // Sonuc: substrate bagimliligi tamamen kalkti, sideload'da acilis cokmesi biter.
-    if (g_msHook) g_msHook(target, replacement, original);   // dlsym ile bulunan gercek motor (Substrate/ElleKit)
-    // GERCEK dogrulama: hook basarili olursa *original orijinal koda isaret eder.
-    // Sideload'da (Substrate yok) MSHookFunction sessizce hicbir sey yapmaz -> *original NULL kalir.
+    if (!g_msHook) {
+        FLog([NSString stringWithFormat:@"FAIL (hook motoru yok) %@", nm]);
+        hookFailCount++;
+        if (!g_hooksDead) { g_hooksDead = true; FLog(@">> Hook motoru yok (sideload), kalanlar atlaniyor. il2cpp yolu aktif."); }
+        return;
+    }
+    g_msHook(target, replacement, original);   // dlsym ile bulunan gercek motor (Substrate/ElleKit)
     if (original && *original == NULL) {
         FLog([NSString stringWithFormat:@"FAIL (hook yazilamadi) %@", nm]);
         hookFailCount++;
-        if (!g_hooksDead) { g_hooksDead = true; FLog(@">> Hooklar bu ortamda yazilamiyor, kalanlar atlaniyor. il2cpp yolu aktif."); }
         return;
     }
     FLog([NSString stringWithFormat:@"OK  %@", nm]);
@@ -5872,6 +5888,165 @@ static void few1n_applyPoliceAndNeonLights(void) {
     } @catch (...) {}
 }
 
+// v117.12: Senkronize Ghost Mod (HR_BlockedCollisions "noHit" Photon CustomProperty)
+static bool few1n_setGhostNoHit(bool on) {
+    if (!pn_getLocalPlayer || !i_runtime_invoke || !i_class_get_method_from_name || !i_object_new || !i_value_box) return false;
+    void* me = NULL; @try { me = pn_getLocalPlayer(); } @catch (...) {}
+    if (!ptrOk(me)) return false;
+    void* htCls = few1n_classAnyImage("ExitGames.Client.Photon", "Hashtable");
+    void* plyCls = few1n_classAnyImage("Photon.Realtime", "Player");
+    void* boolCls = few1n_classAnyImage("System", "Boolean");
+    if (!htCls || !plyCls || !boolCls) return false;
+    void* htCtor = i_class_get_method_from_name(htCls, ".ctor", 0);
+    void* htSet  = i_class_get_method_from_name(htCls, "set_Item", 2);
+    void* mSetProps = i_class_get_method_from_name(plyCls, "SetCustomProperties", 3);
+    if (!htCtor || !htSet || !mSetProps) return false;
+    @try {
+        void* ht = i_object_new(htCls);
+        if (!ptrOk(ht)) return false;
+        i_runtime_invoke(htCtor, ht, NULL, NULL);
+        uint8_t bVal = on ? 1 : 0;
+        void* boxedBool = i_value_box(boolCls, &bVal);
+        void* keyStr = mkStr(@"noHit");
+        if (!ptrOk(boxedBool) || !ptrOk(keyStr)) return false;
+        void* sArgs[2] = { keyStr, boxedBool };
+        i_runtime_invoke(htSet, ht, sArgs, NULL);
+        void* pArgs[3] = { ht, NULL, NULL };
+        bool crashed = false;
+        few1n_guardedInvoke(mSetProps, me, pArgs, &crashed);
+        if (!crashed) {
+            FLog([NSString stringWithFormat:@"👻 Senkronize Ghost (noHit=%d) yayinlandi", (int)on]);
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// v117.12: Odadaki Trafiği Herkeste Temizle (HR_TrafficPooling.SimpleClearRPC)
+static bool few1n_syncClearTraffic(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_array_new || !i_value_box || !mbp_getPhotonView) return false;
+    void* tpCls = few1n_classAnyImage("", "HR_TrafficPooling");
+    void* pvCls = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    void* objCls = few1n_classAnyImage("System", "Object");
+    void* intCls = few1n_classAnyImage("System", "Int32");
+    if (!tpCls || !pvCls || !objCls || !intCls) return false;
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC = few1n_methodBySig(pvCls, "Void", prm, 3, 0);
+    void* tpType = few1n_typeObjOf(tpCls);
+    if (!mRPC || !tpType) return false;
+    @try {
+        void* a[1] = { tpType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return false;
+        int n = few1n_rdI32(arr, 0x18, 0);
+        if (n <= 0 || n > 16) return false;
+        void* tp = few1n_rdPtr(arr, 0x20);
+        if (!unityAlive(tp)) return false;
+        *(int*)((uintptr_t)tp + 0x28) = 0; // carCount = 0
+        void* pv = mbp_getPhotonView(tp);
+        if (!ptrOk(pv)) return false;
+        void* rpcName = mkStr(@"SimpleClearRPC");
+        int all = 0; // RpcTarget.All
+        for (int slot = 0; slot < 50; slot++) {
+            void* oArr = i_array_new(objCls, 1);
+            if (!ptrOk(oArr)) break;
+            int s = slot;
+            *(void**)((uintptr_t)oArr + 0x20) = i_value_box(intCls, &s);
+            void* args[3] = { rpcName, &all, oArr };
+            bool crashed = false;
+            few1n_guardedInvoke(mRPC, pv, args, &crashed);
+            if (crashed) break;
+        }
+        FLog(@"🚦 Odadaki tum trafik SimpleClearRPC ile temizlendi");
+        return true;
+    } @catch (...) {}
+    return false;
+}
+
+// v117.12: Odadaki Herkeste Trafik Aracı Bas (HR_TrafficPooling.SimpleSpawnRPC)
+static bool few1n_syncSpawnTraffic(int carIdx, int paintIdx, float speed, bool opposite) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_array_new || !i_value_box || !mbp_getPhotonView || !unityAlive(g_rb)) return false;
+    void* tpCls   = few1n_classAnyImage("", "HR_TrafficPooling");
+    void* pvCls   = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    void* objCls  = few1n_classAnyImage("System", "Object");
+    void* intCls  = few1n_classAnyImage("System", "Int32");
+    void* byteCls = few1n_classAnyImage("System", "Byte");
+    void* vecCls  = few1n_classAnyImage("UnityEngine", "Vector3");
+    void* boolCls = few1n_classAnyImage("System", "Boolean");
+    void* fltCls  = few1n_classAnyImage("System", "Single");
+    if (!tpCls || !pvCls || !objCls || !intCls || !byteCls || !vecCls || !boolCls || !fltCls) return false;
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC = few1n_methodBySig(pvCls, "Void", prm, 3, 0);
+    void* tpType = few1n_typeObjOf(tpCls);
+    if (!mRPC || !tpType) return false;
+    @try {
+        void* a[1] = { tpType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return false;
+        int n = few1n_rdI32(arr, 0x18, 0);
+        if (n <= 0 || n > 16) return false;
+        void* tp = few1n_rdPtr(arr, 0x20);
+        if (!unityAlive(tp)) return false;
+        void* pv = mbp_getPhotonView(tp);
+        if (!ptrOk(pv)) return false;
+        Vec3 pos; rbGetPosIl(g_rb, &pos);
+        pos.z += 35.0f; pos.y += 0.5f;
+        static int nextSlot = 0;
+        int slot = (nextSlot++) % 50;
+        uint8_t cIdx = (uint8_t)carIdx;
+        uint8_t pIdx = (uint8_t)paintIdx;
+        int startMs = 0;
+        uint8_t opp = opposite ? 1 : 0;
+        float spd = speed;
+        void* oArr = i_array_new(objCls, 7);
+        if (!ptrOk(oArr)) return false;
+        void** el = (void**)((uintptr_t)oArr + 0x20);
+        el[0] = i_value_box(intCls,  &slot);
+        el[1] = i_value_box(byteCls, &cIdx);
+        el[2] = i_value_box(byteCls, &pIdx);
+        el[3] = i_value_box(vecCls,  &pos);
+        el[4] = i_value_box(intCls,  &startMs);
+        el[5] = i_value_box(boolCls, &opp);
+        el[6] = i_value_box(fltCls,  &spd);
+        void* rpcName = mkStr(@"SimpleSpawnRPC");
+        int all = 0; // RpcTarget.All
+        void* args[3] = { rpcName, &all, oArr };
+        bool crashed = false;
+        few1n_guardedInvoke(mRPC, pv, args, &crashed);
+        if (!crashed) {
+            FLog([NSString stringWithFormat:@"🚘 Trafik spawn: slot=%d car=%d paint=%d spd=%.0f", slot, carIdx, paintIdx, speed]);
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// v117.12: Gerçek Korna Tetikleyici (RCCP_InputManager.crk -> onHorn)
+static void few1n_triggerHorn(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return;
+    static void* mCrk = NULL;
+    static void* imType = NULL;
+    if (!mCrk || !imType) {
+        void* cls = few1n_classAnyImage("", "RCCP_InputManager");
+        if (cls) {
+            mCrk = i_class_get_method_from_name(cls, "crk", 0);
+            imType = few1n_typeObjOf(cls);
+        }
+    }
+    if (!mCrk || !imType) return;
+    @try {
+        void* a[1] = { imType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return;
+        int n = few1n_rdI32(arr, 0x18, 0);
+        if (n <= 0 || n > 8) return;
+        void* im = few1n_rdPtr(arr, 0x20);
+        if (unityAlive(im)) i_runtime_invoke(mCrk, im, NULL, NULL);
+    } @catch (...) {}
+}
+
 // ===== GERCEK COZUM: CarPlayerInput.FixedUpdate (SADECE YEREL OYUNCU) =====
 // script.json + il2cpp.h ile dogrulandi:
 //   CarPlayerInput$$FixedUpdate = RVA 0x54D0BC0  (88935360)
@@ -7073,6 +7248,13 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 @property (nonatomic, strong) UIView *favOverlay;
 @property (nonatomic, strong) UIView *nanOverlay;
 - (void)tapAdBlock;
+- (void)tapPopBangs;
+- (void)tapAutoHorn;
+- (void)tapRevLimiter;
+- (void)tapHazardLights;
+- (void)tapGhostNoHit;
+- (void)syncClearTraffic;
+- (void)syncSpawnTrafficPick;
 - (void)tapAntiReport;
 - (void)tapVoteKickSnitch;
 - (void)tapPoliceStrobe;
@@ -7657,6 +7839,16 @@ static bool h_casExtIsViewReady(intptr_t viewRef) {
     if (isAdBlockEnabled) return false;
     return o_casExtIsViewReady ? o_casExtIsViewReady(viewRef) : false;
 }
+static void (*o_casFactoryConsent)(void*, bool) = NULL;
+static void h_casFactoryConsent(void* flow, bool ifReq) {
+    if (isAdBlockEnabled) return;
+    if (o_casFactoryConsent) o_casFactoryConsent(flow, ifReq);
+}
+static void (*o_casMobileConsent)(void*) = NULL;
+static void h_casMobileConsent(void* flow) {
+    if (isAdBlockEnabled) return;
+    if (o_casMobileConsent) o_casMobileConsent(flow);
+}
 
 // =============================================================
 //  UI
@@ -7964,10 +8156,12 @@ static UIViewController* few1n_topVC(void) {
     y = [self toggle:@"\U0001FAB6  Dusuk Yercekimi" sub:@"Dusus yavas, floaty" key:@"lowgrav" atY:y action:@selector(tapLowGrav)];
     y = [self toggle:@"\U0001F319  Anti-Gravity (Ay modu)" sub:@"Yercekimi kapali, suzul (asili kal)" key:@"antigrav" atY:y action:@selector(tapAntiGrav)];
     y = [self toggle:@"\U0001F47B  No-Clip (Araclardan Gec)" sub:@"Trafikten/duvardan gec - godmode gibi ama fiziksel gecis" key:@"noclip" atY:y action:@selector(tapNoClip)];
+    y = [self toggle:@"👻  Senkronize Ghost Mod (noHit)" sub:@"Photon noHit property — diğer oyuncuların aracından geç" key:@"ghostnohit" atY:y action:@selector(tapGhostNoHit)];
     y = [self toggle:@"\U0001F6E1  GODMODE (Kaza Yapma)" sub:@"Trafige carpsan bile olmezsin" key:@"godmode" atY:y action:@selector(tapGodmode)];
     y = [self toggle:@"\U0001F4A1  Hizli Selektor (far cakma)" sub:@"On farlari hizli ac/kapat (RCCP)" key:@"selektor" atY:y action:@selector(tapSelektor)];
     y = [self toggle:@"🚨  Polis Çakarı (Kırmızı/Mavi)" sub:@"Ön far ve sinyalleri kırmızı/mavi polis çakarı yapar" key:@"policestrobe" atY:y action:@selector(tapPoliceStrobe)];
     y = [self toggle:@"🌈  Gökkuşağı Far / Neon" sub:@"Araç far ve ışıklarını akıcı gökkuşağı renginde yakar" key:@"neonlights" atY:y action:@selector(tapNeonLights)];
+    y = [self toggle:@"⚠️  Senkronize Dörtlü Flaşör" sub:@"Dörtlü sinyalleri herkesin göreceği şekilde yakar" key:@"hazardlights" atY:y action:@selector(tapHazardLights)];
     y = [self toggle:@"🔥  Pop & Bangs (Egzoz Alev Patlatma)" sub:@"Vites veya gaz birakmada egzoz alev/patlama efekti" key:@"popbangs" atY:y action:@selector(tapPopBangs)];
     y = [self toggle:@"🔊  Otomatik Havali Korna" sub:@"Ritmik havalı korna calar (herkese duyulur)" key:@"autohorn" atY:y action:@selector(tapAutoHorn)];
     y = [self toggle:@"🔥  Surekli Sari Balata" sub:@"Fren yapmadan sari glow: dob(1e9) + kalici esik birlikte" key:@"brakeglow" atY:y action:@selector(tapBrakeGlow)];
@@ -7984,6 +8178,8 @@ static UIViewController* few1n_topVC(void) {
     y = [self toggle:@"🔥  Motor Ölmez" sub:@"RCCP_Engine.engineRunning = true" key:@"immortalengine" atY:y action:@selector(tapImmortalEngine)];
     y = [self toggle:@"🚗  Trafik Dursun" sub:@"HR_TrafficCar.maximumSpeed = 0" key:@"notraffic" atY:y action:@selector(tapNoTraffic)];
     y = [self actionRow:@"🚦  Trafik Yoğunluğu (Boş / Normal / Kalabalık)" color:C_ON atY:y action:@selector(setTrafficDensity)];
+    y = [self actionRow:@"🧹  Odadaki Trafiği Sil (Herkeste)" color:C_GOLD atY:y action:@selector(syncClearTraffic)];
+    y = [self actionRow:@"🚘  Trafik Aracı Bas (Herkeste)" color:C_GOLD atY:y action:@selector(syncSpawnTrafficPick)];
     y = [self actionRow:@"🏆  Combo/Skor Şişir (yarışta bas)" color:C_GOLD atY:y action:@selector(boostScore)];
     self.plateBtn = [self actionButtonRow:&y];
     [self.plateBtn addTarget:self action:@selector(editPlate) forControlEvents:UIControlEventTouchUpInside];
@@ -8221,6 +8417,7 @@ static UIViewController* few1n_topVC(void) {
         sl.textColor = C_RED;
     }
     self.statusLabel = sl; self.statusCard = sc;
+    sc.tag = 5999;
     sl.textAlignment = NSTextAlignmentCenter;
     sl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
     [sc addSubview:sl];
@@ -8304,6 +8501,13 @@ static UIViewController* few1n_topVC(void) {
     CGFloat yy = 12; int curSec = -1;
     for (UIView *v in self.contentView.subviews) {
         NSInteger tg = v.tag;
+        if (tg == 5999) {                       // ALT SABIT ALAN (status + restart + log + footer)
+            curSec = -1;
+            CGRect f = v.frame; f.origin.y = yy; v.frame = f; v.hidden = NO;
+            NSNumber *adv = objc_getAssociatedObject(v, "adv");
+            yy += adv ? [adv floatValue] : (v.frame.size.height + 8.0);
+            continue;
+        }
         if (tg >= 5000 && tg < 6000) {          // BASLIK: her zaman gorunur
             curSec = (int)(tg - 5000);
             CGRect f = v.frame; f.origin.y = yy; v.frame = f; v.hidden = NO;
@@ -8473,6 +8677,8 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"selektor"  on:isSelektor];
     [self setToggle:@"policestrobe" on:isPoliceStrobeEnabled];
     [self setToggle:@"neonlights" on:isNeonLightsEnabled];
+    [self setToggle:@"hazardlights" on:isHazardLightsEnabled];
+    [self setToggle:@"ghostnohit" on:isGhostNoHitEnabled];
     [self setToggle:@"votekicksnitch" on:isVoteKickSnitchEnabled];
     [self setToggle:@"antireport" on:isAntiReportEnabled];
     [self setToggle:@"antigrav"  on:isAntiGrav];
@@ -8627,15 +8833,18 @@ static UIViewController* few1n_topVC(void) {
         } @catch (...) {}
     }
 
-    // ===== OTOMATIK HAVALI KORNA SPAM =====
+    // ===== OTOMATIK HAVALI KORNA SPAM (gercek RCCP_InputManager.onHorn) =====
     if (isAutoHornEnabled && unityAlive(g_rb)) {
         static int hornTick = 0;
         hornTick++;
+        if ((hornTick % 2) == 0) few1n_triggerHorn();
+    }
+
+    // ===== SENKRONIZE DORTLU FLASOR (indicatorsAllLights -> HR_PhotonSync) =====
+    if (isHazardLightsEnabled && unityAlive(g_rb) && g_myRccp) {
         @try {
-            if (g_myRccp) {
-                bool hornState = (hornTick % 10 < 5);  // 100ms ritmik cal
-                *(bool*)((uintptr_t)g_myRccp + OFFR_RCCP_INDICATORS) = hornState; // indicatorsAllLights / Horn signal
-            }
+            *(bool*)((uintptr_t)g_myRccp + OFFR_RCCP_INDICATORS) = true;
+            if (unityAlive(g_myLights)) *(unsigned char*)((uintptr_t)g_myLights + 0x46) = 1; // indicatorsAll
         } @catch (...) {}
     }
 
@@ -14973,6 +15182,86 @@ static void few1n_joinTargetRoom(NSString *nm) {
     [self refreshUI];
 }
 
+- (void)tapPopBangs {
+    isPopBangsEnabled = !isPopBangsEnabled;
+    saveBool(@"popbangs", isPopBangsEnabled);
+    [self refreshUI];
+}
+
+- (void)tapAutoHorn {
+    isAutoHornEnabled = !isAutoHornEnabled;
+    saveBool(@"autohorn", isAutoHornEnabled);
+    [self refreshUI];
+}
+
+- (void)tapRevLimiter {
+    isRevLimiterEnabled = !isRevLimiterEnabled;
+    saveBool(@"revlimiter", isRevLimiterEnabled);
+    [self refreshUI];
+}
+
+- (void)tapHazardLights {
+    isHazardLightsEnabled = !isHazardLightsEnabled;
+    if (!isHazardLightsEnabled && unityAlive(g_myRccp)) {
+        @try {
+            *(bool*)((uintptr_t)g_myRccp + OFFR_RCCP_INDICATORS) = false;
+            if (unityAlive(g_myLights)) *(unsigned char*)((uintptr_t)g_myLights + 0x46) = 0;
+        } @catch (...) {}
+    }
+    saveBool(@"hazardlights", isHazardLightsEnabled);
+    [self refreshUI];
+}
+
+- (void)tapGhostNoHit {
+    isGhostNoHitEnabled = !isGhostNoHitEnabled;
+    bool ok = few1n_setGhostNoHit(isGhostNoHitEnabled);
+    saveBool(@"ghostnohit", isGhostNoHitEnabled);
+    [self refreshUI];
+    if (!ok) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"👻 Ghost Mod (noHit)"
+            message:@"Odada olmadığın için Photon'a gönderilemedi; odaya girince tekrar aç."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+        [self present:a];
+    }
+}
+
+- (void)syncClearTraffic {
+    bool ok = few1n_syncClearTraffic();
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"🧹 Trafik Temizle"
+        message:(ok ? @"Odadaki tüm trafik araçları herkesten silindi (SimpleClearRPC)." : @"HR_TrafficPooling bulunamadı (yarış/odada olmalısın).")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:a];
+}
+
+- (void)syncSpawnTrafficPick {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚘 Trafik Aracı Bas (Herkeste)"
+        message:@"Önüne tüm odada görünen trafik aracı gönder:"
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    void (^spawnOpt)(NSString*, int, int, float, bool) = ^(NSString* title, int c, int p, float spd, bool opp){
+        [ac addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+            bool ok = few1n_syncSpawnTraffic(c, p, spd, opp);
+            if (!ok) {
+                UIAlertController *e = [UIAlertController alertControllerWithTitle:@"⚠️ Olmadı"
+                    message:@"HR_TrafficPooling veya araç hazır değil." preferredStyle:UIAlertControllerStyleAlert];
+                [e addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+                [self present:e];
+            }
+        }]];
+    };
+    spawnOpt(@"🚗 Normal Trafik (Önüne, 80 km/h)", 0, 0, 80.0f, false);
+    spawnOpt(@"🚓 Ters Şerit Hızlı (160 km/h)", 1, 2, 160.0f, true);
+    spawnOpt(@"🚚 Kamyon / Ağır (Ters Şerit, 120 km/h)", 2, 1, 120.0f, true);
+    spawnOpt(@"🏎️ Süper Hızlı (Ters Şerit, 240 km/h)", 3, 4, 240.0f, true);
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) {
+        ac.popoverPresentationController.sourceView = self.panel;
+        ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
+    }
+    [self present:ac];
+}
+
 // ===== NAN / CRASH PAKET INJECT =====
 - (void)tapNanCrash {
     isNanCrashEnabled = !isNanCrashEnabled;
@@ -15466,6 +15755,11 @@ static void restoreSettings(void) {
     isGodmode              = false;   // [SESSION_ONLY] guvenlik icin her aciliste kapali
     isSelektor             = false;   // [SESSION_ONLY]
     isAlwaysLightsEnabled  = loadBool(@"alwayslights", false);
+    isAutoHornEnabled      = loadBool(@"autohorn", false);
+    isPopBangsEnabled      = loadBool(@"popbangs", false);
+    isRevLimiterEnabled    = loadBool(@"revlimiter", false);
+    isHazardLightsEnabled  = loadBool(@"hazardlights", false);
+    isGhostNoHitEnabled    = false;   // [SESSION_ONLY] oda icinde acilir
     // [SESSION_ONLY] Gizli il2cpp ozellikleri her aciliste kapali (guvenlik)
     isInfiniteNosEnabled    = false;
     isInfiniteFuelEnabled   = false;
@@ -15837,6 +16131,10 @@ static void InstallEverything(uintptr_t b) {
     if (!o_casExtReqATT && global_base) safeHook((void*)(global_base + 0x32FC438), (void*)h_casExtReqATT, (void**)&o_casExtReqATT, "CASExterns.CASURequestATT (direct)");
     safeHookByName("CAS.iOS", "CASExterns", "CASUIsAdViewReady", 1, (void*)h_casExtIsViewReady, (void**)&o_casExtIsViewReady, "CASExterns.CASUIsAdViewReady");
     if (!o_casExtIsViewReady && global_base) safeHook((void*)(global_base + 0x32FC394), (void*)h_casExtIsViewReady, (void**)&o_casExtIsViewReady, "CASExterns.CASUIsAdViewReady (direct)");
+    safeHookByName("CAS", "CASFactory", "ShowConsentFlow", 2, (void*)h_casFactoryConsent, (void**)&o_casFactoryConsent, "CASFactory.ShowConsentFlow");
+    if (!o_casFactoryConsent && global_base) safeHook((void*)(global_base + 0x32F3118), (void*)h_casFactoryConsent, (void**)&o_casFactoryConsent, "CASFactory.ShowConsentFlow (direct)");
+    safeHookByName("CAS", "MobileAds", "ShowConsentFlow", 1, (void*)h_casMobileConsent, (void**)&o_casMobileConsent, "MobileAds.ShowConsentFlow");
+    if (!o_casMobileConsent && global_base) safeHook((void*)(global_base + 0x32F4EF0), (void*)h_casMobileConsent, (void**)&o_casMobileConsent, "MobileAds.ShowConsentFlow (direct)");
     if (isAdBlockEnabled) dispatch_async(dispatch_get_main_queue(), ^{ few1n_applyNativeAdBlock(); });
 
 
@@ -16133,13 +16431,32 @@ static void few1n_applyNativeAdBlock(void) {
     swizzleToNop(@"BUNativeExpressInterstitialAd", @"showAdFromRootViewController:");
     swizzleToNop(@"BURewardedVideoAd", @"showAdFromRootViewController:");
     swizzleToNop(@"PAGLInterstitialAd", @"presentFromRootViewController:");
+    swizzleToNop(@"PAGInterstitialAd", @"presentFromRootViewController:");
     swizzleToNop(@"PAGRewardedAd", @"presentFromRootViewController:userDidEarnRewardHandler:");
     swizzleToNop(@"PAGLAppOpenAd", @"presentFromRootViewController:");
+    swizzleToNop(@"PAGAppOpenAd", @"presentFromRootViewController:");
     swizzleToNop(@"PAGBannerAd", @"loadRequest");
 
     // ===== YANDEX =====
     swizzleToNop(@"YMAInterstitialAd", @"show");
     swizzleToNop(@"YMARewardedAd", @"show");
+    swizzleToNop(@"YMAAppOpenAd", @"showFromViewController:");
+    swizzleToNop(@"YMABannerView", @"loadAd");
+
+    // ===== BIGO ADS =====
+    swizzleToNop(@"BigoInterstitialAd", @"show:");
+    swizzleToNop(@"BigoRewardVideoAd", @"show:");
+    swizzleToNop(@"BigoAppOpenAd", @"show:");
+    swizzleToNop(@"BigoSplashAd", @"show:");
+    swizzleToNop(@"BigoBannerAd", @"loadAd");
+
+    // ===== IRONSOURCE LEVELPLAY (LPM) & MAX APPOPEN =====
+    swizzleToNop(@"LPMInterstitialAd", @"showAdWithViewController:placementName:");
+    swizzleToNop(@"LPMRewardedAd", @"showAdWithViewController:placementName:");
+    swizzleToNop(@"LPMBannerAdView", @"loadAd");
+    swizzleToNop(@"MAAppOpenAd", @"showAd");
+    swizzleToNop(@"MAAppOpenAd", @"loadAd");
+    swizzleToBoolFalse(@"MAAppOpenAd", @"isReady");
 
     // ===== UIViewController & UIWindow REKLAM SUNUMU FILTRESI (SON SAVUNMA HATTI) =====
     if (!uikitApplied) {
@@ -16185,7 +16502,7 @@ static void few1n_applyNativeAdBlock(void) {
 
     // ===== UIView TABANLI BANNER TEMIZLIGI =====
     few1n_after(2.0, ^{
-        NSArray *bannerClasses = @[@"GADBannerView", @"MAAdView", @"FBAdView", @"IMBanner", @"CASBannerView", @"CASView", @"MTGBannerAdView", @"PAGBannerAd"];
+        NSArray *bannerClasses = @[@"GADBannerView", @"MAAdView", @"FBAdView", @"IMBanner", @"CASBannerView", @"CASView", @"MTGBannerAdView", @"PAGBannerAd", @"YMABannerView", @"LPMBannerAdView", @"BigoBannerAd"];
         for (NSString *clsName in bannerClasses) {
             if ([swizzledBanners containsObject:clsName]) continue;
             Class cls = NSClassFromString(clsName);
@@ -16220,7 +16537,7 @@ static void few1n_applyNativeAdBlock(void) {
     restoreSettings();
 
     if (isAdBlockEnabled) {
-        few1n_applyNativeAdBlock();
+        dispatch_async(dispatch_get_main_queue(), ^{ few1n_applyNativeAdBlock(); });
     }
 
     few1n_after(3.0, ^{ few1n_poll(); });
