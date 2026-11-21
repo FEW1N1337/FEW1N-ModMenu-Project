@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.18
+#define FEW1N_VERSION 117.19
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -170,6 +170,10 @@ static bool isNoCamShakeEnabled = false;
 static bool isNoEngineSmokeEnabled = false;
 static int  g_lensFlareMode = 0;          // 0=Normal, 1=Kapali, 2=Mega Parlak
 static bool isShowroomCamFreeEnabled = false;
+// ==== v117.19 ZIPPER REMOTE PLATE (#58) ====
+static bool isAutoRemotePlateSceneEnabled = false;
+static char g_autoRemotePlateText[128] = "<size=350><color=#FF0033><b>FEW1N</b></color></size>";
+static char g_autoRemotePlateCountry[16] = "eu1";
 static bool isCruiseEnabled = false;    // hiz sabitleyici (cruise control)
 static float cruiseSpeedKmh = 180.0f;   // hedef sabit hiz (km/h)
 static void* g_rb = NULL;               // arabanin Rigidbody'si (h_driveMove'da yakalanir)
@@ -8025,7 +8029,118 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
     return hit;
 }
 
-// Per-frame & periodic ticks for v117.15 + v117.16 + v117.17 features
+// ============================================================================
+// v117.19 SURGICAL REMOTE PLATE VIA ZIPPER vn.gst(string) -> LoadTuners RPC (#58)
+// ============================================================================
+static void* few1n_encodeLoadTunersZipper(NSString *outerJson) {
+    if (!outerJson.length || !i_runtime_invoke || !i_class_get_method_from_name) return NULL;
+    void* vnCls = few1n_classAnyImage("", "vn");
+    if (!vnCls) return NULL;
+    void* mGst = i_class_get_method_from_name(vnCls, "gst", 1); // static byte[] gst(string)
+    if (!mGst) return NULL;
+    void* jStr = mkStr(outerJson);
+    if (!ptrOk(jStr)) return NULL;
+    bool c = false;
+    void* args[1] = { jStr };
+    void* bytes = few1n_guardedInvoke(mGst, NULL, args, &c);
+    return (!c && ptrOk(bytes)) ? bytes : NULL;
+}
+
+static NSString* few1n_detectPlateTunerKey(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return @"Plate";
+    void* ptCls = few1n_classAnyImage("", "PlateTuner");
+    void* ptType = ptCls ? few1n_typeObjOf(ptCls) : NULL;
+    if (!ptCls || !ptType) return @"Plate";
+    void* mDul = i_class_get_method_from_name(ptCls, "dul", 0);
+    void* mDum = i_class_get_method_from_name(ptCls, "dum", 0);
+    @try {
+        void* a[1] = { ptType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 16 && items; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt)) continue;
+            if (mDul) {
+                bool c = false; void* s = few1n_guardedInvoke(mDul, pt, NULL, &c);
+                if (!c && ptrOk(s)) { NSString *k = readStr(s); if (k.length > 0) return k; }
+            }
+            if (mDum) {
+                bool c = false; void* s = few1n_guardedInvoke(mDum, pt, NULL, &c);
+                if (!c && ptrOk(s)) { NSString *k = readStr(s); if (k.length > 0) return k; }
+            }
+            void* nmPtr = *(void**)((uintptr_t)pt + 0x20); // internal string _name
+            if (ptrOk(nmPtr)) { NSString *k = readStr(nmPtr); if (k.length > 0) return k; }
+        }
+    } @catch (...) {}
+    return @"Plate";
+}
+
+// targetActor == -1 -> odadaki TÜM diğer oyuncular; targetActor == 0 -> kendimiz dahil HERKES
+static int few1n_injectRemotePlateZipper(int targetActor, NSString *country, NSString *plateText) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name || !i_array_new || !mbp_getPhotonView) return 0;
+    NSString *cCode = (country.length > 0) ? country : @"eu1";
+    NSString *pTxt  = (plateText.length > 0) ? plateText : @"FEW1N";
+    NSString *pKey  = few1n_detectPlateTunerKey();
+
+    NSDictionary *inner = @{ @"c": cCode, @"t": pTxt };
+    NSData *innerData = [NSJSONSerialization dataWithJSONObject:inner options:0 error:nil];
+    if (!innerData) return 0;
+    NSString *innerJson = [[NSString alloc] initWithData:innerData encoding:NSUTF8StringEncoding];
+    NSDictionary *outer = @{ @"tuners": @[ @{ @"key": pKey, @"value": innerJson } ] };
+    NSData *outerData = [NSJSONSerialization dataWithJSONObject:outer options:0 error:nil];
+    if (!outerData) return 0;
+    NSString *outerJson = [[NSString alloc] initWithData:outerData encoding:NSUTF8StringEncoding];
+
+    void* zippedBytes = few1n_encodeLoadTunersZipper(outerJson);
+    if (!ptrOk(zippedBytes)) {
+        FLog(@"⚠️ Zipper vn.gst(string) encode basarisiz!");
+        return 0;
+    }
+
+    void* tmCls  = few1n_classAnyImage("", "TuningManager");
+    void* pvCls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    void* objCls = few1n_classAnyImage("System", "Object");
+    if (!tmCls || !pvCls || !objCls) return 0;
+    void* tmType = few1n_typeObjOf(tmCls);
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC   = few1n_methodBySig(pvCls, "Void", prm, 3, 0);
+    void* mOwner = i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0);
+    if (!tmType || !mRPC || !mOwner) return 0;
+
+    int hit = 0;
+    @try {
+        void* a[1] = { tmType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        void* rpcName = mkStr(@"LoadTuners");
+        int targetBuf = 3; // RpcTarget.AllBuffered (sonradan girenler de görür!)
+        for (int i = 0; i < cnt && i < 64 && items; i++) {
+            void* tm = items[i];
+            if (!unityAlive(tm)) continue;
+            if (targetActor == -1 && few1n_pvIsMineFor(tm)) continue;
+            void* pv = mbp_getPhotonView(tm);
+            if (!ptrOk(pv)) continue;
+            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+            int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
+            if (targetActor > 0 && act != targetActor) continue;
+
+            void* oArr = i_array_new(objCls, 1);
+            if (!ptrOk(oArr)) continue;
+            *(void**)((uintptr_t)oArr + 0x20) = zippedBytes;
+            void* rArgs[3] = { rpcName, &targetBuf, oArr };
+            bool cr = false;
+            few1n_guardedInvoke(mRPC, pv, rArgs, &cr);
+            if (!cr) hit++;
+        }
+        FLog([NSString stringWithFormat:@"🔥 Zipper Plaka Enjeksiyonu: key='%@' -> %d araca AllBuffered LoadTuners yollandı!", pKey, hit]);
+    } @catch (...) {}
+    return hit;
+}
+
+// Per-frame & periodic ticks for v117.15 + v117.16 + v117.17 + v117.19 features
 static void few1n_tickV11715Frame(void) {
     few1n_tickMagnetOrbit();
     few1n_tickLowriderBounce();
@@ -8052,6 +8167,15 @@ static void few1n_tickV11715Slow(void) {
     if (isNoCamShakeEnabled) few1n_applyNoCameraShake();
     if (isNoEngineSmokeEnabled || g_lensFlareMode > 0) few1n_applySmokeAndLensFlare();
     if (isShowroomCamFreeEnabled) few1n_applyShowroomCamFree(0.0f);
+    // v117.19 scene-change auto-reapply remote plate (~her 3sn)
+    if (isAutoRemotePlateSceneEnabled) {
+        static int rpTick = 0;
+        if ((++rpTick % 10) == 0) {
+            NSString *cStr = [NSString stringWithUTF8String:g_autoRemotePlateCountry];
+            NSString *tStr = [NSString stringWithUTF8String:g_autoRemotePlateText];
+            few1n_injectRemotePlateZipper(-1, cStr, tStr);
+        }
+    }
 }
 
 // v117.12: Gerçek Korna Tetikleyici (RCCP_InputManager.crk -> onHorn)
@@ -9397,6 +9521,8 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)v18RemoteGhostMenu;
 - (void)v18RoomWeatherMenu;
 - (void)v18RemoteTuningMenu;
+- (void)v19RemotePlateZipperMenu;
+- (void)tapAutoRemotePlateScene;
 - (void)tapAntiReport;
 - (void)tapVoteKickSnitch;
 - (void)tapPoliceStrobe;
@@ -10624,6 +10750,8 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"👻  Başkasının / Herkesin Aracında Respawn Hayalet (#55)" color:C_GOLD atY:y action:@selector(v18RemoteGhostMenu)];
     y = [self actionRow:@"⛈️  Odadaki Herkeste Canlı Yağmur & Gece/Gündüz (#56)" color:C_ON atY:y action:@selector(v18RoomWeatherMenu)];
     y = [self actionRow:@"🎨  Başkasının / Herkesin Plaka & Tuning'ini Değiştir (#57)" color:C_GOLD atY:y action:@selector(v18RemoteTuningMenu)];
+    y = [self actionRow:@"🔥  Başkasının / Herkesin Plakasını Bas (Zipper AllBuffered #58)" color:C_RED atY:y action:@selector(v19RemotePlateZipperMenu)];
+    y = [self toggle:@"🔄  Sahne Değişince Oto-Plaka Bas (#58)" sub:@"Harita değişip araçlar yeniden doğunca herkese otomatik plaka basar" key:@"autoremoteplate" atY:y action:@selector(tapAutoRemotePlateScene)];
 
     UIView *sc = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,38)];
     UILabel *sl = [[UILabel alloc] initWithFrame:CGRectMake(0,0,pw-24,38)];
@@ -10924,6 +11052,7 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"bombfreeze"      on:isBombFreezeEnabled];
     [self setToggle:@"nocamshake"      on:isNoCamShakeEnabled];
     [self setToggle:@"noenginesmoke"   on:isNoEngineSmokeEnabled];
+    [self setToggle:@"autoremoteplate" on:isAutoRemotePlateSceneEnabled];
     [self setToggle:@"colorchat" on:isColorChatEnabled];
     [self setToggle:@"votekicksnitch" on:isVoteKickSnitchEnabled];
     [self setToggle:@"antireport" on:isAntiReportEnabled];
@@ -18227,6 +18356,33 @@ static void few1n_joinTargetRoom(NSString *nm) {
         }]];
         [self v15PresentSheet:ac];
     }];
+}
+
+// #58 Zipper vn.gst() AllBuffered Surgical Remote Plate Injection
+- (void)v19RemotePlateZipperMenu {
+    [self v18PickPlayer:@"🔥 Plakası Değişecek Hedef (#58 Zipper)" onPick:^(int act, NSString *nm){
+        UIAlertController *al = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"🔥 %@ — Özel Plaka", nm]
+            message:@"Ülke kodu (eu1, cn2, rusj2, us1) ve plaka metni (RichText destekler):" preferredStyle:UIAlertControllerStyleAlert];
+        [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"eu1 / cn2 / rusj2"; tf.text = [NSString stringWithUTF8String:g_autoRemotePlateCountry]; }];
+        [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Plaka metni"; tf.text = [NSString stringWithUTF8String:g_autoRemotePlateText]; }];
+        [al addAction:[UIAlertAction actionWithTitle:@"AllBuffered Bas & Yayınla" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+            NSString *cc = al.textFields[0].text.length ? al.textFields[0].text : @"eu1";
+            NSString *pt = al.textFields[1].text.length ? al.textFields[1].text : @"FEW1N";
+            strncpy(g_autoRemotePlateCountry, cc.UTF8String, sizeof(g_autoRemotePlateCountry)-1);
+            strncpy(g_autoRemotePlateText, pt.UTF8String, sizeof(g_autoRemotePlateText)-1);
+            int n = few1n_injectRemotePlateZipper(act, cc, pt);
+            [self v15Alert:@"🔥 Zipper Plaka Enjeksiyonu" msg:(n > 0 ? [NSString stringWithFormat:@"%d araca Zipper (vn.gst) + AllBuffered LoadTuners yollandı!", n] : @"Hedef TuningManager veya Zipper.vn bulunamadı.")];
+        }]];
+        [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        [self present:al];
+    }];
+}
+- (void)tapAutoRemotePlateScene {
+    isAutoRemotePlateSceneEnabled = !isAutoRemotePlateSceneEnabled;
+    if (isAutoRemotePlateSceneEnabled) {
+        few1n_injectRemotePlateZipper(-1, [NSString stringWithUTF8String:g_autoRemotePlateCountry], [NSString stringWithUTF8String:g_autoRemotePlateText]);
+    }
+    [self refreshUI];
 }
 
 // ===== NAN / CRASH PAKET INJECT =====
