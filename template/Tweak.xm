@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.14
+#define FEW1N_VERSION 117.15
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -130,6 +130,31 @@ static bool isAutoHornEnabled = false;
 static bool isRevLimiterEnabled = false;
 static bool isHazardLightsEnabled = false;
 static bool isGhostNoHitEnabled = false;
+// ==== v117.15 MEGA PACK STATE (#1-#35) ====
+static int  g_crabWalkMode = 0;           // 0=Kapali, 1=Crab(+1), 2=Counter-4WS(-1)
+static bool isMagnetOrbitEnabled = false;
+static int  g_magnetOrbitActor = -1;
+static float g_magnetOrbitAngle = 0.0f;
+static bool isLowriderBounceEnabled = false;
+static bool isSuperEngine1000Enabled = false;
+static bool isInstantBrakeEnabled = false;
+static int  g_driveTypeMode = 0;          // 0=Varsayilan, 1=AWD, 2=RWD, 3=FWD
+static bool isNativeDroneEnabled = false;
+static bool isRgbExhaustEnabled = false;
+static bool isRealPopsBangsEnabled = false;
+static bool isFreeTuningShopEnabled = false;
+static bool isMapsUnlockedEnabled = false;
+static bool isRecordHudHidden = false;
+static int  g_fpsDebugMode = 0;           // 0..3
+static int  g_droneFilterIdx = 0;         // 0..13
+static int  g_avatarModMode = 0;          // 0=Normal, 1=Gizli, 2=KocaKafa, 3=TPose, 4=Tavan
+static bool isBodyTiltMaxEnabled = false;
+static bool isWheelBlurBoostEnabled = false;
+static bool isSkidmarksForceEnabled = false;
+static int  g_activeSpoilerMode = 0;      // 0=Normal, 1=Acik, 2=Kapali
+static bool isNoBarrierProtEnabled = false;
+static bool isNoFakeTrafficEnabled = false;
+static bool isUltraMirrorEnabled = false;
 static bool isCruiseEnabled = false;    // hiz sabitleyici (cruise control)
 static float cruiseSpeedKmh = 180.0f;   // hedef sabit hiz (km/h)
 static void* g_rb = NULL;               // arabanin Rigidbody'si (h_driveMove'da yakalanir)
@@ -4425,9 +4450,10 @@ static void few1n_broadcastTuning(const char* who) {
             if (mEahBool) { @try { void* a[1]={&t}; i_runtime_invoke(mEahBool, tm, a, NULL); } @catch (...) {} }
             if (mEad)     { @try { i_runtime_invoke(mEad, tm, NULL, NULL); } @catch (...) {} }
             if (mEae)     { @try { i_runtime_invoke(mEae, tm, NULL, NULL); } @catch (...) {} }
+            if (mEai)     { @try { i_runtime_invoke(mEai, tm, NULL, NULL); } @catch (...) {} }
             done++;
         }
-        FLog([NSString stringWithFormat:@"%s: %d TuningManager'a yayin (eah+ead+eae)", who ?: "Tuning", done]);
+        FLog([NSString stringWithFormat:@"%s: %d TuningManager'a yayin (eah+ead+eae+eai)", who ?: "Tuning", done]);
     } @catch (...) {}
 }
 
@@ -5932,34 +5958,65 @@ static void few1n_applyPoliceAndNeonLights(void) {
     } @catch (...) {}
 }
 
-// v117.12: Senkronize Ghost Mod (HR_BlockedCollisions "noHit" Photon CustomProperty)
+// v117.15: Gerçek Senkronize Ghost Mod (#7 — HR_BlockedCollisions "noHit" string[] pids)
 static bool few1n_setGhostNoHit(bool on) {
-    if (!pn_getLocalPlayer || !i_runtime_invoke || !i_class_get_method_from_name || !i_object_new || !i_value_box) return false;
+    if (!pn_getLocalPlayer || !i_runtime_invoke || !i_class_get_method_from_name || !i_object_new || !i_array_new) return false;
     void* me = NULL; @try { me = pn_getLocalPlayer(); } @catch (...) {}
     if (!ptrOk(me)) return false;
-    void* htCls = few1n_classAnyImage("ExitGames.Client.Photon", "Hashtable");
+    void* htCls  = few1n_classAnyImage("ExitGames.Client.Photon", "Hashtable");
     void* plyCls = few1n_classAnyImage("Photon.Realtime", "Player");
-    void* boolCls = few1n_classAnyImage("System", "Boolean");
-    if (!htCls || !plyCls || !boolCls) return false;
-    void* htCtor = i_class_get_method_from_name(htCls, ".ctor", 0);
-    void* htSet  = i_class_get_method_from_name(htCls, "set_Item", 2);
+    void* strCls = few1n_classAnyImage("System", "String");
+    if (!htCls || !plyCls || !strCls) return false;
+    void* htCtor    = i_class_get_method_from_name(htCls, ".ctor", 0);
+    void* htSet     = i_class_get_method_from_name(htCls, "set_Item", 2);
+    void* htGet     = i_class_get_method_from_name(htCls, "get_Item", 1);
+    void* mGetProps = i_class_get_method_from_name(plyCls, "get_CustomProperties", 0);
     void* mSetProps = i_class_get_method_from_name(plyCls, "SetCustomProperties", 3);
     if (!htCtor || !htSet || !mSetProps) return false;
     @try {
+        NSMutableArray<NSString*> *pids = [NSMutableArray array];
+        if (on && pn_getPlayerListOthers && mGetProps && htGet) {
+            void* others = NULL; @try { others = pn_getPlayerListOthers(); } @catch (...) {}
+            if (ptrOk(others)) {
+                int cnt = few1n_rdI32(others, 0x18, 0);
+                if (cnt > 0 && cnt <= 64) {
+                    void** pls = (void**)((uintptr_t)others + 0x20);
+                    void* pidKey = mkStr(@"pid");
+                    for (int i = 0; i < cnt; i++) {
+                        void* p = pls[i];
+                        if (!ptrOk(p)) continue;
+                        void* props = NULL;
+                        @try { props = i_runtime_invoke(mGetProps, p, NULL, NULL); } @catch (...) {}
+                        if (ptrOk(props) && pidKey) {
+                            void* gArgs[1] = { pidKey };
+                            void* val = NULL;
+                            @try { val = i_runtime_invoke(htGet, props, gArgs, NULL); } @catch (...) {}
+                            if (ptrOk(val)) {
+                                NSString *ps = readStr(val);
+                                if (ps.length > 0) [pids addObject:ps];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        void* pidArr = i_array_new(strCls, (unsigned long)pids.count);
+        if (!ptrOk(pidArr)) return false;
+        void** el = (void**)((uintptr_t)pidArr + 0x20);
+        for (NSUInteger i = 0; i < pids.count; i++) el[i] = mkStr(pids[i]);
+
         void* ht = i_object_new(htCls);
         if (!ptrOk(ht)) return false;
         i_runtime_invoke(htCtor, ht, NULL, NULL);
-        uint8_t bVal = on ? 1 : 0;
-        void* boxedBool = i_value_box(boolCls, &bVal);
         void* keyStr = mkStr(@"noHit");
-        if (!ptrOk(boxedBool) || !ptrOk(keyStr)) return false;
-        void* sArgs[2] = { keyStr, boxedBool };
+        if (!ptrOk(keyStr)) return false;
+        void* sArgs[2] = { keyStr, pidArr };
         i_runtime_invoke(htSet, ht, sArgs, NULL);
         void* pArgs[3] = { ht, NULL, NULL };
         bool crashed = false;
         few1n_guardedInvoke(mSetProps, me, pArgs, &crashed);
         if (!crashed) {
-            FLog([NSString stringWithFormat:@"👻 Senkronize Ghost (noHit=%d) yayinlandi", (int)on]);
+            FLog([NSString stringWithFormat:@"👻 Senkronize Ghost (noHit string[%lu]) yayinlandi", (unsigned long)pids.count]);
             return true;
         }
     } @catch (...) {}
@@ -6008,7 +6065,19 @@ static bool few1n_syncClearTraffic(void) {
     return false;
 }
 
-// v117.12: Odadaki Herkeste Trafik Aracı Bas (HR_TrafficPooling.SimpleSpawnRPC)
+// v117.15: HR_TrafficPooling.iuf() ile senkron server startMs al
+static int few1n_getTrafficStartMs(void* tp, void* tpCls) {
+    if (!unityAlive(tp) || !tpCls || !i_class_get_method_from_name || !i_runtime_invoke) return 0;
+    void* mIuf = i_class_get_method_from_name(tpCls, "iuf", 0);
+    if (!mIuf) return 0;
+    @try {
+        void* box = i_runtime_invoke(mIuf, tp, NULL, NULL);
+        if (ptrOk(box)) return *(int*)((uintptr_t)box + 0x10);
+    } @catch (...) {}
+    return 0;
+}
+
+// v117.15: Odadaki Herkeste Trafik Aracı Bas (HR_TrafficPooling.SimpleSpawnRPC + iuf() startMs)
 static bool few1n_syncSpawnTraffic(int carIdx, int paintIdx, float speed, bool opposite) {
     if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_array_new || !i_value_box || !mbp_getPhotonView || !unityAlive(g_rb)) return false;
     void* tpCls   = few1n_classAnyImage("", "HR_TrafficPooling");
@@ -6036,12 +6105,13 @@ static bool few1n_syncSpawnTraffic(int carIdx, int paintIdx, float speed, bool o
         void* pv = mbp_getPhotonView(tp);
         if (!ptrOk(pv)) return false;
         Vec3 pos; rbGetPosIl(g_rb, &pos);
-        pos.z += 35.0f; pos.y += 0.5f;
+        Vec3 fwd; if (few1n_fwd(g_rb, &fwd)) { pos.x += fwd.x * 35.0f; pos.z += fwd.z * 35.0f; } else { pos.z += 35.0f; }
+        pos.y += 0.5f;
         static int nextSlot = 0;
         int slot = (nextSlot++) % 50;
         uint8_t cIdx = (uint8_t)carIdx;
         uint8_t pIdx = (uint8_t)paintIdx;
-        int startMs = 0;
+        int startMs = few1n_getTrafficStartMs(tp, tpCls);
         uint8_t opp = opposite ? 1 : 0;
         float spd = speed;
         void* oArr = i_array_new(objCls, 7);
@@ -6060,11 +6130,1104 @@ static bool few1n_syncSpawnTraffic(int carIdx, int paintIdx, float speed, bool o
         bool crashed = false;
         few1n_guardedInvoke(mRPC, pv, args, &crashed);
         if (!crashed) {
-            FLog([NSString stringWithFormat:@"🚘 Trafik spawn: slot=%d car=%d paint=%d spd=%.0f", slot, carIdx, paintIdx, speed]);
+            FLog([NSString stringWithFormat:@"🚘 Trafik spawn: slot=%d ms=%d spd=%.0f", slot, startMs, speed]);
             return true;
         }
     } @catch (...) {}
     return false;
+}
+
+// ============================================================================
+// v117.15 MEGA FEATURE ENGINE (#1 - #35)
+// ============================================================================
+
+// #5 Toplu Trafik (SimpleSpawnBatchRPC): mode 0=Barikat(20), 1=VIP Konvoy(12), 2=Ters Şerit Yağmuru(30)
+static bool few1n_syncSpawnBatchTraffic(int mode) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_array_new || !mbp_getPhotonView || !unityAlive(g_rb)) return false;
+    void* tpCls   = few1n_classAnyImage("", "HR_TrafficPooling");
+    void* pvCls   = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    void* objCls  = few1n_classAnyImage("System", "Object");
+    void* intCls  = few1n_classAnyImage("System", "Int32");
+    void* byteCls = few1n_classAnyImage("System", "Byte");
+    void* fltCls  = few1n_classAnyImage("System", "Single");
+    void* boolCls = few1n_classAnyImage("System", "Boolean");
+    if (!tpCls || !pvCls || !objCls || !intCls || !byteCls || !fltCls || !boolCls) return false;
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC = few1n_methodBySig(pvCls, "Void", prm, 3, 0);
+    void* tpType = few1n_typeObjOf(tpCls);
+    if (!mRPC || !tpType) return false;
+    @try {
+        void* a[1] = { tpType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr) || few1n_rdI32(arr, 0x18, 0) <= 0) return false;
+        void* tp = few1n_rdPtr(arr, 0x20);
+        if (!unityAlive(tp)) return false;
+        void* pv = mbp_getPhotonView(tp);
+        if (!ptrOk(pv)) return false;
+        int count = (mode == 0) ? 20 : (mode == 1) ? 12 : 30;
+        int startMs = few1n_getTrafficStartMs(tp, tpCls);
+        Vec3 myPos; rbGetPosIl(g_rb, &myPos);
+
+        void* aSlots = i_array_new(intCls, count);
+        void* aCars  = i_array_new(byteCls, count);
+        void* aPaint = i_array_new(byteCls, count);
+        void* aStart = i_array_new(fltCls, count * 3); // Vector3 packed as 3 floats
+        void* aTimes = i_array_new(intCls, count);
+        void* aOpps  = i_array_new(boolCls, count);
+        void* aSpds  = i_array_new(fltCls, count);
+        if (!ptrOk(aSlots) || !ptrOk(aCars) || !ptrOk(aPaint) || !ptrOk(aStart) || !ptrOk(aTimes) || !ptrOk(aOpps) || !ptrOk(aSpds)) return false;
+
+        int*     pSlots = (int*)((uintptr_t)aSlots + 0x20);
+        uint8_t* pCars  = (uint8_t*)((uintptr_t)aCars + 0x20);
+        uint8_t* pPaint = (uint8_t*)((uintptr_t)aPaint + 0x20);
+        float*   pStart = (float*)((uintptr_t)aStart + 0x20);
+        int*     pTimes = (int*)((uintptr_t)aTimes + 0x20);
+        uint8_t* pOpps  = (uint8_t*)((uintptr_t)aOpps + 0x20);
+        float*   pSpds  = (float*)((uintptr_t)aSpds + 0x20);
+
+        for (int i = 0; i < count; i++) {
+            pSlots[i] = i;
+            pCars[i]  = (uint8_t)(i % 6);
+            pPaint[i] = (uint8_t)((mode == 1) ? 0 : (i % 8));
+            float dx = 0.0f, dz = 0.0f;
+            if (mode == 0) { // Barikat: 4 şerit x 5 sıra
+                dx = ((i % 4) - 1.5f) * 3.8f;
+                dz = 30.0f + (i / 4) * 10.0f;
+                pOpps[i] = 0; pSpds[i] = 0.0f;
+            } else if (mode == 1) { // VIP Konvoy: 2 şerit düzenli
+                dx = ((i % 2) == 0) ? -3.5f : 3.5f;
+                dz = 15.0f + (i / 2) * 14.0f;
+                pOpps[i] = 0; pSpds[i] = 140.0f;
+            } else { // Ters Şerit Yağmuru
+                dx = ((i % 5) - 2.0f) * 3.5f;
+                dz = 40.0f + i * 16.0f;
+                pOpps[i] = 1; pSpds[i] = 220.0f;
+            }
+            pStart[i*3 + 0] = myPos.x + dx;
+            pStart[i*3 + 1] = myPos.y + 0.5f;
+            pStart[i*3 + 2] = myPos.z + dz;
+            pTimes[i] = startMs;
+        }
+        void* oArr = i_array_new(objCls, 7);
+        void** el = (void**)((uintptr_t)oArr + 0x20);
+        el[0] = aSlots; el[1] = aCars; el[2] = aPaint; el[3] = aStart; el[4] = aTimes; el[5] = aOpps; el[6] = aSpds;
+        void* rpcName = mkStr(@"SimpleSpawnBatchRPC");
+        int all = 0;
+        void* args[3] = { rpcName, &all, oArr };
+        bool crashed = false;
+        few1n_guardedInvoke(mRPC, pv, args, &crashed);
+        if (!crashed) {
+            FLog([NSString stringWithFormat:@"🚦 Batch Trafik (%d arac, mode=%d) gonderildi", count, mode]);
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #1 & #15 Dev/Renkli 3D Plaka + Gizli Ülke Kodları (cn1/cn2/cn3/rusj2/rusj3/eu1/us1)
+static bool few1n_applyPlateWithCode(NSString *country, NSString *text) {
+    if (!text || text.length == 0 || !i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    void* ptCls = few1n_classAnyImage("", "PlateTuner");
+    if (!ptCls) return false;
+    void* ptType = few1n_typeObjOf(ptCls);
+    void* mApply = i_class_get_method_from_name(ptCls, "Apply", 2);
+    if (!ptType || !mApply) return false;
+    void* cStr = mkStr(country.length ? country : @"eu1");
+    void* tStr = mkStr(text);
+    if (!cStr || !tStr) return false;
+    int applied = 0;
+    @try {
+        void* a[1] = { ptType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return false;
+        int cnt = few1n_rdI32(arr, 0x18, 0);
+        void** items = (void**)((uintptr_t)arr + 0x20);
+        for (int i = 0; i < cnt && i < 64; i++) {
+            void* pt = items[i];
+            if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
+            void* args[2] = { cStr, tStr };
+            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+        }
+    } @catch (...) {}
+    if (applied > 0) {
+        few1n_broadcastTuning("OzelPlaka3D");
+        return true;
+    }
+    return false;
+}
+
+// #2 HDR Parlayan Neon / Void Gövde & Jant Boyası (PaintTuner + DiskPaintTuner)
+static bool few1n_applyHdrBodyPaint(float r, float g, float b, float r2, float g2, float b2, int paintType, bool alsoRims) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    int applied = 0;
+    Color4 c1 = { r, g, b, 1.0f };
+    Color4 c2 = { r2, g2, b2, 1.0f };
+    int pt = paintType;
+    @try {
+        void* cls = few1n_classAnyImage("", "PaintTuner");
+        if (cls) {
+            void* type = few1n_typeObjOf(cls);
+            void* mApply3 = i_class_get_method_from_name(cls, "Apply", 3);
+            void* mApply2 = i_class_get_method_from_name(cls, "Apply", 2);
+            if (type && (mApply3 || mApply2)) {
+                void* a[1] = { type };
+                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                for (int i = 0; i < cnt && i < 64 && items; i++) {
+                    void* it = items[i];
+                    if (!unityAlive(it) || !few1n_pvIsMineFor(it)) continue;
+                    if (mApply3) { void* args[3] = { &c1, &c2, &pt }; @try { i_runtime_invoke(mApply3, it, args, NULL); applied++; } @catch (...) {} }
+                    else         { void* args[2] = { &c1, &pt };      @try { i_runtime_invoke(mApply2, it, args, NULL); applied++; } @catch (...) {} }
+                }
+            }
+        }
+        if (alsoRims) {
+            void* dcls = few1n_classAnyImage("", "DiskPaintTuner");
+            if (dcls) {
+                void* dtype = few1n_typeObjOf(dcls);
+                void* mD = i_class_get_method_from_name(dcls, "Apply", 3);
+                if (dtype && mD) {
+                    void* a[1] = { dtype };
+                    void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                    int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                    void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                    for (int i = 0; i < cnt && i < 64 && items; i++) {
+                        void* it = items[i];
+                        if (!unityAlive(it) || !few1n_pvIsMineFor(it)) continue;
+                        void* args[3] = { &c1, &c2, &pt };
+                        @try { i_runtime_invoke(mD, it, args, NULL); applied++; } @catch (...) {}
+                    }
+                }
+            }
+        }
+    } @catch (...) {}
+    if (applied > 0) { few1n_broadcastTuning("HDRBoya"); return true; }
+    return false;
+}
+
+// #4 Çıplak / Tekerleksiz Uçan Araba (-1 strip veya dup() reset)
+static bool few1n_stripCarParts(bool stripParts, bool stripWheels, bool stripTires, bool resetAll) {
+    if (!i_runtime_invoke || !g_mFindObjectsPlural) return false;
+    int applied = 0;
+    const char* classes[3] = { "PartTuner", "WheelsITuner", "TireTuner" };
+    bool flags[3] = { stripParts, stripWheels, stripTires };
+    for (int k = 0; k < 3; k++) {
+        if (!flags[k] && !resetAll) continue;
+        void* cls = few1n_classAnyImage("", classes[k]);
+        if (!cls) continue;
+        void* type = few1n_typeObjOf(cls);
+        void* m = resetAll ? i_class_get_method_from_name(cls, "dup", 0)
+                           : i_class_get_method_from_name(cls, "Apply", (k == 0) ? 2 : 1);
+        if (!type || !m) continue;
+        @try {
+            void* a[1] = { type };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+            void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+            int neg = -1; uint8_t asyncF = 0;
+            for (int i = 0; i < cnt && i < 128 && items; i++) {
+                void* it = items[i];
+                if (!unityAlive(it) || !few1n_pvIsMineFor(it)) continue;
+                if (resetAll) { @try { i_runtime_invoke(m, it, NULL, NULL); applied++; } @catch (...) {} }
+                else if (k == 0) { void* args[2] = { &neg, &asyncF }; @try { i_runtime_invoke(m, it, args, NULL); applied++; } @catch (...) {} }
+                else             { void* args[1] = { &neg };          @try { i_runtime_invoke(m, it, args, NULL); applied++; } @catch (...) {} }
+            }
+        } @catch (...) {}
+    }
+    if (applied > 0) { few1n_broadcastTuning("StripCar"); return true; }
+    return false;
+}
+
+// #6 Oda Ekran Karartma / Reset (HR_PhotonHandler.StartCloseRPC / TeleportAndOpenRPC)
+static bool few1n_roomScreenBlackout(bool closeScreen) {
+    if (!g_hrPhotonHandlerTypeObj || !i_runtime_invoke || !i_array_new || !mbp_getPhotonView) return false;
+    void* inst = few1n_findByType(g_hrPhotonHandlerTypeObj);
+    if (!unityAlive(inst)) return false;
+    void* pv = mbp_getPhotonView(inst);
+    if (!ptrOk(pv)) return false;
+    void* pvCls = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    void* objCls = few1n_classAnyImage("System", "Object");
+    if (!pvCls || !objCls) return false;
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC = few1n_methodBySig(pvCls, "Void", prm, 3, 0);
+    if (!mRPC) return false;
+    @try {
+        void* oArr = i_array_new(objCls, 0);
+        void* rpcName = mkStr(closeScreen ? @"StartCloseRPC" : @"TeleportAndOpenRPC");
+        int all = 0;
+        void* args[3] = { rpcName, &all, oArr };
+        bool crashed = false;
+        few1n_guardedInvoke(mRPC, pv, args, &crashed);
+        if (!crashed) {
+            FLog(closeScreen ? @"🌑 StartCloseRPC (oda karartma) gonderildi" : @"🌅 TeleportAndOpenRPC (oda ac/reset) gonderildi");
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #8 Crab Walk / 4WS (RCCP_CarController->rearAxle 0x88)
+static void few1n_applyCrabWalk(void) {
+    if (!unityAlive(g_myRccp)) return;
+    @try {
+        void* rearAxle = *(void**)((uintptr_t)g_myRccp + 0x88);
+        if (!unityAlive(rearAxle)) return;
+        if (g_crabWalkMode == 0) {
+            *(uint8_t*)((uintptr_t)rearAxle + 0x5D) = 0; // isSteer = false
+            *(float*)((uintptr_t)rearAxle + 0x64) = 0.0f;
+        } else {
+            *(uint8_t*)((uintptr_t)rearAxle + 0x5D) = 1; // isSteer = true
+            *(float*)((uintptr_t)rearAxle + 0x64) = (g_crabWalkMode == 1) ? 1.0f : -1.0f; // +1 Crab, -1 4WS
+            *(float*)((uintptr_t)rearAxle + 0x90) = 42.0f; // maxSteerAngle
+        }
+    } @catch (...) {}
+}
+
+// #9 Magnet Orbit (Seçilen oyuncunun etrafında yörüngede dön)
+static void few1n_tickMagnetOrbit(void) {
+    if (!isMagnetOrbitEnabled || g_magnetOrbitActor <= 0 || !unityAlive(g_rb)) return;
+    if (!g_photonViewType || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+    @try {
+        void* a[1] = { g_photonViewType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        if (!ptrOk(arr)) return;
+        int n = few1n_rdI32(arr, 0x18, 0);
+        void** pvs = (void**)((uintptr_t)arr + 0x20);
+        void* pvCls = few1n_classAnyImage("Photon.Pun", "PhotonView");
+        if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+        void* mOwner = pvCls ? i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0) : NULL;
+        if (!mOwner) return;
+        Vec3 targetPos = {0,0,0}; bool found = false;
+        for (int i = 0; i < n && i < 256; i++) {
+            void* pv = pvs[i];
+            if (!unityAlive(pv)) continue;
+            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+            int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
+            if (act == g_magnetOrbitActor) {
+                if (few1n_objPos(pv, &targetPos)) { found = true; break; }
+            }
+        }
+        if (found) {
+            g_magnetOrbitAngle += 0.08f;
+            if (g_magnetOrbitAngle > 6.28318f) g_magnetOrbitAngle -= 6.28318f;
+            Vec3 p = { targetPos.x + cosf(g_magnetOrbitAngle) * 7.0f, targetPos.y + 1.2f, targetPos.z + sinf(g_magnetOrbitAngle) * 7.0f };
+            rbSetPosIl(g_rb, &p);
+            Vec3 zv = {0, 0, 0};
+            rbSetVelIl(g_rb, &zv);
+        }
+    } @catch (...) {}
+}
+
+// #10 Lowrider Bounce / Bunny Hop / Wheelie / Zero-Turn Tank Spin
+static void few1n_tickLowriderBounce(void) {
+    if (!isLowriderBounceEnabled || !unityAlive(g_rb)) return;
+    static int bTick = 0; bTick++;
+    if ((bTick % 14) == 0) {
+        @try {
+            Vec3 v = {0,0,0}; rbGetVelIl(g_rb, &v);
+            v.y = 6.5f;
+            rbSetVelIl(g_rb, &v);
+            Vec3 av = { (bTick % 28 == 0) ? 1.8f : -1.8f, 0.0f, ((bTick / 14) % 2 == 0) ? 1.5f : -1.5f };
+            rbSetAngVelIl(g_rb, &av);
+        } @catch (...) {}
+    }
+}
+static void few1n_doPhysicsStunt(int stunt) {
+    if (!unityAlive(g_rb)) return;
+    @try {
+        if (stunt == 0) { // Bunny Hop
+            Vec3 v; rbGetVelIl(g_rb, &v); v.y = 14.0f; rbSetVelIl(g_rb, &v);
+        } else if (stunt == 1) { // Wheelie (Tek Teker)
+            Vec3 v; rbGetVelIl(g_rb, &v); v.y += 3.0f; rbSetVelIl(g_rb, &v);
+            Vec3 av = { -3.5f, 0.0f, 0.0f }; rbSetAngVelIl(g_rb, &av);
+        } else if (stunt == 2) { // Zero-Turn 360 Tank Spin
+            Vec3 av = { 0.0f, 9.0f, 0.0f }; rbSetAngVelIl(g_rb, &av);
+        }
+    } @catch (...) {}
+}
+
+// #11 1000+ km/h Motor, Şanzıman, 500km/h Geri, Anlık Fren, AWD/RWD/FWD
+static void few1n_applySuperEngineAndDrive(void) {
+    if (!unityAlive(g_myRccp)) return;
+    @try {
+        if (isSuperEngine1000Enabled) {
+            *(float*)((uintptr_t)g_myRccp + 0x138) = 1200.0f; // maximumSpeed
+            void* eng = *(void**)((uintptr_t)g_myRccp + 0x58); // RCCP_Engine
+            if (unityAlive(eng)) {
+                *(float*)((uintptr_t)eng + 0x44) = 14000.0f; // maxEngineRPM
+                *(float*)((uintptr_t)eng + 0x5C) = 6000.0f;  // maxTorqueAtRPM
+                *(float*)((uintptr_t)eng + 0x94) = 6000.0f;  // maximumTorqueAsNM
+                *(uint8_t*)((uintptr_t)eng + 0x60) = 0;      // engineRevLimiter off
+                *(uint8_t*)((uintptr_t)eng + 0x63) = 1;      // turboCharged on
+                *(float*)((uintptr_t)eng + 0x6C) = 60.0f;    // maxTurboChargePsi
+            }
+            void* gb = *(void**)((uintptr_t)g_myRccp + 0x68); // RCCP_Gearbox
+            if (unityAlive(gb)) {
+                *(float*)((uintptr_t)gb + 0x48) = 0.45f;     // rearGearRatio (500km/h reverse)
+                *(float*)((uintptr_t)gb + 0x80) = 0.0f;      // shiftingTime = 0
+                *(uint8_t*)((uintptr_t)gb + 0x85) = 1;       // dontShiftTimer
+            }
+            void* diff = *(void**)((uintptr_t)g_myRccp + 0x70); // RCCP_Differential
+            if (unityAlive(diff)) {
+                *(float*)((uintptr_t)diff + 0x44) = 1.8f;    // finalDriveRatio
+            }
+            void* addons = *(void**)((uintptr_t)g_myRccp + 0xE0);
+            if (unityAlive(addons)) {
+                void* lim = *(void**)((uintptr_t)addons + 0x70); // RCCP_Limiter
+                if (unityAlive(lim)) *(uint8_t*)((uintptr_t)lim + 0x40) = 0; // limitingNow = false
+            }
+        }
+        if (isInstantBrakeEnabled && unityAlive(g_rb)) {
+            float brk = *(float*)((uintptr_t)g_myRccp + 0x188); // brakeInput_P
+            if (brk > 0.15f) {
+                Vec3 zv = {0, 0, 0};
+                rbSetVelIl(g_rb, &zv);
+            }
+        }
+        if (g_driveTypeMode > 0) {
+            void* fAxle = *(void**)((uintptr_t)g_myRccp + 0x80);
+            void* rAxle = *(void**)((uintptr_t)g_myRccp + 0x88);
+            if (unityAlive(fAxle) && unityAlive(rAxle)) {
+                bool fPow = (g_driveTypeMode == 1 || g_driveTypeMode == 3);
+                bool rPow = (g_driveTypeMode == 1 || g_driveTypeMode == 2);
+                *(uint8_t*)((uintptr_t)fAxle + 0x5C) = fPow ? 1 : 0;
+                *(uint8_t*)((uintptr_t)rAxle + 0x5C) = rPow ? 1 : 0;
+                *(float*)((uintptr_t)fAxle + 0x60) = fPow ? 1.0f : 0.0f;
+                *(float*)((uintptr_t)rAxle + 0x60) = rPow ? 1.0f : 0.0f;
+            }
+        }
+    } @catch (...) {}
+}
+
+// #12 Dahili Drone Kamera (ImersiFOX.Drone.DroneManager)
+static bool few1n_toggleNativeDrone(bool on, float speed, float fov, bool focusCar) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* dmCls = few1n_classAnyImage("ImersiFOX.Drone", "DroneManager");
+    if (!dmCls) return false;
+    @try {
+        if (on) {
+            void* mEn = i_class_get_method_from_name(dmCls, "Enable", 2);
+            if (!mEn) return false;
+            Vec3 pos = {0, 5, 0};
+            if (unityAlive(g_rb)) { rbGetPosIl(g_rb, &pos); pos.y += 4.0f; }
+            Quaternion rot = {0, 0, 0, 1};
+            void* args[2] = { &pos, &rot };
+            bool crashed = false;
+            few1n_guardedInvoke(mEn, NULL, args, &crashed);
+            if (crashed) return false;
+            void* mInst = i_class_get_method_from_name(dmCls, "fyv", 0);
+            void* dm = mInst ? i_runtime_invoke(mInst, NULL, NULL, NULL) : NULL;
+            if (unityAlive(dm)) {
+                void* mSpd = i_class_get_method_from_name(dmCls, "SetSpeed", 1);
+                void* mFov = i_class_get_method_from_name(dmCls, "fzd", 1);
+                void* mFoc = i_class_get_method_from_name(dmCls, "SetFocusCar", 0);
+                if (mSpd && speed > 0) { void* a[1]={&speed}; @try { i_runtime_invoke(mSpd, dm, a, NULL); } @catch (...) {} }
+                if (mFov && fov > 10)  { void* a[1]={&fov};   @try { i_runtime_invoke(mFov, dm, a, NULL); } @catch (...) {} }
+                if (mFoc && focusCar)  { @try { i_runtime_invoke(mFoc, dm, NULL, NULL); } @catch (...) {} }
+            }
+            isNativeDroneEnabled = true;
+            return true;
+        } else {
+            void* mDis = i_class_get_method_from_name(dmCls, "Disable", 0);
+            if (mDis) { bool c = false; few1n_guardedInvoke(mDis, NULL, NULL, &c); }
+            isNativeDroneEnabled = false;
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #13 Canlı Oyuncu İzleme (Spectate — RCCP_Camera.cio)
+static bool few1n_spectateRccp(void* targetRccp) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name || !unityAlive(targetRccp)) return false;
+    void* camCls = few1n_classAnyImage("", "RCCP_Camera");
+    if (!camCls) return false;
+    void* camType = few1n_typeObjOf(camCls);
+    void* mCio = i_class_get_method_from_name(camCls, "cio", 1);
+    if (!camType || !mCio) return false;
+    @try {
+        void* a[1] = { camType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 8 && items; i++) {
+            if (!unityAlive(items[i])) continue;
+            void* args[1] = { targetRccp };
+            bool crashed = false;
+            few1n_guardedInvoke(mCio, items[i], args, &crashed);
+            if (!crashed) return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #14 Gerçek Pops & Bangs (MufflerCrackleRandom) + RGB Egzoz Alevi (RCCP_Exhaust)
+static void few1n_tickRealPopsAndRgbExhaust(void) {
+    if (!isRealPopsBangsEnabled && !isRgbExhaustEnabled) return;
+    if (!g_mFindObjectsPlural || !i_runtime_invoke) return;
+    static float exHue = 0.0f;
+    static int exTick = 0;
+    exTick++;
+    if (isRgbExhaustEnabled) {
+        exHue += 0.025f; if (exHue >= 1.0f) exHue -= 1.0f;
+    }
+    if ((exTick % 3) != 0) return;
+    @try {
+        if (g_rccpExhaustTypeObj) {
+            void* a[1] = { g_rccpExhaustTypeObj };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+            void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+            Color4 c = hueToRGB(exHue);
+            c.r *= 2.0f; c.g *= 2.0f; c.b *= 2.0f; c.a = 1.0f;
+            for (int i = 0; i < cnt && i < 32 && items; i++) {
+                void* ex = items[i];
+                if (!unityAlive(ex)) continue;
+                if (isRgbExhaustEnabled) {
+                    *(Color4*)((uintptr_t)ex + 0xAC) = c; // flameColor
+                    *(Color4*)((uintptr_t)ex + 0xBC) = c; // boostFlameColor
+                    *(uint8_t*)((uintptr_t)ex + 0x50) = 1; // flameOnCutOff
+                }
+                if (isRealPopsBangsEnabled) {
+                    *(uint8_t*)((uintptr_t)ex + 0xE4) = 1; // popping = true
+                    void* mc = *(void**)((uintptr_t)ex + 0x40); // mufflerCrackle
+                    if (unityAlive(mc)) {
+                        *(int*)((uintptr_t)mc + 0x2C) = 100; // chanceToCrackle
+                        *(int*)((uintptr_t)mc + 0x30) = 100; // chanceToFire
+                        *(uint8_t*)((uintptr_t)mc + 0x38) = 1; // playDuringShifting
+                        *(uint8_t*)((uintptr_t)mc + 0x39) = 1; // playWithRevLimiter
+                        *(float*)((uintptr_t)mc + 0x68) = 0.0f; // startDelay
+                        *(uint8_t*)((uintptr_t)mc + 0x8C) = 0; // randomlyNotPlaying = false
+                    }
+                }
+            }
+        }
+    } @catch (...) {}
+}
+
+// #16 Ücretsiz Modifiye Dükkanı (TuningShop.UIController / hy)
+static void few1n_applyFreeTuningShop(void) {
+    if (!isFreeTuningShopEnabled || !i_runtime_invoke || !i_class_get_method_from_name) return;
+    @try {
+        void* uiCls = few1n_classAnyImage("TuningShop", "UIController");
+        if (!uiCls) return;
+        void* mInst = i_class_get_method_from_name(uiCls, "eaq", 0);
+        void* ui = mInst ? i_runtime_invoke(mInst, NULL, NULL, NULL) : NULL;
+        if (!unityAlive(ui)) return;
+        void* pm = *(void**)((uintptr_t)ui + 0x28); // hy priceManager
+        if (!ptrOk(pm)) return;
+        void* arr = *(void**)((uintptr_t)pm + 0x10); // ValueTuple<hs, int, object>[] iog
+        if (ptrOk(arr)) {
+            int cnt = few1n_rdI32(arr, 0x18, 0);
+            // Each ValueTuple<hs,int,object> on arm64 is 24 bytes: [0x00 hs][0x08 int][0x10 object]
+            for (int i = 0; i < cnt && i < 64; i++) {
+                *(int*)((uintptr_t)arr + 0x20 + (size_t)i * 24 + 0x08) = 0;
+            }
+        }
+        void* mRef = i_class_get_method_from_name(uiCls, "eba", 0);
+        if (mRef) { bool c = false; few1n_guardedInvoke(mRef, ui, NULL, &c); }
+    } @catch (...) {}
+}
+
+// #17 Mesafe Kilitli Tüm Haritaları Aç (MapUnlockButton)
+static int few1n_unlockAllMaps(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return 0;
+    void* cls = few1n_classAnyImage("", "MapUnlockButton");
+    if (!cls) return 0;
+    void* type = few1n_typeObjOf(cls);
+    void* goCls = few1n_classAnyImage("UnityEngine", "GameObject");
+    void* mSetAct = goCls ? i_class_get_method_from_name(goCls, "SetActive", 1) : NULL;
+    void* selCls = few1n_classAnyImage("UnityEngine.UI", "Selectable");
+    void* mSetInt = selCls ? i_class_get_method_from_name(selCls, "set_interactable", 1) : NULL;
+    int unlocked = 0;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        uint8_t f0 = 0, t1 = 1;
+        for (int i = 0; i < cnt && i < 64 && items; i++) {
+            void* mb = items[i];
+            if (!unityAlive(mb)) continue;
+            *(float*)((uintptr_t)mb + 0x48) = 0.0f; // requiredDistanceKm = 0
+            void* btn = *(void**)((uintptr_t)mb + 0x20);
+            if (unityAlive(btn) && mSetInt) { void* ia[1]={&t1}; @try { i_runtime_invoke(mSetInt, btn, ia, NULL); } @catch (...) {} }
+            void* lImg = *(void**)((uintptr_t)mb + 0x28);
+            void* lTxt = *(void**)((uintptr_t)mb + 0x30);
+            if (unityAlive(lImg) && mSetAct) { void* fa[1]={&f0}; @try { i_runtime_invoke(mSetAct, lImg, fa, NULL); } @catch (...) {} }
+            if (unityAlive(lTxt) && mSetAct) { void* fa[1]={&f0}; @try { i_runtime_invoke(mSetAct, lTxt, fa, NULL); } @catch (...) {} }
+            unlocked++;
+        }
+        void* mMyt = i_class_get_method_from_name(cls, "myt", 0);
+        if (mMyt) { bool c = false; few1n_guardedInvoke(mMyt, NULL, NULL, &c); }
+    } @catch (...) {}
+    return unlocked;
+}
+
+// #18 Şimşek Fırtınası (THOR.THOR_Thunderstorm)
+static bool few1n_setThunderstorm(int mode) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("THOR", "THOR_Thunderstorm");
+    if (!cls) return false;
+    @try {
+        void* mGbb = i_class_get_method_from_name(cls, "gbb", 1);
+        float p = (mode == 0) ? 0.0f : 1.0f;
+        if (mGbb) {
+            void* args[1] = { &p };
+            bool c = false;
+            few1n_guardedInvoke(mGbb, NULL, args, &c);
+            return !c;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #19 Lobi Harita Adı & Oda Şifresi ("pwd") Detayı
+static NSString* few1n_getLobbyRoomDetails(void) {
+    if (!pn_getCurrentRoom || !i_runtime_invoke || !i_class_get_method_from_name) return @"Odada değilsin.";
+    void* rm = NULL; @try { rm = pn_getCurrentRoom(); } @catch (...) {}
+    if (!ptrOk(rm)) return @"Aktif oda yok.";
+    void* rmCls = few1n_classAnyImage("Photon.Realtime", "Room");
+    void* htCls = few1n_classAnyImage("ExitGames.Client.Photon", "Hashtable");
+    if (!rmCls || !htCls) return @"Room sınıfı yok.";
+    void* mName  = i_class_get_method_from_name(rmCls, "get_Name", 0);
+    void* mCnt   = i_class_get_method_from_name(rmCls, "get_PlayerCount", 0);
+    void* mMax   = i_class_get_method_from_name(rmCls, "get_MaxPlayers", 0);
+    void* mProps = i_class_get_method_from_name(rmCls, "get_CustomProperties", 0);
+    void* mGet   = i_class_get_method_from_name(htCls, "get_Item", 1);
+    @try {
+        NSString *rName = @"?";
+        if (mName) { void* s = i_runtime_invoke(mName, rm, NULL, NULL); if (ptrOk(s)) rName = readStr(s); }
+        int pCnt = 0, pMax = 0;
+        if (mCnt) { void* b = i_runtime_invoke(mCnt, rm, NULL, NULL); if (ptrOk(b)) pCnt = *(uint8_t*)((uintptr_t)b + 0x10); }
+        if (mMax) { void* b = i_runtime_invoke(mMax, rm, NULL, NULL); if (ptrOk(b)) pMax = *(uint8_t*)((uintptr_t)b + 0x10); }
+        NSString *pwdStr = @"(Yok)";
+        NSString *mapStr = @"(Bilinmiyor)";
+        if (mProps && mGet) {
+            void* ht = i_runtime_invoke(mProps, rm, NULL, NULL);
+            if (ptrOk(ht)) {
+                void* kPwd = mkStr(@"pwd");
+                void* a1[1] = { kPwd };
+                void* vPwd = NULL; @try { vPwd = i_runtime_invoke(mGet, ht, a1, NULL); } @catch (...) {}
+                if (ptrOk(vPwd)) { NSString *s = readStr(vPwd); if (s.length) pwdStr = s; }
+                void* kMap = mkStr(@"map");
+                void* a2[1] = { kMap };
+                void* vMap = NULL; @try { vMap = i_runtime_invoke(mGet, ht, a2, NULL); } @catch (...) {}
+                if (ptrOk(vMap)) { NSString *s = readStr(vMap); if (s.length) mapStr = s; }
+            }
+        }
+        return [NSString stringWithFormat:@"Oda: %@\nOyuncu: %d / %d\nŞifre (pwd): %@\nHarita (map): %@", rName, pCnt, pMax, pwdStr, mapStr];
+    } @catch (...) { return @"Oda bilgisi okunamadı."; }
+}
+
+// #20-#22 AdReward (gov), FinishHighway (gou), DailyTasks Reroll & Streak
+static bool few1n_triggerAdReward(void) {
+    if (!playerManagerGetInst || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* pmCls = few1n_classAnyImage("", "PlayerManager");
+    void* pm = playerManagerGetInst();
+    if (!pmCls || !ptrOk(pm)) return false;
+    void* mGov = i_class_get_method_from_name(pmCls, "gov", 0);
+    if (!mGov) return false;
+    bool c = false; few1n_guardedInvoke(mGov, pm, NULL, &c);
+    return !c;
+}
+static bool few1n_triggerFinishHighway(int dist, int hs, int misses, float factor) {
+    if (!playerManagerGetInst || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* pmCls = few1n_classAnyImage("", "PlayerManager");
+    void* pm = playerManagerGetInst();
+    if (!pmCls || !ptrOk(pm)) return false;
+    void* mGou = i_class_get_method_from_name(pmCls, "gou", 4);
+    if (!mGou) return false;
+    void* args[4] = { &dist, &hs, &misses, &factor };
+    bool c = false; few1n_guardedInvoke(mGou, pm, args, &c);
+    return !c;
+}
+static bool few1n_rerollDailyTasks(bool setStreak30) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("", "DailyTaskManager");
+    if (!cls) return false;
+    void* mInst = i_class_get_method_from_name(cls, "gbs", 0);
+    void* dm = mInst ? i_runtime_invoke(mInst, NULL, NULL, NULL) : NULL;
+    if (!unityAlive(dm)) return false;
+    if (setStreak30) {
+        void* mSet = i_class_get_method_from_name(cls, "gbv", 1);
+        int s = 30;
+        if (mSet) { void* a[1]={&s}; bool c=false; few1n_guardedInvoke(mSet, dm, a, &c); }
+    } else {
+        void* mGcb = i_class_get_method_from_name(cls, "gcb", 0);
+        if (mGcb) { bool c=false; few1n_guardedInvoke(mGcb, dm, NULL, &c); }
+    }
+    return true;
+}
+
+// #23 13 URP Drone Kamera Filtresi (ImersiFOX.Drone.PostFX.DroneFilters)
+static bool few1n_setDroneFilter(int idx) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("ImersiFOX.Drone.PostFX", "DroneFilters");
+    if (!cls) return false;
+    void* type = few1n_typeObjOf(cls);
+    void* mLix = i_class_get_method_from_name(cls, "lix", 1);
+    void* mLiw = i_class_get_method_from_name(cls, "liw", 1);
+    if (!type || !mLix) return false;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        uint8_t on = (idx > 0) ? 1 : 0;
+        float fIdx = (float)idx;
+        for (int i = 0; i < cnt && i < 8 && items; i++) {
+            if (!unityAlive(items[i])) continue;
+            if (mLiw) { void* b[1]={&on}; bool c=false; few1n_guardedInvoke(mLiw, items[i], b, &c); }
+            void* args[1] = { &fIdx };
+            bool c = false; few1n_guardedInvoke(mLix, items[i], args, &c);
+            g_droneFilterIdx = idx;
+            return !c;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #24 Fotoğraf Modu & HUD Gizle (RecordMode.gqw + 4x Zoom FOV)
+static bool few1n_setRecordMode(bool hideHud, float customFov) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("", "RecordMode");
+    if (cls) {
+        void* mGqw = i_class_get_method_from_name(cls, "gqw", 1);
+        if (mGqw) {
+            uint8_t h = hideHud ? 1 : 0;
+            void* args[1] = { &h };
+            bool c = false; few1n_guardedInvoke(mGqw, NULL, args, &c);
+            isRecordHudHidden = hideHud;
+        }
+    }
+    if (customFov > 5.0f && g_mFindObjectsPlural) {
+        void* camCls = few1n_classAnyImage("", "RCCP_Camera");
+        void* camType = camCls ? few1n_typeObjOf(camCls) : NULL;
+        if (camType) {
+            void* a[1] = { camType };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+            void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+            for (int i = 0; i < cnt && i < 4 && items; i++) {
+                if (unityAlive(items[i])) *(float*)((uintptr_t)items[i] + 0x114) = customFov;
+            }
+        }
+    }
+    return true;
+}
+
+// #25 Extreme Grafik & FPS/Profiler Debugger
+static bool few1n_setExtremeGraphics(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("", "SettingsManager");
+    if (!cls) return false;
+    void* type = few1n_typeObjOf(cls);
+    void* mQ   = i_class_get_method_from_name(cls, "SetQuality", 1);
+    void* mR   = i_class_get_method_from_name(cls, "SetReflectionQuality", 1);
+    void* mFps = i_class_get_method_from_name(cls, "SetFps", 1);
+    if (!type) return false;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        int q = 5, ref = 3, fps = 120;
+        for (int i = 0; i < cnt && i < 4 && items; i++) {
+            if (!unityAlive(items[i])) continue;
+            if (mQ)   { void* p[1]={&q};   bool c=false; few1n_guardedInvoke(mQ, items[i], p, &c); }
+            if (mR)   { void* p[1]={&ref}; bool c=false; few1n_guardedInvoke(mR, items[i], p, &c); }
+            if (mFps) { void* p[1]={&fps}; bool c=false; few1n_guardedInvoke(mFps, items[i], p, &c); }
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+static bool few1n_setFpsDebugger(int mode) {
+    if (!i_class_get_field_from_name || !i_field_static_set_value) return false;
+    void* cls = few1n_classAnyImage("", "Debugger");
+    if (!cls) return false;
+    void* fld = i_class_get_field_from_name(cls, "debugMode");
+    if (!fld) return false;
+    @try {
+        int m = mode;
+        i_field_static_set_value(fld, &m);
+        g_fpsDebugMode = mode;
+        return true;
+    } @catch (...) {}
+    return false;
+}
+
+// #26 Anında Hasar Tamiri (CarDamage.VehicleDamage.ggp)
+static int few1n_repairVehicleBody(bool disableDamage) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return 0;
+    void* cls = few1n_classAnyImage("CarDamage", "VehicleDamage");
+    if (!cls) return 0;
+    void* type = few1n_typeObjOf(cls);
+    void* mGgp = i_class_get_method_from_name(cls, "ggp", 0);
+    if (!type || !mGgp) return 0;
+    int repaired = 0;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 32 && items; i++) {
+            void* vd = items[i];
+            if (!unityAlive(vd) || !few1n_pvIsMineFor(vd)) continue;
+            if (disableDamage) *(uint8_t*)((uintptr_t)vd + 0x28) = 0; // damageEnabledLocal = false
+            bool c = false; few1n_guardedInvoke(mGgp, vd, NULL, &c);
+            if (!c) repaired++;
+        }
+    } @catch (...) {}
+    return repaired;
+}
+
+// #27 0-100 Drag Kronometresi (ZeroTo100Display)
+static bool few1n_toggleZeroTo100(bool show) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("", "ZeroTo100Display");
+    if (!cls) return false;
+    void* type = few1n_typeObjOf(cls);
+    void* m = i_class_get_method_from_name(cls, show ? "mvg" : "Leave", 0);
+    if (!type || !m) return false;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 4 && items; i++) {
+            if (!unityAlive(items[i])) continue;
+            bool c = false; few1n_guardedInvoke(m, items[i], NULL, &c);
+            return !c;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #28 Özel Altın Popup Bildirimi (PopupSystem.Popup.gdz)
+static bool few1n_showGoldPopup(NSString *title, NSString *desc, NSString *rewardText) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name || !i_object_new) return false;
+    void* popCls = few1n_classAnyImage("PopupSystem", "Popup");
+    void* qtCls  = few1n_classAnyImage("PopupSystem", "qt");
+    if (!popCls || !qtCls) return false;
+    void* mGdz  = i_class_get_method_from_name(popCls, "gdz", 1);
+    void* mCtor = i_class_get_method_from_name(qtCls, ".ctor", 3);
+    if (!mGdz || !mCtor) return false;
+    @try {
+        void* qt = i_object_new(qtCls);
+        if (!ptrOk(qt)) return false;
+        void* tStr = mkStr(title ?: @"FEW1N VIP");
+        void* dStr = mkStr(desc ?: @"Mod Menu Aktif!");
+        void* cArgs[3] = { tStr, dStr, NULL };
+        i_runtime_invoke(mCtor, qt, cArgs, NULL);
+        if (rewardText.length > 0) {
+            *(void**)((uintptr_t)qt + 0x30) = mkStr(rewardText); // pbl gold reward text
+        }
+        void* gArgs[1] = { qt };
+        bool c = false; few1n_guardedInvoke(mGdz, NULL, gArgs, &c);
+        return !c;
+    } @catch (...) {}
+    return false;
+}
+
+// #29 Sürücü Avatar Modları (TurnTheGameOn.IKAvatarDriver.AvatarDriver)
+static bool few1n_applyAvatarDriverMod(int mode) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("TurnTheGameOn.IKAvatarDriver", "AvatarDriver");
+    if (!cls) return false;
+    void* type = few1n_typeObjOf(cls);
+    void* compCls = few1n_classAnyImage("UnityEngine", "Component");
+    void* trCls   = few1n_classAnyImage("UnityEngine", "Transform");
+    void* behCls  = few1n_classAnyImage("UnityEngine", "Behaviour");
+    void* goCls   = few1n_classAnyImage("UnityEngine", "GameObject");
+    void* mGetGo  = compCls ? i_class_get_method_from_name(compCls, "get_gameObject", 0) : NULL;
+    void* mGetTr  = compCls ? i_class_get_method_from_name(compCls, "get_transform", 0) : NULL;
+    void* mSetAct = goCls   ? i_class_get_method_from_name(goCls, "SetActive", 1) : NULL;
+    void* mSetEn  = behCls  ? i_class_get_method_from_name(behCls, "set_enabled", 1) : NULL;
+    void* mSetSc  = trCls   ? i_class_get_method_from_name(trCls, "set_localScale", 1) : NULL;
+    if (!type) return false;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 16 && items; i++) {
+            void* av = items[i];
+            if (!unityAlive(av)) continue;
+            void* settings = *(void**)((uintptr_t)av + 0x38); // AvatarDriverSettings
+            void* anim     = *(void**)((uintptr_t)av + 0x40); // Animator
+            void* go = mGetGo ? i_runtime_invoke(mGetGo, av, NULL, NULL) : NULL;
+            void* tr = mGetTr ? i_runtime_invoke(mGetTr, av, NULL, NULL) : NULL;
+            uint8_t act = (mode == 1) ? 0 : 1;
+            if (unityAlive(go) && mSetAct) { void* p[1]={&act}; @try { i_runtime_invoke(mSetAct, go, p, NULL); } @catch (...) {} }
+            if (ptrOk(settings)) {
+                *(uint8_t*)((uintptr_t)settings + 0x18) = (mode == 3) ? 0 : 1; // ikActive
+                Vec3 pos = {0.0f, (mode == 4) ? 0.85f : 0.0f, 0.0f};
+                *(Vec3*)((uintptr_t)settings + 0x1C) = pos; // avatarPosition
+            }
+            if (unityAlive(anim) && mSetEn) {
+                uint8_t en = (mode == 3) ? 0 : 1;
+                void* p[1] = { &en };
+                @try { i_runtime_invoke(mSetEn, anim, p, NULL); } @catch (...) {}
+            }
+            if (unityAlive(tr) && mSetSc) {
+                Vec3 sc = (mode == 2) ? (Vec3){1.65f, 1.65f, 1.65f} : (Vec3){1.0f, 1.0f, 1.0f};
+                void* p[1] = { &sc };
+                @try { i_runtime_invoke(mSetSc, tr, p, NULL); } @catch (...) {}
+            }
+        }
+        g_avatarModMode = mode;
+        return cnt > 0;
+    } @catch (...) {}
+    return false;
+}
+
+// #30 Sürüş Kayıt & Replay (RCCP_Recorder: 0=Record dox, 1=Play doz, 2=Stop dpb)
+static bool few1n_recorderAction(int act) {
+    if (!unityAlive(g_myRccp) || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* addons = *(void**)((uintptr_t)g_myRccp + 0xE0);
+    if (!unityAlive(addons)) return false;
+    void* rec = *(void**)((uintptr_t)addons + 0x60);
+    if (!unityAlive(rec)) {
+        void* oaCls = few1n_classAnyImage("", "RCCP_OtherAddons");
+        void* mDnx = oaCls ? i_class_get_method_from_name(oaCls, "dnx", 0) : NULL;
+        if (mDnx) { @try { rec = i_runtime_invoke(mDnx, addons, NULL, NULL); } @catch (...) {} }
+    }
+    if (!unityAlive(rec)) return false;
+    void* recCls = few1n_classAnyImage("", "RCCP_Recorder");
+    if (!recCls) return false;
+    const char* mName = (act == 0) ? "dox" : (act == 1) ? "doz" : "dpb";
+    void* m = i_class_get_method_from_name(recCls, mName, 0);
+    if (!m) return false;
+    bool c = false; few1n_guardedInvoke(m, rec, NULL, &c);
+    return !c;
+}
+
+// #31 Aşırı Gövde Yatırma (RCCP_BodyTilt)
+static void few1n_applyBodyTilt(void) {
+    if (!unityAlive(g_myRccp)) return;
+    @try {
+        void* addons = *(void**)((uintptr_t)g_myRccp + 0xE0);
+        if (!unityAlive(addons)) return;
+        void* bt = *(void**)((uintptr_t)addons + 0x88);
+        if (!unityAlive(bt)) return;
+        *(float*)((uintptr_t)bt + 0x58) = isBodyTiltMaxEnabled ? 15.0f : 3.0f; // maxTiltAngle
+        *(float*)((uintptr_t)bt + 0x5C) = isBodyTiltMaxEnabled ? 15.0f : 2.5f; // tiltMultiplier
+    } @catch (...) {}
+}
+
+// #32 Tekerlek Efektleri (RCCP_WheelBlur + RCCP_Skidmarks + RCCP_SkidmarksManager.cvd)
+static void few1n_applyWheelEffects(void) {
+    if (!unityAlive(g_myRccp)) return;
+    @try {
+        if (isWheelBlurBoostEnabled) {
+            void* addons = *(void**)((uintptr_t)g_myRccp + 0xE0);
+            void* wb = unityAlive(addons) ? *(void**)((uintptr_t)addons + 0x78) : NULL;
+            if (unityAlive(wb)) {
+                *(float*)((uintptr_t)wb + 0x54) = 0.2f; // scale
+                *(float*)((uintptr_t)wb + 0x58) = 5.0f; // rotationSpeed
+            }
+        }
+        if (isSkidmarksForceEnabled) {
+            void* wArr = *(void**)((uintptr_t)g_myRccp + 0xE8); // RCCP_WheelCollider[]
+            if (ptrOk(wArr)) {
+                int cnt = few1n_rdI32(wArr, 0x18, 0);
+                void** ws = (void**)((uintptr_t)wArr + 0x20);
+                for (int i = 0; i < cnt && i < 8; i++) {
+                    if (unityAlive(ws[i])) {
+                        *(uint8_t*)((uintptr_t)ws[i] + 0x92) = 1; // isSkidding
+                        *(uint8_t*)((uintptr_t)ws[i] + 0xD8) = 1; // drawSkid
+                    }
+                }
+            }
+        }
+    } @catch (...) {}
+}
+static bool few1n_cleanAllSkidmarks(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("", "RCCP_SkidmarksManager");
+    if (!cls) return false;
+    void* type = few1n_typeObjOf(cls);
+    void* mCvd = i_class_get_method_from_name(cls, "cvd", 0);
+    if (!type || !mCvd) return false;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 4 && items; i++) {
+            if (unityAlive(items[i])) { bool c=false; few1n_guardedInvoke(mCvd, items[i], NULL, &c); return !c; }
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #33 Aktif Spoiler (RCCP_ActiveSpoiler) & Römork Ayır (RCCP_TruckTrailer.cwd)
+static void few1n_applyActiveSpoiler(void) {
+    if (g_activeSpoilerMode == 0 || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+    void* cls = few1n_classAnyImage("", "RCCP_ActiveSpoiler");
+    if (!cls) return;
+    void* type = few1n_typeObjOf(cls);
+    if (!type) return;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        float thresh = (g_activeSpoilerMode == 1) ? 0.0f : 99999.0f;
+        for (int i = 0; i < cnt && i < 16 && items; i++) {
+            if (unityAlive(items[i])) *(float*)((uintptr_t)items[i] + 0x38) = thresh;
+        }
+    } @catch (...) {}
+}
+static bool few1n_detachTrailers(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("", "RCCP_TruckTrailer");
+    if (!cls) return false;
+    void* type = few1n_typeObjOf(cls);
+    void* mCwd = i_class_get_method_from_name(cls, "cwd", 0);
+    if (!type || !mCwd) return false;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 16 && items; i++) {
+            if (unityAlive(items[i])) { bool c=false; few1n_guardedInvoke(mCwd, items[i], NULL, &c); }
+        }
+        return cnt > 0;
+    } @catch (...) {}
+    return false;
+}
+
+// #34 Highway Bariyer Koruması & Karşı Şerit Trafik Toggle
+static void few1n_applyHighwayMods(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return;
+    void* behCls = few1n_classAnyImage("UnityEngine", "Behaviour");
+    void* mSetEn = behCls ? i_class_get_method_from_name(behCls, "set_enabled", 1) : NULL;
+    if (!mSetEn) return;
+    @try {
+        if (isNoBarrierProtEnabled) {
+            void* cls = few1n_classAnyImage("", "HR_BarrierCollisionProtector");
+            void* type = cls ? few1n_typeObjOf(cls) : NULL;
+            if (type) {
+                void* a[1] = { type };
+                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                uint8_t en = 0;
+                for (int i = 0; i < cnt && i < 32 && items; i++) {
+                    if (unityAlive(items[i])) { void* p[1]={&en}; @try { i_runtime_invoke(mSetEn, items[i], p, NULL); } @catch (...) {} }
+                }
+            }
+        }
+        if (isNoFakeTrafficEnabled) {
+            void* cls = few1n_classAnyImage("", "HR_FakeOncomingTraffic");
+            void* type = cls ? few1n_typeObjOf(cls) : NULL;
+            if (type) {
+                void* a[1] = { type };
+                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                uint8_t en = 0;
+                for (int i = 0; i < cnt && i < 16 && items; i++) {
+                    if (unityAlive(items[i])) { void* p[1]={&en}; @try { i_runtime_invoke(mSetEn, items[i], p, NULL); } @catch (...) {} }
+                }
+            }
+        }
+    } @catch (...) {}
+}
+
+// #35 Manuel Yağmur, Silecek & Ayna Yansıma (WindshieldRain / WipersController / SinglePerspectiveProbeURP / ux)
+static bool few1n_setWindshieldRainAndWipers(float spawnRate, float spawnAmount, int wiperMode) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    bool ok = false;
+    @try {
+        if (spawnRate >= 0.0f) {
+            void* rCls = few1n_classAnyImage("ShadedTechnology.WindshieldRainAsset", "WindshieldRain");
+            void* rType = rCls ? few1n_typeObjOf(rCls) : NULL;
+            if (rType) {
+                void* a[1] = { rType };
+                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                for (int i = 0; i < cnt && i < 8 && items; i++) {
+                    if (!unityAlive(items[i])) continue;
+                    *(float*)((uintptr_t)items[i] + 0x88) = spawnRate;
+                    *(float*)((uintptr_t)items[i] + 0x8C) = spawnAmount;
+                    ok = true;
+                }
+            }
+        }
+        if (wiperMode >= 0) {
+            void* wCls = few1n_classAnyImage("Weather", "WipersController");
+            void* wType = wCls ? few1n_typeObjOf(wCls) : NULL;
+            void* mEzt = wCls ? i_class_get_method_from_name(wCls, "ezt", 1) : NULL;
+            if (wType && mEzt) {
+                void* a[1] = { wType };
+                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                int wm = wiperMode;
+                for (int i = 0; i < cnt && i < 8 && items; i++) {
+                    if (!unityAlive(items[i])) continue;
+                    void* p[1] = { &wm };
+                    bool c = false; few1n_guardedInvoke(mEzt, items[i], p, &c);
+                    ok = true;
+                }
+            }
+        }
+    } @catch (...) {}
+    return ok;
+}
+static bool few1n_setMirrorReflections(bool ultraMirror) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    isUltraMirrorEnabled = ultraMirror;
+    @try {
+        void* uxCls = few1n_classAnyImage("", "ux");
+        if (uxCls) {
+            void* mMxr = i_class_get_method_from_name(uxCls, "mxr", 1);
+            int tier = ultraMirror ? 3 : 1;
+            if (mMxr) { void* p[1]={&tier}; bool c=false; few1n_guardedInvoke(mMxr, NULL, p, &c); }
+        }
+        void* spCls = few1n_classAnyImage("", "SinglePerspectiveProbeURP");
+        void* spType = spCls ? few1n_typeObjOf(spCls) : NULL;
+        if (spType) {
+            void* a[1] = { spType };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+            void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+            for (int i = 0; i < cnt && i < 8 && items; i++) {
+                if (!unityAlive(items[i])) continue;
+                *(int*)((uintptr_t)items[i] + 0x30) = ultraMirror ? 6 : 1;     // facesPerFrame
+                *(uint8_t*)((uintptr_t)items[i] + 0x68) = ultraMirror ? 0 : 1; // skipWhenStationary
+                *(float*)((uintptr_t)items[i] + 0x74) = ultraMirror ? 0.0f : 30.0f; // maxRefreshRate
+            }
+        }
+        return true;
+    } @catch (...) {}
+    return false;
+}
+
+// Per-frame & periodic ticks for v117.15 features
+static void few1n_tickV11715Frame(void) {
+    few1n_tickMagnetOrbit();
+    few1n_tickLowriderBounce();
+    few1n_applySuperEngineAndDrive();
+    few1n_tickRealPopsAndRgbExhaust();
+}
+static void few1n_tickV11715Slow(void) {
+    if (g_crabWalkMode > 0) few1n_applyCrabWalk();
+    if (isFreeTuningShopEnabled) few1n_applyFreeTuningShop();
+    if (isMapsUnlockedEnabled) few1n_unlockAllMaps();
+    if (isBodyTiltMaxEnabled) few1n_applyBodyTilt();
+    if (isWheelBlurBoostEnabled || isSkidmarksForceEnabled) few1n_applyWheelEffects();
+    if (g_activeSpoilerMode > 0) few1n_applyActiveSpoiler();
+    if (isNoBarrierProtEnabled || isNoFakeTrafficEnabled) few1n_applyHighwayMods();
 }
 
 // v117.12: Gerçek Korna Tetikleyici (RCCP_InputManager.crk -> onHorn)
@@ -7340,6 +8503,47 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)tapGhostNoHit;
 - (void)syncClearTraffic;
 - (void)syncSpawnTrafficPick;
+// v117.15 Mega Pack (#1-#35)
+- (void)v15Giant3DPlateMenu;
+- (void)v15SecretPlateCodesMenu;
+- (void)v15HdrPaintMenu;
+- (void)v15ExtremeWheelsMenu;
+- (void)v15StripCarMenu;
+- (void)v15BatchTrafficMenu;
+- (void)v15RoomBlackoutMenu;
+- (void)v15CrabWalkMenu;
+- (void)v15MagnetOrbitMenu;
+- (void)tapLowriderBounce;
+- (void)v15PhysicsStuntsMenu;
+- (void)tapSuperEngine1000;
+- (void)tapInstantBrake;
+- (void)v15DriveTypeMenu;
+- (void)v15LobbyDetails;
+- (void)v15NativeDroneMenu;
+- (void)v15SpectatePlayerMenu;
+- (void)tapRealPopsBangs;
+- (void)tapRgbExhaust;
+- (void)v15DroneFiltersMenu;
+- (void)v15PhotoRecordMenu;
+- (void)v15ZeroTo100Menu;
+- (void)v15GoldPopupPrompt;
+- (void)tapFreeTuningShop;
+- (void)tapUnlockAllMaps;
+- (void)v15ThunderstormMenu;
+- (void)v15RewardsTasksMenu;
+- (void)v15GraphicsFpsMenu;
+- (void)v15RepairVehicleMenu;
+- (void)v15AvatarDriverMenu;
+- (void)v15RecorderReplayMenu;
+- (void)tapBodyTiltMax;
+- (void)tapWheelBlurBoost;
+- (void)tapSkidmarksForce;
+- (void)v15CleanSkidmarks;
+- (void)v15SpoilerTrailerMenu;
+- (void)tapNoBarrierProt;
+- (void)tapNoFakeTraffic;
+- (void)v15RainWipersMenu;
+- (void)tapUltraMirror;
 - (void)tapAntiReport;
 - (void)tapVoteKickSnitch;
 - (void)tapPoliceStrobe;
@@ -8490,6 +9694,54 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"✏️  Para Miktarini Ayarla" color:C_CYAN atY:y action:@selector(editMoneyAmount)];
     y = [self actionRow:@"🎯  Tum Daily Task'leri Tamamla (Claim'e sen bas)" color:C_GOLD atY:y action:@selector(completeAllDailyTasks)];
 
+    y = [self header:@"🎨  SENKRON MODİFİYE (HERKESTE)" atY:y];
+    y = [self actionRow:@"🔥  Dev & Renkli 3D Plaka (#1 — Herkeste)" color:C_GOLD atY:y action:@selector(v15Giant3DPlateMenu)];
+    y = [self actionRow:@"🇯🇵  Gizli Çin & Japon Plakaları (#15 — Herkeste)" color:C_GOLD atY:y action:@selector(v15SecretPlateCodesMenu)];
+    y = [self actionRow:@"🌈  HDR Neon / Void Boya & Jant (#2 — Herkeste)" color:C_GOLD atY:y action:@selector(v15HdrPaintMenu)];
+    y = [self actionRow:@"🛸  Monster / UFO 90° Kamber (#3 — Herkeste)" color:C_GOLD atY:y action:@selector(v15ExtremeWheelsMenu)];
+    y = [self actionRow:@"💀  Çıplak / Tekerleksiz Araba (#4 — Herkeste)" color:C_RED atY:y action:@selector(v15StripCarMenu)];
+
+    y = [self header:@"⚡  FİZİK, TRAFİK & ODA (HERKESTE)" atY:y];
+    y = [self actionRow:@"🚦  Toplu Trafik: Barikat / Konvoy / Yağmur (#5)" color:C_GOLD atY:y action:@selector(v15BatchTrafficMenu)];
+    y = [self actionRow:@"🌑  Oda Ekran Karart / Reset RPC (#6)" color:C_RED atY:y action:@selector(v15RoomBlackoutMenu)];
+    y = [self actionRow:@"🦀  Crab Walk / 4WS Direksiyon (#8)" color:C_ON atY:y action:@selector(v15CrabWalkMenu)];
+    y = [self actionRow:@"🧲  Mıknatıs Yörünge / Magnet Orbit (#9)" color:C_RED atY:y action:@selector(v15MagnetOrbitMenu)];
+    y = [self toggle:@"🦘  Lowrider Zıplama (#10)" sub:@"Araç ritmik olarak zıplar ve sallanır (herkeste)" key:@"lowriderbounce" atY:y action:@selector(tapLowriderBounce)];
+    y = [self actionRow:@"🤸  Bunny Hop / Tek Teker / Tank 360° (#10)" color:C_ON atY:y action:@selector(v15PhysicsStuntsMenu)];
+    y = [self toggle:@"🚀  1000+ km/h Motor & 500 Geri Vites (#11)" sub:@"Tork 6000NM, 14000 RPM, 0sn vites, Limiter kapalı" key:@"superengine1000" atY:y action:@selector(tapSuperEngine1000)];
+    y = [self toggle:@"🛑  Anında Fren (Instant Brake #11)" sub:@"Frene dokunduğun an araç 0 km/h durur" key:@"instantbrake" atY:y action:@selector(tapInstantBrake)];
+    y = [self actionRow:@"⚙️  Çekiş Sistemi: AWD / RWD / FWD (#11)" color:C_CYAN atY:y action:@selector(v15DriveTypeMenu)];
+    y = [self actionRow:@"🔑  Aktif Oda Harita & Şifre (pwd) Detayı (#19)" color:C_CYAN atY:y action:@selector(v15LobbyDetails)];
+
+    y = [self header:@"🎥  KAMERA, DRONE, SES & HUD" atY:y];
+    y = [self actionRow:@"🛸  Dahili Drone Kamera Aç/Kapa (#12)" color:C_ON atY:y action:@selector(v15NativeDroneMenu)];
+    y = [self actionRow:@"👁️  Canlı Oyuncu İzle / Spectate (#13)" color:C_GOLD atY:y action:@selector(v15SpectatePlayerMenu)];
+    y = [self toggle:@"💥  Gerçek Pops & Bangs Sesi (#14)" sub:@"MufflerCrackleRandom %100 patlatma + 0 gecikme" key:@"realpopsbangs" atY:y action:@selector(tapRealPopsBangs)];
+    y = [self toggle:@"🌈  RGB Egzoz Alevi (#14)" sub:@"RCCP_Exhaust alev rengini gökkuşağı yapar" key:@"rgbexhaust" atY:y action:@selector(tapRgbExhaust)];
+    y = [self actionRow:@"🎞️  13 URP Drone Kamera Filtresi (#23)" color:C_CYAN atY:y action:@selector(v15DroneFiltersMenu)];
+    y = [self actionRow:@"📸  Fotoğraf Modu / HUD Gizle / 4x Zoom (#24)" color:C_CYAN atY:y action:@selector(v15PhotoRecordMenu)];
+    y = [self actionRow:@"⏱️  0–100 km/h Drag Kronometresi (#27)" color:C_ON atY:y action:@selector(v15ZeroTo100Menu)];
+    y = [self actionRow:@"🏆  Özel Altın Popup Göster (#28)" color:C_GOLD atY:y action:@selector(v15GoldPopupPrompt)];
+
+    y = [self header:@"🛠️  GARAJ, HAVA, GRAFİK & RCCP GİZLİ" atY:y];
+    y = [self toggle:@"💸  Ücretsiz Modifiye Dükkanı (#16)" sub:@"TuningShop sepet fiyatlarını canlı 0 yapar" key:@"freetuningshop" atY:y action:@selector(tapFreeTuningShop)];
+    y = [self toggle:@"🗺️  Tüm Haritaların Kilidini Aç (#17)" sub:@"Mesafe (KM) kilitli tüm haritaları açar" key:@"unlockallmaps" atY:y action:@selector(tapUnlockAllMaps)];
+    y = [self actionRow:@"⛈️  Şimşek Fırtınası / THOR (#18)" color:C_CYAN atY:y action:@selector(v15ThunderstormMenu)];
+    y = [self actionRow:@"🎁  Reklam Ödülü / Highway / Görev Yenile (#20-22)" color:C_GOLD atY:y action:@selector(v15RewardsTasksMenu)];
+    y = [self actionRow:@"🖥️  Extreme Grafik (120FPS) & FPS Debugger (#25)" color:C_ON atY:y action:@selector(v15GraphicsFpsMenu)];
+    y = [self actionRow:@"🔧  Anında Gövde Tamiri & Hasar Kapat (#26)" color:C_ON atY:y action:@selector(v15RepairVehicleMenu)];
+    y = [self actionRow:@"🧍  Sürücü Avatar Modları (Gizli/Koca/T-Pose #29)" color:C_CYAN atY:y action:@selector(v15AvatarDriverMenu)];
+    y = [self actionRow:@"⏺️  Sürüş Kayıt & Replay / Otopilot (#30)" color:C_GOLD atY:y action:@selector(v15RecorderReplayMenu)];
+    y = [self toggle:@"📐  Aşırı Gövde Yatırma / BodyTilt (#31)" sub:@"Viraj ve gazda araç aşırı yatar (Lowrider)" key:@"bodytiltmax" atY:y action:@selector(tapBodyTiltMax)];
+    y = [self toggle:@"🌀  Tekerlek Motion Blur Boost (#32)" sub:@"Jant hareket bulanıklığını maksimuma çeker" key:@"wheelblurboost" atY:y action:@selector(tapWheelBlurBoost)];
+    y = [self toggle:@"🖤  Sürekli Drift Lastik İzi (#32)" sub:@"Tüm tekerlekler sürekli siyah drift izi bırakır" key:@"skidmarksforce" atY:y action:@selector(tapSkidmarksForce)];
+    y = [self actionRow:@"🧽  Yoldaki Tüm Lastik İzlerini Temizle (#32)" color:C_CYAN atY:y action:@selector(v15CleanSkidmarks)];
+    y = [self actionRow:@"🪽  Aktif Spoiler & Römork Kontrolü (#33)" color:C_CYAN atY:y action:@selector(v15SpoilerTrailerMenu)];
+    y = [self toggle:@"🚧  Highway Bariyer Korumasını Kapat (#34)" sub:@"Bariyerden geri sekme korumasını devre dışı bırakır" key:@"nobarrierprot" atY:y action:@selector(tapNoBarrierProt)];
+    y = [self toggle:@"🚘  Highway Sahte Karşı Trafiği Kapat (#34)" sub:@"HR_FakeOncomingTraffic bileşenini kapatır" key:@"nofaketraffic" atY:y action:@selector(tapNoFakeTraffic)];
+    y = [self actionRow:@"🌧️  Manuel Cam Yağmuru & Silecek Hızı (#35)" color:C_CYAN atY:y action:@selector(v15RainWipersMenu)];
+    y = [self toggle:@"🪞  Gerçek Zamanlı Ayna Yansıma (#35)" sub:@"6-yüz/frame sınırsız gerçek zamanlı araç yansıması" key:@"ultramirror" atY:y action:@selector(tapUltraMirror)];
+
     UIView *sc = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,38)];
     UILabel *sl = [[UILabel alloc] initWithFrame:CGRectMake(0,0,pw-24,38)];
     sc.layer.cornerRadius = 11;
@@ -8768,6 +10020,19 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"neonlights" on:isNeonLightsEnabled];
     [self setToggle:@"hazardlights" on:isHazardLightsEnabled];
     [self setToggle:@"ghostnohit" on:isGhostNoHitEnabled];
+    [self setToggle:@"lowriderbounce"  on:isLowriderBounceEnabled];
+    [self setToggle:@"superengine1000" on:isSuperEngine1000Enabled];
+    [self setToggle:@"instantbrake"    on:isInstantBrakeEnabled];
+    [self setToggle:@"realpopsbangs"   on:isRealPopsBangsEnabled];
+    [self setToggle:@"rgbexhaust"      on:isRgbExhaustEnabled];
+    [self setToggle:@"freetuningshop"  on:isFreeTuningShopEnabled];
+    [self setToggle:@"unlockallmaps"   on:isMapsUnlockedEnabled];
+    [self setToggle:@"bodytiltmax"     on:isBodyTiltMaxEnabled];
+    [self setToggle:@"wheelblurboost"  on:isWheelBlurBoostEnabled];
+    [self setToggle:@"skidmarksforce"  on:isSkidmarksForceEnabled];
+    [self setToggle:@"nobarrierprot"   on:isNoBarrierProtEnabled];
+    [self setToggle:@"nofaketraffic"   on:isNoFakeTrafficEnabled];
+    [self setToggle:@"ultramirror"     on:isUltraMirrorEnabled];
     [self setToggle:@"colorchat" on:isColorChatEnabled];
     [self setToggle:@"votekicksnitch" on:isVoteKickSnitchEnabled];
     [self setToggle:@"antireport" on:isAntiReportEnabled];
@@ -8863,6 +10128,7 @@ static UIViewController* few1n_topVC(void) {
     few1n_applySelektor();   // selektor: RCCP high/low beam hizli cakma
     few1n_applyPoliceAndNeonLights(); // v117.7: Polis Cakari + Gokkusagi Far/Neon
     few1n_applyAlwaysLights(); // v97: Farlar Surekli Acik (offset 0x40/0x41)
+    few1n_tickV11715Frame();   // v117.15: Orbit, Lowrider, SuperEngine, InstantBrake, Pops/RGB Exhaust
     { static int richTick = 0; if ((richTick++ % 4) == 0 && g_il2cppReady) few1n_enableChatRichText(); }
     // ===== UCUS: havada GERCEK surus (gaz=ileri, fren=geri, direksiyon=don) - PURUZSUZ =====
     // Hepsi hiz/acisal-hiz (fizik) ile -> Photon dogal senkronlar -> baskalarinda titremez.
@@ -9805,6 +11071,7 @@ static UIViewController* few1n_topVC(void) {
     few1n_massFreezeTick();     // v114.94: Herkesi Dondur (tum odayi kilitle)
     few1n_yoyoTick();           // v114.94: Firlatip-Getir (yo-yo)
     few1n_forceRoomRichText();  // v114.47: hooksuz renkli oda ismi (richText zorla, sideload)
+    few1n_tickV11715Slow();     // v117.15: CrabWalk, FreeTuning, MapsUnlock, BodyTilt, WheelFX, Spoiler, Highway
     // v92: BALATA SICAK TUT + HASAR YOK frame update GERI ALINDI — dokunmatik/input bug sebep olabilir
     // Toggle'lar UI'da duruyor ama etkisiz (placeholder). Bug root cause'u bulunca gercek fix gelecek.
     // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
@@ -15365,6 +16632,476 @@ static void few1n_joinTargetRoom(NSString *nm) {
         ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
     }
     [self present:ac];
+}
+
+// ============================================================================
+// v117.15 MEGA PACK UI HANDLERS (#1 - #35)
+// ============================================================================
+- (void)v15Alert:(NSString*)title msg:(NSString*)msg {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Tamam" style:UIAlertActionStyleDefault handler:nil]];
+    [self present:a];
+}
+- (void)v15PresentSheet:(UIAlertController*)ac {
+    [ac addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    if (ac.popoverPresentationController) {
+        ac.popoverPresentationController.sourceView = self.panel;
+        ac.popoverPresentationController.sourceRect = CGRectMake(self.panel.bounds.size.width/2, 80, 1, 1);
+    }
+    [self present:ac];
+}
+
+// #1 Dev & Renkli 3D Plaka
+- (void)v15Giant3DPlateMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🔥 Dev & Renkli 3D Plaka (#1)"
+        message:@"TMP RichText ile herkesin gördüğü dev/renkli plaka:" preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *presets = @[
+        @{@"n":@"🔥 DEV KIRMIZI FEW1N",     @"t":@"<size=400><color=#FF0033><b>FEW1N</b></color></size>"},
+        @{@"n":@"⚡ NEON CYAN VIP",         @"t":@"<size=350><color=#00FFFF><b>VIP</b></color></size>"},
+        @{@"n":@"👑 ALTIN KRAL (Çok Satır)",@"t":@"<size=250><color=#FFD700>FEW1N\nKING</color></size>"},
+        @{@"n":@"🌈 GÖKKUŞAĞI FEW1N",       @"t":@"<size=300><color=#FF0000>F</color><color=#FF9900>E</color><color=#00FF00>W</color><color=#00FFFF>1</color><color=#CC00FF>N</color></size>"},
+        @{@"n":@"✏️ Özel RichText Yaz...",  @"t":@"CUSTOM"},
+    ];
+    for (NSDictionary *p in presets) {
+        [ac addAction:[UIAlertAction actionWithTitle:p[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            if ([p[@"t"] isEqualToString:@"CUSTOM"]) {
+                UIAlertController *al = [UIAlertController alertControllerWithTitle:@"✏️ Özel 3D Plaka"
+                    message:@"Örn: <size=350><color=#FF00FF>FEW1N</color></size>" preferredStyle:UIAlertControllerStyleAlert];
+                [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = @"<size=350><color=#00FF88>FEW1N</color></size>"; }];
+                [al addAction:[UIAlertAction actionWithTitle:@"Uygula & Yayınla" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                    bool ok = few1n_applyPlateWithCode(@"eu1", al.textFields.firstObject.text ?: @"FEW1N");
+                    if (!ok) [self v15Alert:@"⚠️ Hazır değil" msg:@"PlateTuner bulunamadı (garaj/araba içinde dene)."];
+                }]];
+                [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+                [self present:al];
+            } else {
+                bool ok = few1n_applyPlateWithCode(@"eu1", p[@"t"]);
+                if (!ok) [self v15Alert:@"⚠️ Hazır değil" msg:@"PlateTuner bulunamadı (garaj/araba içinde dene)."];
+            }
+        }]];
+    }
+    [self v15PresentSheet:ac];
+}
+
+// #15 Gizli Çin & Japon Plakaları
+- (void)v15SecretPlateCodesMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🇯🇵 Gizli Özel Plakalar (#15)"
+        message:@"Kilitli ülke/stil plaka kodları — herkeste gözükür:" preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *codes = @[
+        @{@"n":@"🇨🇳 Çin Benzinli (cn1)",      @"c":@"cn1"},
+        @{@"n":@"🔋 Çin Elektrikli EV (cn2)",  @"c":@"cn2"},
+        @{@"n":@"⚡ Çin Hibrit (cn3)",         @"c":@"cn3"},
+        @{@"n":@"🇯🇵 Japon Kare 2 (rusj2)",     @"c":@"rusj2"},
+        @{@"n":@"🇯🇵 Japon Kare 3 (rusj3)",     @"c":@"rusj3"},
+        @{@"n":@"🇺🇸 ABD Plaka (us1)",         @"c":@"us1"},
+        @{@"n":@"🇪🇺 Avrupa Plaka (eu1)",      @"c":@"eu1"},
+    ];
+    for (NSDictionary *d in codes) {
+        [ac addAction:[UIAlertAction actionWithTitle:d[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            NSString *txt = [NSString stringWithUTF8String:customPlateText];
+            if (txt.length == 0) txt = @"FEW1N";
+            bool ok = few1n_applyPlateWithCode(d[@"c"], txt);
+            if (!ok) [self v15Alert:@"⚠️ Hazır değil" msg:@"PlateTuner bulunamadı (garaj/araba içinde dene)."];
+        }]];
+    }
+    [self v15PresentSheet:ac];
+}
+
+// #2 HDR Parlayan Neon / Void Gövde & Jant Boyası
+- (void)v15HdrPaintMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🌈 HDR Neon / Void Boya (#2)"
+        message:@"Normal RGB sınırlarını aşan parlayan/void boya (herkeste):" preferredStyle:UIAlertControllerStyleActionSheet];
+    void (^opt)(NSString*, float,float,float, float,float,float, int, bool) = ^(NSString* n, float r,float g,float b, float r2,float g2,float b2, int t, bool rims){
+        [ac addAction:[UIAlertAction actionWithTitle:n style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            if (!few1n_applyHdrBodyPaint(r,g,b, r2,g2,b2, t, rims))
+                [self v15Alert:@"⚠️ Hazır değil" msg:@"PaintTuner bulunamadı (garaj/araba içinde dene)."];
+        }]];
+    };
+    opt(@"☀️ HDR Parlayan Altın (Gövde+Jant)",   6.0f, 4.5f, 0.2f,  6.0f, 2.0f, 0.0f, 0, true);
+    opt(@"⚡ HDR Neon Cyan (Gövde+Jant)",         0.0f, 6.0f, 8.0f,  0.0f, 2.0f, 6.0f, 1, true);
+    opt(@"🔥 HDR Lazer Kırmızı (Gövde+Jant)",     8.0f, 0.1f, 0.3f,  5.0f, 0.0f, 2.0f, 1, true);
+    opt(@"💜 HDR Bukalemun Mor/Cyan (Chameleon)", 5.0f, 0.0f, 8.0f,  0.0f, 7.0f, 6.0f, 1, true);
+    opt(@"☢️ HDR Radyoaktif Yeşil (Shift)",       0.2f, 8.0f, 0.1f,  6.0f, 6.0f, 0.0f, 2, true);
+    opt(@"🕳️ Mutlak Void Siyah (-3 RGB)",        -3.0f,-3.0f,-3.0f, -3.0f,-3.0f,-3.0f, 0, true);
+    [self v15PresentSheet:ac];
+}
+
+// #3 Monster / UFO 90° Kamber Tekerlek
+- (void)v15ExtremeWheelsMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🛸 Monster / UFO Tekerlek (#3)"
+        message:@"Sınır ötesi tekerlek boyutu & 90° kamber (herkeste):" preferredStyle:UIAlertControllerStyleActionSheet];
+    void (^opt)(NSString*, float,float,float,float) = ^(NSString* n, float c, float o, float w, float r){
+        [ac addAction:[UIAlertAction actionWithTitle:n style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            if (!few1n_applyStance(c, o, w, r))
+                [self v15Alert:@"⚠️ Hazır değil" msg:@"WheelbaseTuner bulunamadı."];
+        }]];
+    };
+    opt(@"🛸 UFO Uçan Araba (90° Kamber)",      -90.0f, 0.25f, 1.0f, 1.0f);
+    opt(@"🦖 Monster Truck (2.2x Dev Teker)",    0.0f,  0.30f, 1.8f, 2.2f);
+    opt(@"🛞 Süper Geniş F1 (2.5x Genişlik)",   -8.0f,  0.40f, 2.5f, 1.2f);
+    opt(@"🐜 Mini Tekerlek (0.45x)",             0.0f,  0.0f,  0.6f, 0.45f);
+    opt(@"↩️ Normal Sıfırla",                    0.0f,  0.0f,  1.0f, 1.0f);
+    [self v15PresentSheet:ac];
+}
+
+// #4 Çıplak / Tekerleksiz Uçan Araba
+- (void)v15StripCarMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"💀 Çıplak / Tekerleksiz Araba (#4)"
+        message:@"Parça / Jant / Lastik ID=-1 sökme (herkeste):" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🛞 Tekerlek + Lastik Sök (Havada Süzül)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_stripCarParts(false, true, true, false)) [self v15Alert:@"⚠️" msg:@"Tuner bulunamadı."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🦴 Tüm Gövde Parçalarını Sök (-1)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_stripCarParts(true, false, false, false)) [self v15Alert:@"⚠️" msg:@"PartTuner bulunamadı."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"💀 FULL ÇIPLAK (Gövde + Tekerlek)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+        if (!few1n_stripCarParts(true, true, true, false)) [self v15Alert:@"⚠️" msg:@"Tuner bulunamadı."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Her Şeyi Geri Tak (Reset)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        few1n_stripCarParts(false, false, false, true);
+    }]];
+    [self v15PresentSheet:ac];
+}
+
+// #5 Toplu Trafik (SimpleSpawnBatchRPC)
+- (void)v15BatchTrafficMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🚦 Toplu Trafik (#5 — Herkeste)"
+        message:@"SimpleSpawnBatchRPC + senkron server saati (iuf):" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🚧 20 Araçlık Yol Barikatı" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_syncSpawnBatchTraffic(0)) [self v15Alert:@"⚠️" msg:@"HR_TrafficPooling hazır değil (odada olmalısın)."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🚔 12 Araçlık VIP Konvoyu" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_syncSpawnBatchTraffic(1)) [self v15Alert:@"⚠️" msg:@"HR_TrafficPooling hazır değil."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌧️ 30 Araçlık Ters Şerit Yağmuru" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+        if (!few1n_syncSpawnBatchTraffic(2)) [self v15Alert:@"⚠️" msg:@"HR_TrafficPooling hazır değil."];
+    }]];
+    [self v15PresentSheet:ac];
+}
+
+// #6 Oda Ekran Karartma / Reset
+- (void)v15RoomBlackoutMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🌑 Oda Ekran Kontrolü (#6)"
+        message:@"HR_PhotonHandler geçiş RPC'lerini tüm odaya gönder:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌑 Ekranı Karart (StartCloseRPC)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+        if (!few1n_roomScreenBlackout(true)) [self v15Alert:@"⚠️" msg:@"HR_PhotonHandler bulunamadı."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌅 Ekranı Aç & Resetle (TeleportAndOpenRPC)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_roomScreenBlackout(false)) [self v15Alert:@"⚠️" msg:@"HR_PhotonHandler bulunamadı."];
+    }]];
+    [self v15PresentSheet:ac];
+}
+
+// #8 Crab Walk / 4WS
+- (void)v15CrabWalkMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🦀 Crab Walk / 4WS (#8)"
+        message:@"Arka tekerlek direksiyon modu:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🦀 Crab Walk (Yan Yan +1.0)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_crabWalkMode = 1; few1n_applyCrabWalk(); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔄 Süper Viraj 4WS (Ters -1.0)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_crabWalkMode = 2; few1n_applyCrabWalk(); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⏹️ Kapat (Normal)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_crabWalkMode = 0; few1n_applyCrabWalk(); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #9 Magnet Orbit
+- (void)v15MagnetOrbitMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🧲 Mıknatıs Yörünge (#9)"
+        message:(isMagnetOrbitEnabled ? @"Yörünge AKTİF — kapatmak veya hedef değiştirmek için seç:" : @"Etrafında döneceğin oyuncuyu seç:") preferredStyle:UIAlertControllerStyleActionSheet];
+    if (isMagnetOrbitEnabled) {
+        [ac addAction:[UIAlertAction actionWithTitle:@"⏹️ Yörüngeyi Durdur" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+            isMagnetOrbitEnabled = false; g_magnetOrbitActor = -1;
+        }]];
+    }
+    if (pn_getPlayerListOthers && i_runtime_invoke) {
+        void* others = NULL; @try { others = pn_getPlayerListOthers(); } @catch (...) {}
+        void* plyCls = few1n_classAnyImage("Photon.Realtime", "Player");
+        void* mNick = plyCls ? i_class_get_method_from_name(plyCls, "get_NickName", 0) : NULL;
+        void* mAct  = plyCls ? i_class_get_method_from_name(plyCls, "get_ActorNumber", 0) : NULL;
+        int cnt = ptrOk(others) ? few1n_rdI32(others, 0x18, 0) : 0;
+        void** pls = ptrOk(others) ? (void**)((uintptr_t)others + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 20 && pls; i++) {
+            void* p = pls[i]; if (!ptrOk(p)) continue;
+            NSString *nm = @"Oyuncu"; int act = -1;
+            if (mNick) { void* s = i_runtime_invoke(mNick, p, NULL, NULL); if (ptrOk(s)) nm = readStr(s); }
+            if (mAct)  { void* b = i_runtime_invoke(mAct,  p, NULL, NULL); if (ptrOk(b)) act = *(int*)((uintptr_t)b + 0x10); }
+            if (act > 0) {
+                [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎯 %@ (#%d)", nm, act] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                    g_magnetOrbitActor = act; isMagnetOrbitEnabled = true;
+                }]];
+            }
+        }
+    }
+    [self v15PresentSheet:ac];
+}
+
+// #10 Lowrider & Stunts
+- (void)tapLowriderBounce {
+    isLowriderBounceEnabled = !isLowriderBounceEnabled;
+    [self refreshUI];
+}
+- (void)v15PhysicsStuntsMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🤸 Akrobasi Hareketleri (#10)"
+        message:@"Anlık fizik hareketi uygula:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🐇 Bunny Hop (Yüksek Zıpla)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_doPhysicsStunt(0); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🏍️ Wheelie (Ön Kaldır / Tek Teker)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_doPhysicsStunt(1); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌀 Zero-Turn 360° Tank Dönüşü" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_doPhysicsStunt(2); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #11 Super Engine / Instant Brake / Drive Type
+- (void)tapSuperEngine1000 { isSuperEngine1000Enabled = !isSuperEngine1000Enabled; [self refreshUI]; }
+- (void)tapInstantBrake    { isInstantBrakeEnabled = !isInstantBrakeEnabled; [self refreshUI]; }
+- (void)v15DriveTypeMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⚙️ Çekiş Sistemi (#11)"
+        message:@"Aktif çekiş tipini seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"4️⃣ AWD (4x4 Tam Çekiş)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_driveTypeMode = 1; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔥 RWD (Arkadan İtiş / Drift)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_driveTypeMode = 2; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🚗 FWD (Önden Çekiş)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_driveTypeMode = 3; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Varsayılan" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_driveTypeMode = 0; }]];
+    [self v15PresentSheet:ac];
+}
+
+// #19 Lobi Harita & Şifre Detayı
+- (void)v15LobbyDetails {
+    [self v15Alert:@"🔑 Aktif Oda Detayı (#19)" msg:few1n_getLobbyRoomDetails()];
+}
+
+// #12 Dahili Drone Kamera
+- (void)v15NativeDroneMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🛸 Dahili Drone Kamera (#12)"
+        message:@"ImersiFOX.Drone.DroneManager kontrolü:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"▶️ Drone Aç (Serbest Uçuş)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_toggleNativeDrone(true, 35.0f, 70.0f, false)) [self v15Alert:@"⚠️" msg:@"DroneManager bu sahnede yok."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🎯 Drone Aç (Araca Odaklı / Sinematik)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_toggleNativeDrone(true, 45.0f, 65.0f, true)) [self v15Alert:@"⚠️" msg:@"DroneManager bu sahnede yok."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⏹️ Drone Kapat (Normal Kamera)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+        few1n_toggleNativeDrone(false, 0, 0, false);
+    }]];
+    [self v15PresentSheet:ac];
+}
+
+// #13 Canlı Oyuncu İzleme (Spectate)
+- (void)v15SpectatePlayerMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"👁️ Canlı Oyuncu İzle (#13)"
+        message:@"Odadaki araçlardan birine kamerayı bağla:" preferredStyle:UIAlertControllerStyleActionSheet];
+    if (unityAlive(g_myRccp)) {
+        [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Kendi Aracıma Dön" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+            few1n_spectateRccp(g_myRccp);
+        }]];
+    }
+    void* rccpCls = few1n_classAnyImage("", "RCCP_CarController");
+    void* rccpType = rccpCls ? few1n_typeObjOf(rccpCls) : NULL;
+    if (rccpType && g_mFindObjectsPlural && i_runtime_invoke) {
+        void* a[1] = { rccpType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 16 && items; i++) {
+            void* car = items[i];
+            if (!unityAlive(car) || car == g_myRccp) continue;
+            [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🚗 Araç #%d (İzle)", i + 1] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                few1n_spectateRccp(car);
+            }]];
+        }
+    }
+    [self v15PresentSheet:ac];
+}
+
+// #14 Pops & Bangs + RGB Exhaust
+- (void)tapRealPopsBangs { isRealPopsBangsEnabled = !isRealPopsBangsEnabled; [self refreshUI]; }
+- (void)tapRgbExhaust    { isRgbExhaustEnabled = !isRgbExhaustEnabled; [self refreshUI]; }
+
+// #23 13 URP Drone Kamera Filtresi
+- (void)v15DroneFiltersMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🎞️ 13 URP Kamera Filtresi (#23)"
+        message:@"Sinematik URP filtre seç (DroneFilters):" preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *names = @[@"⏹️ Filtre Yok (0)", @"🎨 Cel Shading (1)", @"✨ Clarity (2)", @"🌈 Depth Dispersion (3)",
+        @"🎬 Depth Grade (4)", @"📰 Depth Halftone (5)", @"🔪 Depth Slice (6)", @"💡 Glow Boost (7)",
+        @"📼 Film Grain (8)", @"🔥 Halation (9)", @"🖋️ Ink Outline (10)", @"🌗 Luma Split (11)",
+        @"👾 GameBoy Dither (12)", @"🖼️ Poster (13)"];
+    for (int i = 0; i < (int)names.count; i++) {
+        int idx = i;
+        [ac addAction:[UIAlertAction actionWithTitle:names[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            if (!few1n_setDroneFilter(idx)) [self v15Alert:@"⚠️" msg:@"DroneFilters bu sahnede bulunamadı."];
+        }]];
+    }
+    [self v15PresentSheet:ac];
+}
+
+// #24 Fotoğraf Modu / HUD Gizle / 4x Zoom
+- (void)v15PhotoRecordMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"📸 Fotoğraf & Video Modu (#24)"
+        message:@"HUD gizleme ve kamera FOV zoom:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🎬 HUD Gizle (Temiz Kayıt)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRecordMode(true, 0); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"👁️ HUD Göster (Normal)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRecordMode(false, 60.0f); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔭 4x Telefoto Zoom (FOV 18)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRecordMode(true, 18.0f); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌐 Geniş Açı (FOV 105)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRecordMode(false, 105.0f); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #27 0-100 Drag Kronometresi
+- (void)v15ZeroTo100Menu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏱️ 0–100 Drag Kronometresi (#27)"
+        message:@"Oyunun gizli hızlanma ölçeri:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"▶️ Kronometreyi Göster" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_toggleZeroTo100(true)) [self v15Alert:@"⚠️" msg:@"ZeroTo100Display bulunamadı."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⏹️ Gizle" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_toggleZeroTo100(false); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #28 Altın Popup Bildirimi
+- (void)v15GoldPopupPrompt {
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"🏆 Özel Altın Popup (#28)"
+        message:@"Oyunun altın bildirim penceresinde görünecek metni yaz:" preferredStyle:UIAlertControllerStyleAlert];
+    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Başlık"; tf.text = @"FEW1N VIP"; }];
+    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Açıklama"; tf.text = @"v117.15 Mega Pack Aktif!"; }];
+    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"Altın Ödül Satırı"; tf.text = @"+999,999,999 $"; }];
+    [al addAction:[UIAlertAction actionWithTitle:@"Göster" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_showGoldPopup(al.textFields[0].text, al.textFields[1].text, al.textFields[2].text))
+            [self v15Alert:@"⚠️" msg:@"PopupSystem hazır değil."];
+    }]];
+    [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:al];
+}
+
+// #16 Ücretsiz Modifiye & #17 Tüm Haritalar
+- (void)tapFreeTuningShop {
+    isFreeTuningShopEnabled = !isFreeTuningShopEnabled;
+    if (isFreeTuningShopEnabled) few1n_applyFreeTuningShop();
+    [self refreshUI];
+}
+- (void)tapUnlockAllMaps {
+    isMapsUnlockedEnabled = !isMapsUnlockedEnabled;
+    if (isMapsUnlockedEnabled) few1n_unlockAllMaps();
+    [self refreshUI];
+}
+
+// #18 Şimşek Fırtınası
+- (void)v15ThunderstormMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⛈️ Şimşek Fırtınası (#18)"
+        message:@"THOR_Thunderstorm kontrolü:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⚡ Maksimum Fırtına Başlat" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_setThunderstorm(1)) [self v15Alert:@"⚠️" msg:@"THOR_Thunderstorm bu sahnede yok."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"☀️ Fırtınayı Durdur" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setThunderstorm(0); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #20-#22 Ödül / Highway / Günlük Görev
+- (void)v15RewardsTasksMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🎁 Ödül & Görev Araçları (#20-22)"
+        message:@"Sunucu API ve görev yardımcıları:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"📺 Reklam Ödülü İste (AdReward)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [self v15Alert:@"📺 AdReward" msg:(few1n_triggerAdReward() ? @"İstek gönderildi!" : @"PlayerManager hazır değil.")];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🛣️ Highway Bitişi Gönder (FinishHighway)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [self v15Alert:@"🛣️ FinishHighway" msg:(few1n_triggerFinishHighway(50000, 30000, 150, 2.5f) ? @"Highway bitiş isteği gönderildi!" : @"PlayerManager hazır değil.")];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔄 Günlük Görevleri Yenile (Reroll)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [self v15Alert:@"🔄 DailyTasks" msg:(few1n_rerollDailyTasks(false) ? @"Görevler yenilendi!" : @"DailyTaskManager bulunamadı.")];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔥 30 Günlük Seri Yap (Streak=30)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [self v15Alert:@"🔥 Streak" msg:(few1n_rerollDailyTasks(true) ? @"Seri 30 güne ayarlandı!" : @"DailyTaskManager bulunamadı.")];
+    }]];
+    [self v15PresentSheet:ac];
+}
+
+// #25 Extreme Grafik & FPS Debugger
+- (void)v15GraphicsFpsMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🖥️ Grafik & FPS Paneli (#25)"
+        message:@"Extreme kalite, 120 FPS ve dahili profiler:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"💎 Extreme Grafik + 120 FPS Aç" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [self v15Alert:@"💎 Extreme Grafik" msg:(few1n_setExtremeGraphics() ? @"Kalite=Extreme(5), Yansıma=3, FPS=120 uygulandı!" : @"SettingsManager bulunamadı.")];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"📊 FPS Sayacı: Sadece FPS (1)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setFpsDebugger(1); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"📈 FPS + Detaylı Profiler (3)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setFpsDebugger(3); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⏹️ FPS Panelini Kapat (0)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setFpsDebugger(0); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #26 Anında Gövde Tamiri
+- (void)v15RepairVehicleMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🔧 Gövde Hasar Tamiri (#26)"
+        message:@"CarDamage.VehicleDamage kontrolü:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"✨ Anında Tamir Et (Sıfır Gövde)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        int n = few1n_repairVehicleBody(false);
+        [self v15Alert:@"🔧 Tamir" msg:(n > 0 ? @"Araç gövdesi sıfırlandı!" : @"VehicleDamage bulunamadı.")];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🛡️ Tamir Et + Gövde Hasarını Kapat" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        int n = few1n_repairVehicleBody(true);
+        [self v15Alert:@"🛡️ Tamir + Korumalı" msg:(n > 0 ? @"Tamir edildi ve gövde yamulması kapatıldı!" : @"VehicleDamage bulunamadı.")];
+    }]];
+    [self v15PresentSheet:ac];
+}
+
+// #29 Sürücü Avatar Modları
+- (void)v15AvatarDriverMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🧍 Sürücü Avatar Modları (#29)"
+        message:@"IKAvatarDriver görünümünü değiştir:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"👻 Görünmez Sürücü (Hayalet Araba)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_applyAvatarDriverMod(1); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🗿 Dev Sürücü (1.65x Ölçek)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_applyAvatarDriverMod(2); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"✝️ T-Pose / IK Kapat" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_applyAvatarDriverMod(3); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🚀 Tavandan Dışarı Çık" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_applyAvatarDriverMod(4); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Normal Sürücü" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_applyAvatarDriverMod(0); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #30 Sürüş Kayıt & Replay
+- (void)v15RecorderReplayMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⏺️ Sürüş Kayıt & Replay (#30)"
+        message:@"RCCP_Recorder ile sürüşünü kaydet ve tekrar oynat:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔴 Kaydı Başlat / Durdur (Record)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_recorderAction(0)) [self v15Alert:@"⚠️" msg:@"RCCP_Recorder bu araçta aktif değil."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"▶️ Kaydı Oynat (Replay / Otopilot)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        if (!few1n_recorderAction(1)) [self v15Alert:@"⚠️" msg:@"Önce sürüş kaydetmelisin."];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⏹️ Durdur (Stop)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){ few1n_recorderAction(2); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #31 BodyTilt & #32 Wheel Effects
+- (void)tapBodyTiltMax    { isBodyTiltMaxEnabled = !isBodyTiltMaxEnabled; few1n_applyBodyTilt(); [self refreshUI]; }
+- (void)tapWheelBlurBoost { isWheelBlurBoostEnabled = !isWheelBlurBoostEnabled; [self refreshUI]; }
+- (void)tapSkidmarksForce { isSkidmarksForceEnabled = !isSkidmarksForceEnabled; [self refreshUI]; }
+- (void)v15CleanSkidmarks {
+    [self v15Alert:@"🧽 Lastik İzleri" msg:(few1n_cleanAllSkidmarks() ? @"Tüm lastik izleri temizlendi!" : @"RCCP_SkidmarksManager bulunamadı.")];
+}
+
+// #33 Aktif Spoiler & Römork
+- (void)v15SpoilerTrailerMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🪽 Aktif Spoiler & Römork (#33)"
+        message:@"Aero rüzgarlık ve römork kontrolü:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🪽 Spoiler Her Zaman AÇIK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_activeSpoilerMode = 1; few1n_applyActiveSpoiler(); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⬇️ Spoiler Her Zaman KAPALI" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_activeSpoilerMode = 2; few1n_applyActiveSpoiler(); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Spoiler Normal (Hıza Bağlı)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_activeSpoilerMode = 0; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🚛 Römorku / Dorseyi Ayır" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+        [self v15Alert:@"🚛 Römork" msg:(few1n_detachTrailers() ? @"Römork ayrıldı!" : @"Bağlı römork bulunamadı.")];
+    }]];
+    [self v15PresentSheet:ac];
+}
+
+// #34 Highway Mods
+- (void)tapNoBarrierProt { isNoBarrierProtEnabled = !isNoBarrierProtEnabled; if (isNoBarrierProtEnabled) few1n_applyHighwayMods(); [self refreshUI]; }
+- (void)tapNoFakeTraffic { isNoFakeTrafficEnabled = !isNoFakeTrafficEnabled; if (isNoFakeTrafficEnabled) few1n_applyHighwayMods(); [self refreshUI]; }
+
+// #35 Manuel Yağmur, Silecek & Ayna Yansıma
+- (void)v15RainWipersMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🌧️ Cam Yağmuru & Silecek (#35)"
+        message:@"WindshieldRain yoğunluğu ve WipersController hızı:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⛈️ Sağanak Yağmur (Maksimum Damla)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setWindshieldRainAndWipers(2500.0f, 80.0f, -1); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌦️ Hafif Yağmur" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setWindshieldRainAndWipers(300.0f, 15.0f, -1); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"☀️ Kuru Cam (Yağmur 0)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setWindshieldRainAndWipers(0.0f, 0.0f, -1); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"💨 Silecek: SÜPER HIZLI (4)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setWindshieldRainAndWipers(-1, -1, 4); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🚗 Silecek: Normal (2)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setWindshieldRainAndWipers(-1, -1, 2); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⏹️ Silecek: Kapalı (0)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setWindshieldRainAndWipers(-1, -1, 0); }]];
+    [self v15PresentSheet:ac];
+}
+- (void)tapUltraMirror {
+    few1n_setMirrorReflections(!isUltraMirrorEnabled);
+    [self refreshUI];
 }
 
 // ===== NAN / CRASH PAKET INJECT =====
