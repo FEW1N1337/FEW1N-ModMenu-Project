@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.20
+#define FEW1N_VERSION 117.21
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -593,6 +593,18 @@ static const void* (*i_assembly_get_image)(void*) = NULL;
 static void* (*i_class_from_name)(const void*, const char*, const char*) = NULL;
 static void* (*i_class_get_method_from_name)(void*, const char*, int) = NULL;
 static void* (*i_runtime_invoke)(void*, void*, void**, void**) = NULL;
+// v117.21: &exc yakalayan global guvenli IL2CPP invoke (C# exception asla SIGABRT yapmaz)
+static void* few1n_safeInvoke(void* method, void* obj, void** args) {
+    if (!method || !i_runtime_invoke) return NULL;
+    void* exc = NULL;
+    void* ret = NULL;
+    @try {
+        ret = i_runtime_invoke(method, obj, args, &exc);
+    } @catch (...) {
+        return NULL;
+    }
+    return (exc == NULL) ? ret : NULL;
+}
 static void* (*i_thread_attach)(void*) = NULL;
 static void* g_mSetTS = NULL;   // set_timeScale MethodInfo*
 static void* g_mGetTS = NULL;   // get_timeScale MethodInfo*
@@ -1246,14 +1258,14 @@ static void* mkPhotonHashtable(NSDictionary<NSString*, NSString*> *dict) {
     @try {
         void* ht = i_object_new(g_hashtableClass);
         if (!ht) return NULL;
-        i_runtime_invoke(g_mHashtableCtor, ht, NULL, NULL);
+        few1n_safeInvoke(g_mHashtableCtor, ht, NULL);
         for (NSString *k in dict) {
             NSString *v = dict[k];
             void* args[2];
             args[0] = mkStr(k);
             args[1] = mkStr(v);
             if (args[0] && args[1]) {
-                @try { i_runtime_invoke(g_mHashtableSetItem, ht, args, NULL); } @catch (...) {}
+                @try { few1n_safeInvoke(g_mHashtableSetItem, ht, args); } @catch (...) {}
             }
         }
         return ht;
@@ -1324,27 +1336,27 @@ static void* few1n_resolvePlayer(const char *methodName, int argc) {
 static void* w_pn_getLocalPlayer(void) {
     static void *m = NULL; if (!m) m = few1n_resolvePn("get_LocalPlayer", 0);
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static void* w_pn_getCurrentRoom(void) {
     static void *m = NULL; if (!m) m = few1n_resolvePn("get_CurrentRoom", 0);
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static bool w_pn_getInRoom(void) {
     static void *m = NULL; if (!m) m = few1n_resolvePn("get_InRoom", 0);
     if (!m || !i_runtime_invoke) return false;
-    @try { return few1n_unboxBool(i_runtime_invoke(m, NULL, NULL, NULL)); } @catch (...) { return false; }
+    @try { return few1n_unboxBool(few1n_safeInvoke(m, NULL, NULL)); } @catch (...) { return false; }
 }
 static void* w_pn_getNickName(void) {
     static void *m = NULL; if (!m) m = few1n_resolvePn("get_NickName", 0);
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static bool w_ply_getIsMaster(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolvePlayer("get_IsMasterClient", 0);
     if (!m || !i_runtime_invoke || !self) return false;
-    @try { return few1n_unboxBool(i_runtime_invoke(m, self, NULL, NULL)); } @catch (...) { return false; }
+    @try { return few1n_unboxBool(few1n_safeInvoke(m, self, NULL)); } @catch (...) { return false; }
 }
 
 // ==========================================================================
@@ -1861,70 +1873,70 @@ static void few1n_resolveFieldOffsets(void) {
 static void  w_pn_setNickName(void *v) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "set_NickName", 1);
     if (!m || !i_runtime_invoke) return;
-    @try { void *args[1]={v}; i_runtime_invoke(m, NULL, args, NULL); } @catch (...) {}
+    @try { void *args[1]={v}; few1n_safeInvoke(m, NULL, args); } @catch (...) {}
 }
 static bool w_pn_joinRoom(void *name, void *expectedUsers) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "JoinRoom", 2);
     if (!m || !i_runtime_invoke) return false;
-    @try { void *args[2]={name, expectedUsers}; return few1n_unboxBool(i_runtime_invoke(m, NULL, args, NULL)); } @catch (...) { return false; }
+    @try { void *args[2]={name, expectedUsers}; return few1n_unboxBool(few1n_safeInvoke(m, NULL, args)); } @catch (...) { return false; }
 }
 static bool w_pn_getConnReady(void) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "get_IsConnectedAndReady", 0);
     if (!m || !i_runtime_invoke) return false;
-    @try { return few1n_unboxBool(i_runtime_invoke(m, NULL, NULL, NULL)); } @catch (...) { return false; }
+    @try { return few1n_unboxBool(few1n_safeInvoke(m, NULL, NULL)); } @catch (...) { return false; }
 }
 static bool w_pn_leaveRoom(bool becomeInactive) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "LeaveRoom", 1);
     if (!m || !i_runtime_invoke) return false;
-    @try { bool b = becomeInactive; void *args[1]={&b}; return few1n_unboxBool(i_runtime_invoke(m, NULL, args, NULL)); } @catch (...) { return false; }
+    @try { bool b = becomeInactive; void *args[1]={&b}; return few1n_unboxBool(few1n_safeInvoke(m, NULL, args)); } @catch (...) { return false; }
 }
 static bool w_pn_closeConnection(void *player) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "CloseConnection", 1);
     if (!m || !i_runtime_invoke || !player) return false;
-    @try { void *args[1]={player}; return few1n_unboxBool(i_runtime_invoke(m, NULL, args, NULL)); } @catch (...) { return false; }
+    @try { void *args[1]={player}; return few1n_unboxBool(few1n_safeInvoke(m, NULL, args)); } @catch (...) { return false; }
 }
 static bool w_pn_createRoom(void *name, void *opts, void *typedLobby, void *expectedUsers) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "CreateRoom", 4);
     if (!m || !i_runtime_invoke) return false;
-    @try { void *args[4]={name, opts, typedLobby, expectedUsers}; return few1n_unboxBool(i_runtime_invoke(m, NULL, args, NULL)); } @catch (...) { return false; }
+    @try { void *args[4]={name, opts, typedLobby, expectedUsers}; return few1n_unboxBool(few1n_safeInvoke(m, NULL, args)); } @catch (...) { return false; }
 }
 static bool w_pn_joinOrCreateRoom(void *name, void *opts, void *typedLobby, void *expectedUsers) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "JoinOrCreateRoom", 4);
     if (!m || !i_runtime_invoke) return false;
-    @try { void *args[4]={name, opts, typedLobby, expectedUsers}; return few1n_unboxBool(i_runtime_invoke(m, NULL, args, NULL)); } @catch (...) { return false; }
+    @try { void *args[4]={name, opts, typedLobby, expectedUsers}; return few1n_unboxBool(few1n_safeInvoke(m, NULL, args)); } @catch (...) { return false; }
 }
 static bool w_pn_setMasterClient(void *player) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "SetMasterClient", 1);
     if (!m || !i_runtime_invoke || !player) return false;
-    @try { void *args[1]={player}; return few1n_unboxBool(i_runtime_invoke(m, NULL, args, NULL)); } @catch (...) { return false; }
+    @try { void *args[1]={player}; return few1n_unboxBool(few1n_safeInvoke(m, NULL, args)); } @catch (...) { return false; }
 }
 static bool w_pn_loadLevelStr(void *name) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "LoadLevel", 1);
     // PhotonNetwork.LoadLevel has both string and int overloads — get_method_from_name(argc=1) may
     // return either. Fallback: use type check indirectly (we accept both; ambiguity acceptable).
     if (!m || !i_runtime_invoke || !name) return false;
-    @try { void *args[1]={name}; return few1n_unboxBool(i_runtime_invoke(m, NULL, args, NULL)); } @catch (...) { return false; }
+    @try { void *args[1]={name}; return few1n_unboxBool(few1n_safeInvoke(m, NULL, args)); } @catch (...) { return false; }
 }
 static bool w_pn_loadLevelInt(int idx) {
     // Same overload ambiguity; il2cpp may resolve to string version. Best-effort.
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "LoadLevel", 1);
     if (!m || !i_runtime_invoke) return false;
-    @try { int i = idx; void *args[1]={&i}; return few1n_unboxBool(i_runtime_invoke(m, NULL, args, NULL)); } @catch (...) { return false; }
+    @try { int i = idx; void *args[1]={&i}; return few1n_unboxBool(few1n_safeInvoke(m, NULL, args)); } @catch (...) { return false; }
 }
 static void* w_pn_getPlayerList(void) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "get_PlayerList", 0);
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static void* w_pn_getPlayerListOthers(void) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "get_PlayerListOthers", 0);
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static void w_pn_setAutomaticallySyncScene(bool on) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "set_AutomaticallySyncScene", 1);
     if (!m || !i_runtime_invoke) return;
-    @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, NULL, args, NULL); } @catch (...) {}
+    @try { bool b = on; void *args[1]={&b}; few1n_safeInvoke(m, NULL, args); } @catch (...) {}
 }
 // v116.3: PhotonNetwork.IsMessageQueueRunning — LoadLevel bunu false yapip sahne yuklenene
 // kadar network mesaj kuyrugunu durdurur; sahne yuklemesi tamamlanmazsa (addressable/stall)
@@ -1932,12 +1944,12 @@ static void w_pn_setAutomaticallySyncScene(bool on) {
 static void w_pn_setMessageQueueRunning(bool on) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "set_IsMessageQueueRunning", 1);
     if (!m || !i_runtime_invoke) return;
-    @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, NULL, args, NULL); } @catch (...) {}
+    @try { bool b = on; void *args[1]={&b}; few1n_safeInvoke(m, NULL, args); } @catch (...) {}
 }
 static bool w_pn_getMessageQueueRunning(void) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "get_IsMessageQueueRunning", 0);
     if (!m || !i_runtime_invoke) return true;   // bilinmiyorsa engelleme
-    @try { return few1n_unboxBool(i_runtime_invoke(m, NULL, NULL, NULL)); } @catch (...) { return true; }
+    @try { return few1n_unboxBool(few1n_safeInvoke(m, NULL, NULL)); } @catch (...) { return true; }
 }
 // v116.5: PhotonNetwork.NewSceneLoaded() — sahne yuklemesi BITTIGINDE PUN'un cagirdigi TAMAMLAMA
 // adimi: loadingLevelAndPausedNetwork=false + IsMessageQueueRunning=true yapar. Bu oyunda
@@ -1948,38 +1960,38 @@ static bool w_pn_getMessageQueueRunning(void) {
 static void w_pn_newSceneLoaded(void) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "NewSceneLoaded", 0);
     if (!m || !i_runtime_invoke) return;
-    @try { i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, NULL, NULL); } @catch (...) {}
 }
 static void w_pn_raiseEvent(unsigned char code, void *eventContent, bool sendReliable, void *options) {
     // Legacy signature (byte, object, bool, RaiseEventOptions). Newer PUN2 uses
     // (byte, object, RaiseEventOptions, SendOptions). We prefer resolving by argc=4.
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_photonNetworkClass(), "RaiseEvent", 4);
     if (!m || !i_runtime_invoke) return;
-    @try { unsigned char c=code; bool b=sendReliable; void *args[4]={&c, eventContent, &b, options}; i_runtime_invoke(m, NULL, args, NULL); } @catch (...) {}
+    @try { unsigned char c=code; bool b=sendReliable; void *args[4]={&c, eventContent, &b, options}; few1n_safeInvoke(m, NULL, args); } @catch (...) {}
 }
 
 // ====== Player getters ======
 static void* w_ply_getNickName(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolvePlayer("get_NickName", 0);
     if (!m || !i_runtime_invoke || !self) return NULL;
-    @try { return i_runtime_invoke(m, self, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, self, NULL); } @catch (...) { return NULL; }
 }
 static int  w_ply_getActorNumber(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolvePlayer("get_ActorNumber", 0);
     if (!m || !i_runtime_invoke || !self) return 0;
-    @try { return few1n_unboxInt(i_runtime_invoke(m, self, NULL, NULL)); } @catch (...) { return 0; }
+    @try { return few1n_unboxInt(few1n_safeInvoke(m, self, NULL)); } @catch (...) { return 0; }
 }
 static void* w_ply_getUserId(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolvePlayer("get_UserId", 0);
     if (!m || !i_runtime_invoke || !self) return NULL;
-    @try { return i_runtime_invoke(m, self, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, self, NULL); } @catch (...) { return NULL; }
 }
 
 // ====== Room + RoomInfo ======
 static void* w_rinfo_getName(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_roomInfoClass(), "get_Name", 0);
     if (!m || !i_runtime_invoke || !self) return NULL;
-    @try { return i_runtime_invoke(m, self, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, self, NULL); } @catch (...) { return NULL; }
 }
 static void w_room_setMaxPlayers(void *self, int v) {
     if (!self) return;
@@ -1989,7 +2001,7 @@ static void w_room_setMaxPlayers(void *self, int v) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "set_MaxPlayers", 1); }
     if (m && i_runtime_invoke) {
-        @try { int v_int = v; void *args[1]={&v_int}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+        @try { int v_int = v; void *args[1]={&v_int}; few1n_safeInvoke(m, self, args); } @catch (...) {}
     }
     @try { *(int*)((uintptr_t)self + OFFR_ROOM_MAXPLAYERS) = v; } @catch (...) {}
 }
@@ -2002,45 +2014,45 @@ static int  w_room_getMaxPlayers(void *self) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "get_MaxPlayers", 0); }
     if (!m || !i_runtime_invoke) return 0;
-    @try { return few1n_unboxInt(i_runtime_invoke(m, self, NULL, NULL)); } @catch (...) { return 0; }
+    @try { return few1n_unboxInt(few1n_safeInvoke(m, self, NULL)); } @catch (...) { return 0; }
 }
 static void w_room_setIsOpen(void *self, bool on) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "set_IsOpen", 1); }
     if (!m || !i_runtime_invoke || !self) return;
-    @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { bool b = on; void *args[1]={&b}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static bool w_room_getIsOpen(void *self) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "get_IsOpen", 0); }
     if (!m || !i_runtime_invoke || !self) return false;
-    @try { return few1n_unboxBool(i_runtime_invoke(m, self, NULL, NULL)); } @catch (...) { return false; }
+    @try { return few1n_unboxBool(few1n_safeInvoke(m, self, NULL)); } @catch (...) { return false; }
 }
 static void w_room_setIsVisible(void *self, bool on) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "set_IsVisible", 1); }
     if (!m || !i_runtime_invoke || !self) return;
-    @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { bool b = on; void *args[1]={&b}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static bool w_room_getIsVisible(void *self) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "get_IsVisible", 0); }
     if (!m || !i_runtime_invoke || !self) return false;
-    @try { return few1n_unboxBool(i_runtime_invoke(m, self, NULL, NULL)); } @catch (...) { return false; }
+    @try { return few1n_unboxBool(few1n_safeInvoke(m, self, NULL)); } @catch (...) { return false; }
 }
 static bool w_room_setCustomProperties(void *self, void *ht, void *expected, void *webFlags) {
     // v114.10'daki g_mRoomSetCustomProperties ile aynı ama function pointer arayüzü.
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Photon.Realtime", "Room"); m = few1n_resolveOn(c, "SetCustomProperties", 3); }
     if (!m || !i_runtime_invoke || !self) return false;
-    @try { void *args[3]={ht, expected, webFlags}; return few1n_unboxBool(i_runtime_invoke(m, self, args, NULL)); } @catch (...) { return false; }
+    @try { void *args[3]={ht, expected, webFlags}; return few1n_unboxBool(few1n_safeInvoke(m, self, args)); } @catch (...) { return false; }
 }
 
 // ====== TMP_Text ======
 static void  w_tmp_set_text(void *self, void *value) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_tmpTextClass(), "set_text", 1);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { void *args[1]={value}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1]={value}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 // v114.60 CRASH FIX: TMP_InputField.set_text — sifre kutulari (passwordInput /
 // passwordOnConnectInput) TMP_InputField'dir, TMP_Text DEGIL. TMP_Text.set_text'i
@@ -2055,17 +2067,17 @@ static void  w_tmp_input_set_text(void *self, void *value) {
         m = few1n_resolveOn(c, "set_text", 1);
     }
     if (!m || !i_runtime_invoke || !self) return;
-    @try { void *args[1]={value}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1]={value}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static void* w_tmp_get_text(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_tmpTextClass(), "get_text", 0);
     if (!m || !i_runtime_invoke || !self) return NULL;
-    @try { return i_runtime_invoke(m, self, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, self, NULL); } @catch (...) { return NULL; }
 }
 static void  w_tmp_set_richText(void *self, bool on) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_tmpTextClass(), "set_richText", 1);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { bool b = on; void *args[1]={&b}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { bool b = on; void *args[1]={&b}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 
 // ====== ChatManager (get_Instance obfuscated) ======
@@ -2075,12 +2087,12 @@ static void* w_chatGetInst(void) {
     if (!m) { static const char* const n[] = {"fzi","get_Instance","Instance",NULL};
               m = few1n_singletonGetter(few1n_chatMgrClass(), n, "ChatManager", "ChatManager.get_Instance"); }
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static void  w_chatSend(void *self, void *message) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_chatMgrClass(), "Send", 1);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { void *args[1]={message}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1]={message}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 
 static inline bool ptrOk(void* p);
@@ -2101,7 +2113,7 @@ static void few1n_sbReplace(void* sb, NSString* oldS, NSString* newS) {
         void* n = mkStr(newS);
         if (o && n) {
             void* args[2] = {o, n};
-            @try { i_runtime_invoke(m, sb, args, NULL); } @catch (...) {}
+            @try { few1n_safeInvoke(m, sb, args); } @catch (...) {}
         }
     } else if (global_base) {
         typedef void* (*sb_rep_fn)(void*, void*, void*, const void*);
@@ -2117,7 +2129,7 @@ static void w_chat_klv(void* self) {
     static void* m = NULL;
     if (!m) m = few1n_resolveOn(few1n_chatMgrClass(), "klv", 0);
     if (m && i_runtime_invoke) {
-        @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+        @try { few1n_safeInvoke(m, self, NULL); } @catch (...) {}
     } else if (global_base) {
         typedef void (*klv_fn)(void*, const void*);
         klv_fn fn = (klv_fn)(global_base + 0x3286354);
@@ -2158,7 +2170,7 @@ static void few1n_enableChatRichText(void) {
                 if (sbCls) mToStr = i_class_get_method_from_name(sbCls, "ToString", 0);
             }
             if (mToStr) {
-                void* ilStr = i_runtime_invoke(mToStr, oza, NULL, NULL);
+                void* ilStr = few1n_safeInvoke(mToStr, oza, NULL);
                 if (ptrOk(ilStr)) {
                     NSString *s = readStr(ilStr);
                     if (s && [s containsString:@"<noparse>"] && ([s containsString:@"<color"] || [s containsString:@"<#"] || [s containsString:@"<b>"])) {
@@ -2178,14 +2190,14 @@ static void* w_playerManagerGetInst(void) {
     if (!m) { static const char* const n[] = {"gns","get_Instance","Instance",NULL};
               m = few1n_singletonGetter(few1n_playerMgrClass(), n, "PlayerManager", "PlayerManager.get_Instance"); }
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static int w_pm_getMoney(void *self) {
     static void *m = NULL;
     if (!m) { static const char* const n[] = {"goc","get_Money","GetMoney",NULL};
         m = few1n_methodSmart(few1n_playerMgrClass(), n, 0, "Int32", NULL, 0, "PlayerManager.get_Money"); }
     if (!m || !i_runtime_invoke || !self) return -1;
-    @try { return few1n_unboxInt(i_runtime_invoke(m, self, NULL, NULL)); } @catch (...) { return -1; }
+    @try { return few1n_unboxInt(few1n_safeInvoke(m, self, NULL)); } @catch (...) { return -1; }
 }
 static void w_pm_addMoney(void *self, int amount) {
     static void *m = NULL;
@@ -2193,14 +2205,14 @@ static void w_pm_addMoney(void *self, int amount) {
         static const char* pr[] = {"Int32"};
         m = few1n_methodSmart(few1n_playerMgrClass(), n, 1, "Void", pr, 1, "PlayerManager.AddMoney"); }
     if (!m || !i_runtime_invoke || !self) return;
-    @try { void *args[1] = { &amount }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1] = { &amount }; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static void w_pm_syncWithServer(void *self) {
     static void *m = NULL;
     if (!m) { static const char* const n[] = {"goo","SyncWithServer",NULL};
         m = few1n_methodSmart(few1n_playerMgrClass(), n, 0, NULL, NULL, 0, "PlayerManager.SyncWithServer"); }
     if (!m || !i_runtime_invoke || !self) return;
-    @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, self, NULL); } @catch (...) {}
 }
 static void w_pm_updateNicknameInternal(void *self, void *name) {
     static void *m = NULL;
@@ -2208,7 +2220,7 @@ static void w_pm_updateNicknameInternal(void *self, void *name) {
         static const char* pr[] = {"String"};
         m = few1n_methodSmart(few1n_playerMgrClass(), n, 1, "Void", pr, 0, "PlayerManager.UpdateNickname"); }
     if (!m || !i_runtime_invoke || !self || !name) return;
-    @try { void *args[1] = { name }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1] = { name }; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 
 // ====== HR_PhotonLobbyManager (get_Instance obfuscated -> eov) ======
@@ -2217,44 +2229,44 @@ static void* w_lobbyGetInst(void) {
     if (!m) { static const char* const n[] = {"eov","get_Instance","Instance",NULL};
               m = few1n_singletonGetter(few1n_lobbyMgrClass(), n, "HR_PhotonLobbyManager", "Lobby.get_Instance"); }
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static void w_lobby_createRoom(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_lobbyMgrClass(), "CreateRoomButton", 0);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, self, NULL); } @catch (...) {}
 }
 static void w_lobby_leaveRoom(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_lobbyMgrClass(), "LeaveRoom", 0);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, self, NULL); } @catch (...) {}
 }
 static void w_lobby_carSelectMenu(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_lobbyMgrClass(), "EnableCarSelectionMenu", 0);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, self, NULL); } @catch (...) {}
 }
 static void w_lobbySetScene(void *self, void *name) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_lobbyMgrClass(), "SetScene", 1);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { void *args[1]={name}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1]={name}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static void w_lobbyStartGame(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_lobbyMgrClass(), "StartGameButton", 0);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, self, NULL); } @catch (...) {}
 }
 static void w_lobbyDummyStartGame(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_lobbyDummyClass(), "StartGameButton", 0);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, self, NULL); } @catch (...) {}
 }
 
 // ====== HR_MainMenuHandler.StartRace ======
 static void w_hrMainStartRace(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_mainMenuClass(), "StartRace", 0);
     if (!m || !i_runtime_invoke || !self) return;
-    @try { i_runtime_invoke(m, self, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, self, NULL); } @catch (...) {}
 }
 
 // ====== Time.get_timeScale ======
@@ -2262,7 +2274,7 @@ static float w_ts_get(void) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_timeClass(), "get_timeScale", 0);
     if (!m || !i_runtime_invoke) return 1.0f;
     @try {
-        void *ret = i_runtime_invoke(m, NULL, NULL, NULL);
+        void *ret = few1n_safeInvoke(m, NULL, NULL);
         return ret ? *(float*)((uintptr_t)ret + 0x10) : 1.0f;
     } @catch (...) { return 1.0f; }
 }
@@ -2271,53 +2283,53 @@ static float w_ts_get(void) {
 static void w_unity_LoadSceneStr(void *name) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_sceneMgrClass(), "LoadScene", 1);
     if (!m || !i_runtime_invoke) return;
-    @try { void *args[1]={name}; i_runtime_invoke(m, NULL, args, NULL); } @catch (...) {}
+    @try { void *args[1]={name}; few1n_safeInvoke(m, NULL, args); } @catch (...) {}
 }
 static void w_unity_LoadSceneInt(int idx) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_sceneMgrClass(), "LoadScene", 1);
     if (!m || !i_runtime_invoke) return;
-    @try { int i = idx; void *args[1]={&i}; i_runtime_invoke(m, NULL, args, NULL); } @catch (...) {}
+    @try { int i = idx; void *args[1]={&i}; few1n_safeInvoke(m, NULL, args); } @catch (...) {}
 }
 
 // ====== SceneManagerHelper (Photon.Pun) ======
 static void* w_pn_getActiveSceneName(void) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_sceneMgrHelperClass(), "get_ActiveSceneName", 0);
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 static int w_pn_getActiveSceneBuildIndex(void) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_sceneMgrHelperClass(), "get_ActiveSceneBuildIndex", 0);
     if (!m || !i_runtime_invoke) return 0;
-    @try { return few1n_unboxInt(i_runtime_invoke(m, NULL, NULL, NULL)); } @catch (...) { return 0; }
+    @try { return few1n_unboxInt(few1n_safeInvoke(m, NULL, NULL)); } @catch (...) { return 0; }
 }
 
 // ====== Rigidbody Injected getters ======
 static void w_rb_getVel(void *self, Vec3 *out) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_rigidbodyClass(), "get_linearVelocity_Injected", 1);
     if (!m || !i_runtime_invoke || !self || !out) { if (out) { out->x=out->y=out->z=0; } return; }
-    @try { void *args[1]={out}; i_runtime_invoke(m, self, args, NULL); } @catch (...) { out->x=out->y=out->z=0; }
+    @try { void *args[1]={out}; few1n_safeInvoke(m, self, args); } @catch (...) { out->x=out->y=out->z=0; }
 }
 static void w_rb_setVel(void *self, Vec3 *v) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_rigidbodyClass(), "set_linearVelocity_Injected", 1);
     if (!m || !i_runtime_invoke || !self || !v) return;
-    @try { void *args[1]={v}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1]={v}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static void w_rb_getPos(void *self, Vec3 *out) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_rigidbodyClass(), "get_position_Injected", 1);
     if (!m || !i_runtime_invoke || !self || !out) { if (out) { out->x=out->y=out->z=0; } return; }
-    @try { void *args[1]={out}; i_runtime_invoke(m, self, args, NULL); } @catch (...) { out->x=out->y=out->z=0; }
+    @try { void *args[1]={out}; few1n_safeInvoke(m, self, args); } @catch (...) { out->x=out->y=out->z=0; }
 }
 static void w_rb_setPos(void *self, Vec3 *v) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_rigidbodyClass(), "set_position_Injected", 1);
     if (!m || !i_runtime_invoke || !self || !v) return;
-    @try { void *args[1]={v}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1]={v}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 
 // ====== MonoBehaviourPun.get_photonView ======
 static void* w_mbp_getPhotonView(void *self) {
     static void *m = NULL; if (!m) m = few1n_resolveOn(few1n_mbpunClass(), "get_photonView", 0);
     if (!m || !i_runtime_invoke || !self) return NULL;
-    @try { return i_runtime_invoke(m, self, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, self, NULL); } @catch (...) { return NULL; }
 }
 
 // ====== MapList.get_Instance (obf gtp) ======
@@ -2326,7 +2338,7 @@ static void* w_mapList_getInstance(void) {
     if (!m) { static const char* const n[] = {"gtp","get_Instance","Instance",NULL};
               m = few1n_singletonGetter(few1n_mapListClass(), n, "MapList", "MapList.get_Instance"); }
     if (!m || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(m, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(m, NULL, NULL); } @catch (...) { return NULL; }
 }
 
 // ====== MapSelection.SelectMap ======
@@ -2336,7 +2348,7 @@ static void w_mapSel_selectMap(void *self, void *name) {
               static const char* pr[] = {"String"};
               m = few1n_methodSmart(few1n_mapSelClass(), n, 1, "Void", pr, 0, "MapSelection.SelectMap"); }
     if (!m || !i_runtime_invoke || !self) return;
-    @try { void *args[1]={name}; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1]={name}; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 
 // ====== PhotonManager.LoadLevel(string scene, bool addressable) — static ======
@@ -2368,7 +2380,7 @@ static void w_photonMgrLoadLevel(void *sceneStr, bool addressable) {
     @try {
         unsigned char b = addressable ? 1 : 0;
         void *args[2] = { sceneStr, &b };
-        i_runtime_invoke(m, NULL, args, NULL);
+        few1n_safeInvoke(m, NULL, args);
     } @catch (...) {}
 }
 
@@ -2390,7 +2402,7 @@ static void w_cps_TeleportCar_RPC(void* self, Vec3 pos, Quaternion rot, void* me
         Vec3 vel = {0.0f, 0.0f, 0.0f};
         uint8_t fakeInfo[24] = {0};
         void *args[4] = { &pos, &rot, &vel, fakeInfo };
-        i_runtime_invoke(m, self, args, NULL);
+        few1n_safeInvoke(m, self, args);
     } @catch (...) {}
 }
 static void w_rbps_TeleportCar_RPC(void* self, Vec3 pos, Quaternion rot, void* methodInfo) {
@@ -2398,27 +2410,27 @@ static void w_rbps_TeleportCar_RPC(void* self, Vec3 pos, Quaternion rot, void* m
     if (!m) { void *c = few1n_classAnyImage("", "RigidbodyPhotonSync"); m = few1n_resolveOn(c, "TeleportCar_RPC", 2); }
     if (!m || !i_runtime_invoke || !self) return;
     (void)methodInfo;
-    @try { void *args[2] = { &pos, &rot }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[2] = { &pos, &rot }; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static void w_hrph_TeleportPlayerRPC(void* self, Vec3 pos, void* methodInfo) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("", "HR_PhotonHandler"); m = few1n_resolveOn(c, "TeleportPlayerRPC", 1); }
     if (!m || !i_runtime_invoke || !self) return;
     (void)methodInfo;
-    @try { void *args[1] = { &pos }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { void *args[1] = { &pos }; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static void w_ssrcc_RpcTeleport(void* self, Vec3 pos, Vec3 rot, Vec3 scale, float t, void* methodInfo) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("", "SmoothSyncRCC"); m = few1n_resolveOn(c, "RpcTeleport", 4); }
     if (!m || !i_runtime_invoke || !self) return;
     (void)methodInfo;
-    @try { float ft = t; void *args[4] = { &pos, &rot, &scale, &ft }; i_runtime_invoke(m, self, args, NULL); } @catch (...) {}
+    @try { float ft = t; void *args[4] = { &pos, &rot, &scale, &ft }; few1n_safeInvoke(m, self, args); } @catch (...) {}
 }
 static void few1n_clearSmoothSyncBuffer(void* ssrcc) {
     static void *m = NULL;
     if (!m) { void *c = few1n_classAnyImage("Smooth", "SmoothSyncRCC"); m = few1n_resolveOn(c, "RpcClearBuffer", 0); }
     if (!m || !i_runtime_invoke || !unityAlive(ssrcc)) return;
-    @try { i_runtime_invoke(m, ssrcc, NULL, NULL); } @catch (...) {}
+    @try { few1n_safeInvoke(m, ssrcc, NULL); } @catch (...) {}
 }
 
 // TMP_Text.richText = true  (Unity rich text acigini geri ac)
@@ -2426,7 +2438,7 @@ static void setRichTextIl(void* tmp, bool on) {
     if (!i_runtime_invoke || !g_mSetRichText || !tmp) return;
     bool val = on;
     void* params[1] = { &val };
-    i_runtime_invoke(g_mSetRichText, tmp, params, NULL);
+    few1n_safeInvoke(g_mSetRichText, tmp, params);
 }
 
 // Rigidbody ham Injected pointer'lari (rbGetVelIl/rbSetVelIl yedegi olarak kullanilir)
@@ -2440,7 +2452,7 @@ static void rbGetVelIl(void* rb, Vec3* out) {
     out->x = out->y = out->z = 0;
     if (!rb) return;
     if (i_runtime_invoke && g_mRbGetVel) {
-        void* box = i_runtime_invoke(g_mRbGetVel, rb, NULL, NULL);   // boxed Vector3
+        void* box = few1n_safeInvoke(g_mRbGetVel, rb, NULL);   // boxed Vector3
         if (box) { *out = *(Vec3*)((uintptr_t)box + 0x10); return; }
     }
     if (rb_getVel) rb_getVel(rb, out);   // yedek: ham Injected
@@ -2449,7 +2461,7 @@ static void rbSetVelIl(void* rb, const Vec3* v) {
     if (!rb) return;
     if (i_runtime_invoke && g_mRbSetVel) {
         void* params[1] = { (void*)v };
-        i_runtime_invoke(g_mRbSetVel, rb, params, NULL);
+        few1n_safeInvoke(g_mRbSetVel, rb, params);
         return;
     }
     if (rb_setVel) rb_setVel(rb, (Vec3*)v);     // yedek: ham Injected
@@ -2457,7 +2469,7 @@ static void rbSetVelIl(void* rb, const Vec3* v) {
 static void rbSetAngVelIl(void* rb, const Vec3* v) {   // acisal hiz (ucusta yaw donme)
     if (!rb || !i_runtime_invoke || !g_mRbSetAngVel) return;
     void* params[1] = { (void*)v };
-    i_runtime_invoke(g_mRbSetAngVel, rb, params, NULL);
+    few1n_safeInvoke(g_mRbSetAngVel, rb, params);
 }
 
 // Rigidbody position - il2cpp runtime_invoke (ham cagri yedek)
@@ -2465,7 +2477,7 @@ static void rbGetPosIl(void* rb, Vec3* out) {
     out->x = out->y = out->z = 0;
     if (!rb) return;
     if (i_runtime_invoke && g_mRbGetPos) {
-        void* box = i_runtime_invoke(g_mRbGetPos, rb, NULL, NULL);   // boxed Vector3
+        void* box = few1n_safeInvoke(g_mRbGetPos, rb, NULL);   // boxed Vector3
         if (box) { *out = *(Vec3*)((uintptr_t)box + 0x10); return; }
     }
     if (rb_getPos) rb_getPos(rb, out);
@@ -2474,7 +2486,7 @@ static void rbSetPosIl(void* rb, const Vec3* v) {
     if (!rb) return;
     if (i_runtime_invoke && g_mRbSetPos) {
         void* params[1] = { (void*)v };
-        i_runtime_invoke(g_mRbSetPos, rb, params, NULL);
+        few1n_safeInvoke(g_mRbSetPos, rb, params);
         return;
     }
     if (rb_setPos) rb_setPos(rb, (Vec3*)v);
@@ -2484,22 +2496,27 @@ static void setTimeScaleVal(float v) {
     if (!i_runtime_invoke || !g_mSetTS) return;
     float val = v;
     void* params[1] = { &val };
-    i_runtime_invoke(g_mSetTS, NULL, params, NULL);
+    few1n_safeInvoke(g_mSetTS, NULL, params);
 }
 static float getTimeScaleVal(void) {
     if (!i_runtime_invoke || !g_mGetTS) return -1.0f;
-    void* box = i_runtime_invoke(g_mGetTS, NULL, NULL, NULL);   // boxed float
+    void* box = few1n_safeInvoke(g_mGetTS, NULL, NULL);   // boxed float
     if (!box) return -1.0f;
     return *(float*)((uintptr_t)box + 0x10);                    // unbox
 }
 
 
+static bool few1n_memOk(const void* addr);
 static NSString* readStr(void* il2s) {
     if (!il2s || (uintptr_t)il2s < 0x1000) return @"";
+    if (!few1n_memOk((const void*)((uintptr_t)il2s + OFF_IL2CPP_STRING_LEN))) return @"";
     @try {
         int32_t len = *(int32_t*)((uintptr_t)il2s + OFF_IL2CPP_STRING_LEN);
         if (len <= 0 || len > 4096) return @"";
-        return [NSString stringWithCharacters:(unichar*)((uintptr_t)il2s + OFF_IL2CPP_STRING_CHARS) length:len];
+        const void* charsStart = (const void*)((uintptr_t)il2s + OFF_IL2CPP_STRING_CHARS);
+        const void* charsEnd   = (const void*)((uintptr_t)charsStart + (size_t)(len - 1) * 2);
+        if (!few1n_memOk(charsStart) || !few1n_memOk(charsEnd)) return @"";
+        return [NSString stringWithCharacters:(const unichar*)charsStart length:len];
     } @catch (...) { return @""; }
 }
 #include <signal.h>
@@ -2609,6 +2626,16 @@ static void* few1n_guardedInvoke(void* method, void* obj, void** args, bool* pCr
     }
     few1n_inProtected = prev;
     return ret;
+}
+
+// v117.21: readStr oncesi gercek System.String kontrolu (boxed int/byte gelirse SIGSEGV onler)
+static bool few1n_isStringObj(void* obj) {
+    if (!ptrOk(obj)) return false;
+    static void* s_strCls = NULL;
+    if (!s_strCls) s_strCls = few1n_classAnyImage("System", "String");
+    if (!s_strCls) return false;
+    void* klass = few1n_rdPtr(obj, 0);
+    return (klass == s_strCls);
 }
 
 // Substrate calisiyor mu? Bagli sembol bos stub olabilir -> dlsym ile gercegini ara.
@@ -3011,7 +3038,7 @@ static void* few1n_findVoteKickInstance(void) {
     if (g_voteKickTypeObj && g_mFindObjectOfType && i_runtime_invoke) {
         @try {
             void* args[1] = { g_voteKickTypeObj };
-            void* inst = i_runtime_invoke(g_mFindObjectOfType, NULL, args, NULL);
+            void* inst = few1n_safeInvoke(g_mFindObjectOfType, NULL, args);
             if (ptrOk(inst) && unityAlive(inst)) return inst;
         } @catch (...) {}
     }
@@ -3020,7 +3047,7 @@ static void* few1n_findVoteKickInstance(void) {
     if (g_voteKickTypeObj && g_mFindAnyByType && i_runtime_invoke) {
         @try {
             void* args[1] = { g_voteKickTypeObj };
-            void* inst = i_runtime_invoke(g_mFindAnyByType, NULL, args, NULL);
+            void* inst = few1n_safeInvoke(g_mFindAnyByType, NULL, args);
             if (ptrOk(inst) && unityAlive(inst)) return inst;
         } @catch (...) {}
     }
@@ -3038,7 +3065,7 @@ static void few1n_clearCollection(void* coll) {
         if (!ptrOk(cls)) return;
         void* mClear = few1n_resolveOn(cls, "Clear", 0);
         if (mClear) {
-            i_runtime_invoke(mClear, coll, NULL, NULL);
+            few1n_safeInvoke(mClear, coll, NULL);
         }
     } @catch (...) {}
 }
@@ -3121,8 +3148,8 @@ static void few1n_counterVoteKickWithFullNo(void* vk, int targetActor) {
                     bool voteVal = false; // HAYIR OYU!
                     void* a1[1] = { &voterId };
                     void* a2[2] = { &voterId, &voteVal };
-                    i_runtime_invoke(mAdd, pau, a1, NULL);
-                    i_runtime_invoke(mSetItem, pav, a2, NULL);
+                    few1n_safeInvoke(mAdd, pau, a1);
+                    few1n_safeInvoke(mSetItem, pav, a2);
                 }
             }
         }
@@ -3133,7 +3160,7 @@ static void few1n_counterVoteKickWithFullNo(void* vk, int targetActor) {
         if (mMkx && !(*(bool*)((uintptr_t)vk + 0x4c))) {
             bool noVote = false;
             void* args[1] = { &noVote };
-            i_runtime_invoke(mMkx, vk, args, NULL);
+            few1n_safeInvoke(mMkx, vk, args);
         }
 
         // 6. mkz(endTs) ile tüm odaya 0 EVET / 99 HAYIR durumunu yayınla
@@ -3143,14 +3170,14 @@ static void few1n_counterVoteKickWithFullNo(void* vk, int targetActor) {
             int endTs = *(int*)((uintptr_t)vk + 0x58);
             if (endTs <= 0) endTs = 30000;
             void* argsZ[1] = { &endTs };
-            i_runtime_invoke(mMkz, vk, argsZ, NULL);
+            few1n_safeInvoke(mMkz, vk, argsZ);
         }
 
         // 7. mla() ile oylamayı 99 HAYIR (Result.Failed = 0) olarak tüm odada sonlandır!
         static void* mMla = NULL;
         if (!mMla && g_voteKickClass) mMla = few1n_resolveOn(g_voteKickClass, "mla", 0);
         if (mMla) {
-            i_runtime_invoke(mMla, vk, NULL, NULL);
+            few1n_safeInvoke(mMla, vk, NULL);
         }
 
         // 8. Oylamayı bitir
@@ -3224,8 +3251,8 @@ static bool few1n_makeVoteKickFullYes(void) {
                         bool voteVal = true;
                         void* a1[1] = { &voterId };
                         void* a2[2] = { &voterId, &voteVal };
-                        i_runtime_invoke(mAdd, pau, a1, NULL);
-                        i_runtime_invoke(mSetItem, pav, a2, NULL);
+                        few1n_safeInvoke(mAdd, pau, a1);
+                        few1n_safeInvoke(mSetItem, pav, a2);
                     }
                 }
             }
@@ -3237,14 +3264,14 @@ static bool few1n_makeVoteKickFullYes(void) {
         if (mMkx && i_runtime_invoke && !(*(bool*)((uintptr_t)vk + 0x4c))) {
             bool yes = true;
             void* args[1] = { &yes };
-            i_runtime_invoke(mMkx, vk, args, NULL);
+            few1n_safeInvoke(mMkx, vk, args);
         }
 
         // 3. mla() ile oylamayı kabul edip hedef oyuncuyu attır
         static void* mMla = NULL;
         if (!mMla && g_voteKickClass) mMla = few1n_resolveOn(g_voteKickClass, "mla", 0);
         if (mMla && i_runtime_invoke) {
-            i_runtime_invoke(mMla, vk, NULL, NULL);
+            few1n_safeInvoke(mMla, vk, NULL);
         }
 
         return true;
@@ -3295,8 +3322,8 @@ static void few1n_forceStartVoteKickDirect(void* vk, void* targetPlayer) {
                 bool voteVal = true;
                 void* a1[1] = { &myActor };
                 void* a2[2] = { &myActor, &voteVal };
-                i_runtime_invoke(mAdd, pau, a1, NULL);
-                i_runtime_invoke(mSetItem, pav, a2, NULL);
+                few1n_safeInvoke(mAdd, pau, a1);
+                few1n_safeInvoke(mSetItem, pav, a2);
             }
         }
 
@@ -3305,14 +3332,14 @@ static void few1n_forceStartVoteKickDirect(void* vk, void* targetPlayer) {
         if (!mGetTs) mGetTs = few1n_resolveOn(few1n_photonNetworkClass(), "get_ServerTimestamp", 0);
         int endTs = 30000;
         if (mGetTs) {
-            void* box = i_runtime_invoke(mGetTs, NULL, NULL, NULL);
+            void* box = few1n_safeInvoke(mGetTs, NULL, NULL);
             if (box) endTs = *(int*)((uintptr_t)box + 0x10) + 30000;
         }
         static void* mMkz = NULL;
         if (!mMkz && g_voteKickClass) mMkz = few1n_resolveOn(g_voteKickClass, "mkz", 1);
         if (mMkz) {
             void* args[1] = { &endTs };
-            i_runtime_invoke(mMkz, vk, args, NULL);
+            few1n_safeInvoke(mMkz, vk, args);
         }
     } @catch (...) {}
 }
@@ -3613,7 +3640,7 @@ static void* few1n_findLobbyMgr(void) {
         // 1) Aktif plural: photonView'li instance ara (oda/bekleme ekraninda aktifse)
         if (g_mFindObjectsPlural) {
             void* a[1]; a[0] = g_lobbyDummyType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (ptrOk(arr)) {
                 int cnt = few1n_rdI32(arr, 0x18, 0);
                 if (cnt > 0 && cnt <= 32) {
@@ -3736,7 +3763,7 @@ static void few1n_kickPlayer(void* playerObj) {
                     unsigned char result = 1; // 1 = Passed (Kick)
                     void* args[4] = { &voteId, &target, &result, NULL };
                     @try {
-                        i_runtime_invoke(g_mVoteKickEndRPC, vk, args, NULL);
+                        few1n_safeInvoke(g_mVoteKickEndRPC, vk, args);
                         vkSent = true;
                         FLog([NSString stringWithFormat:@"  → VoteKickEndRPC (Passed=1, targetActor=%d) iletildi ✓", targetActor]);
                     } @catch (...) { FLog(@"  → VoteKickEndRPC exception"); }
@@ -3747,7 +3774,7 @@ static void few1n_kickPlayer(void* playerObj) {
                 if (g_mVoteKickStart && playerObj) {
                     void* args2[1] = { playerObj };
                     @try {
-                        i_runtime_invoke(g_mVoteKickStart, vk, args2, NULL);
+                        few1n_safeInvoke(g_mVoteKickStart, vk, args2);
                         FLog(@"  → VoteKick.mkw oylaması tetiklendi ✓");
                     } @catch (...) {}
                 }
@@ -3872,7 +3899,7 @@ static void few1n_forceRoomRichText(void) {
     if (!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke || !g_mSetRichText) return;
     @try {
         void* a[1] = { g_roomLineType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return;
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 128) return;
@@ -3985,26 +4012,26 @@ static void* few1n_findByType(void* typeObj) {
     if (g_mFindObjInactive) {
         bool inc = true;
         void* a[2]; a[0] = typeObj; a[1] = &inc;
-        @try { r = i_runtime_invoke(g_mFindObjInactive, NULL, a, NULL); } @catch (...) {}
+        @try { r = few1n_safeInvoke(g_mFindObjInactive, NULL, a); } @catch (...) {}
         if (r) return r;
     }
     // Yol 2 - FindObjectOfType Type
     if (g_mFindObjectOfType) {
         void* a[1]; a[0] = typeObj;
-        @try { r = i_runtime_invoke(g_mFindObjectOfType, NULL, a, NULL); } @catch (...) {}
+        @try { r = few1n_safeInvoke(g_mFindObjectOfType, NULL, a); } @catch (...) {}
         if (r) return r;
     }
     // Yol 3 - FindAnyObjectByType Type : Unity 6 yeni API
     if (g_mFindAnyByType) {
         void* a[1]; a[0] = typeObj;
-        @try { r = i_runtime_invoke(g_mFindAnyByType, NULL, a, NULL); } @catch (...) {}
+        @try { r = few1n_safeInvoke(g_mFindAnyByType, NULL, a); } @catch (...) {}
         if (r) return r;
     }
     // Yol 4 - FindObjectsOfType (cogul) -> ilk eleman (tekil bos donerse)
     if (g_mFindObjectsPlural) {
         void* a[1]; a[0] = typeObj;
         @try {
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (ptrOk(arr)) {
                 int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
                 if (cnt > 0 && cnt < 4096) {
@@ -4020,14 +4047,14 @@ static void* few1n_findByType(void* typeObj) {
 // ===== ESP YARDIMCILARI (Camera + tum arabalar, il2cpp) =====
 static void* few1n_getCamera(void) {
     if (!g_mCamGetMain || !i_runtime_invoke) return NULL;
-    @try { return i_runtime_invoke(g_mCamGetMain, NULL, NULL, NULL); } @catch (...) { return NULL; }
+    @try { return few1n_safeInvoke(g_mCamGetMain, NULL, NULL); } @catch (...) { return NULL; }
 }
 // Dunya koordinatini ekran koordinatina cevir (x,y=piksel, z=kameraya uzaklik)
 static bool few1n_worldToScreen(void* cam, Vec3 world, Vec3* out) {
     if (!ptrOk(cam) || !g_mWorldToScreen || !i_runtime_invoke) return false;
     @try {
         void* args[1]; args[0] = &world;
-        void* box = i_runtime_invoke(g_mWorldToScreen, cam, args, NULL);
+        void* box = few1n_safeInvoke(g_mWorldToScreen, cam, args);
         if (!ptrOk(box)) return false;
         *out = *(Vec3*)((uintptr_t)box + 0x10);   // boxed Vector3 unbox
         return true;
@@ -4039,7 +4066,7 @@ static void* few1n_findAllCars(int* outCount) {
     if (!g_mFindObjectsPlural || !g_carDriveTypeObj || !i_runtime_invoke) return NULL;
     @try {
         void* args[1]; args[0] = g_carDriveTypeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, args, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, args);
         if (!ptrOk(arr)) return NULL;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 0 || cnt > 128) return NULL;
@@ -4059,7 +4086,7 @@ static int few1n_collectCars(void** out, int maxN) {
     if (!g_mFindObjectsPlural || !i_runtime_invoke) { g_rawRbCnt = -3; return 0; }
     @try {
         void* a[1]; a[0] = g_rbTypeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { g_rawRbCnt = -4; return 0; }   // -4 = FindObjectsOfType null dondu
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         g_rawRbCnt = cnt;
@@ -4126,9 +4153,9 @@ static bool few1n_objPos(void* obj, Vec3* out) {
     *out = (Vec3){0,0,0};
     if (!ptrOk(obj) || !g_mCompGetTransform || !g_mTransGetPos || !i_runtime_invoke) return false;
     @try {
-        void* tr = i_runtime_invoke(g_mCompGetTransform, obj, NULL, NULL);
+        void* tr = few1n_safeInvoke(g_mCompGetTransform, obj, NULL);
         if (!ptrOk(tr)) return false;
-        void* box = i_runtime_invoke(g_mTransGetPos, tr, NULL, NULL);
+        void* box = few1n_safeInvoke(g_mTransGetPos, tr, NULL);
         if (!ptrOk(box)) return false;
         *out = *(Vec3*)((uintptr_t)box + 0x10);
         return true;
@@ -4139,9 +4166,9 @@ static bool few1n_fwd(void* obj, Vec3* out) {
     *out = (Vec3){0,0,0};
     if (!ptrOk(obj) || !g_mCompGetTransform || !g_mTransGetFwd || !i_runtime_invoke) return false;
     @try {
-        void* tr = i_runtime_invoke(g_mCompGetTransform, obj, NULL, NULL);
+        void* tr = few1n_safeInvoke(g_mCompGetTransform, obj, NULL);
         if (!ptrOk(tr)) return false;
-        void* box = i_runtime_invoke(g_mTransGetFwd, tr, NULL, NULL);
+        void* box = few1n_safeInvoke(g_mTransGetFwd, tr, NULL);
         if (!ptrOk(box)) return false;
         *out = *(Vec3*)((uintptr_t)box + 0x10);
         return true;
@@ -4157,7 +4184,7 @@ static bool few1n_findMyCarPhoton(void) {
     if (!g_photonViewType || g_isMineOff <= 0 || !g_rbTypeObj || !g_mFindObjectsPlural || !i_runtime_invoke) return false;
     @try {
         void* a[1]; a[0] = g_photonViewType;
-        void* pvArr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* pvArr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(pvArr)) return false;
         int pvCnt = (int)(*(uintptr_t*)((uintptr_t)pvArr + 0x18));
         if (pvCnt < 0 || pvCnt > 512) return false;
@@ -4170,7 +4197,7 @@ static bool few1n_findMyCarPhoton(void) {
         }
         if (!foundMine) return false;
         void* b[1]; b[0] = g_rbTypeObj;
-        void* rbArr = i_runtime_invoke(g_mFindObjectsPlural, NULL, b, NULL);
+        void* rbArr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, b);
         if (!ptrOk(rbArr)) return false;
         int rbCnt = (int)(*(uintptr_t*)((uintptr_t)rbArr + 0x18));
         if (rbCnt < 0 || rbCnt > 1024) return false;
@@ -4192,11 +4219,11 @@ static bool few1n_findMyCarPhoton(void) {
 static void few1n_findRbFallback(void) {
     if (!g_rbTypeObj || !g_mFindObjectsPlural || !g_mCamGetMain || !i_runtime_invoke) return;
     @try {
-        void* cam = i_runtime_invoke(g_mCamGetMain, NULL, NULL, NULL);
+        void* cam = few1n_safeInvoke(g_mCamGetMain, NULL, NULL);
         if (!ptrOk(cam)) return;
         Vec3 camPos; if (!few1n_objPos(cam, &camPos)) return;
         void* a[1]; a[0] = g_rbTypeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 0 || cnt > 1024) return;
@@ -4261,7 +4288,7 @@ static void few1n_findCar(void) {
         if (unityAlive(g_rb) && !unityAlive(g_carDrive) && g_mGetCompInParent && g_carDriveTypeObj) {
             @try {
                 bool inc = true; void* a[2]; a[0] = g_carDriveTypeObj; a[1] = &inc;
-                void* cd = i_runtime_invoke(g_mGetCompInParent, g_rb, a, NULL);
+                void* cd = few1n_safeInvoke(g_mGetCompInParent, g_rb, a);
                 if (unityAlive(cd)) {
                     g_carDrive = cd;
                     void* inp = *(void**)((uintptr_t)cd + OFFR_CDS_INPUT);   // jfs -> CarPlayerInput
@@ -4280,17 +4307,17 @@ static void few1n_applyCar(void) {
         }
         // NO-CLIP (hayalet) + ANTI-GRAV - sadece g_rb yeterli (carDrive gerekmez)
         if (unityAlive(g_rb)) {
-            if (isNoClip && g_mRbSetDetect) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbSetDetect, g_rb, a, NULL); g_noClipApplied=true; }
-            else if (g_noClipApplied && g_mRbSetDetect) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbSetDetect, g_rb, a, NULL); g_noClipApplied=false; }
+            if (isNoClip && g_mRbSetDetect) { bool f=false; void* a[1]={&f}; few1n_safeInvoke(g_mRbSetDetect, g_rb, a); g_noClipApplied=true; }
+            else if (g_noClipApplied && g_mRbSetDetect) { bool t=true; void* a[1]={&t}; few1n_safeInvoke(g_mRbSetDetect, g_rb, a); g_noClipApplied=false; }
             // Ucus/no-clip'te de yercekimini kapat -> hover sabit kalir, karsiya PURUZSUZ gider
             // (yoksa yercekimi vs velocity.y=0 cakismasi titremeye sebep olur)
             bool gravOff = isAntiGrav || isFlyEnabled || isNoClip || isFlyPadShown;
-            if (gravOff && g_mRbUseGrav) { bool f=false; void* a[1]={&f}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=true; }
-            else if (g_antiGravApplied && g_mRbUseGrav) { bool t=true; void* a[1]={&t}; i_runtime_invoke(g_mRbUseGrav, g_rb, a, NULL); g_antiGravApplied=false; }
+            if (gravOff && g_mRbUseGrav) { bool f=false; void* a[1]={&f}; few1n_safeInvoke(g_mRbUseGrav, g_rb, a); g_antiGravApplied=true; }
+            else if (g_antiGravApplied && g_mRbUseGrav) { bool t=true; void* a[1]={&t}; few1n_safeInvoke(g_mRbUseGrav, g_rb, a); g_antiGravApplied=false; }
             // ARAC BOYUTU: g_rb'nin transformunu olcekle - CarDriveSystem GEREKMEZ (g_rb yeterli)
             if (isCarSizeEnabled && g_mTransSetScale && g_mCompGetTransform) {
-                void* tr = i_runtime_invoke(g_mCompGetTransform, g_rb, NULL, NULL);
-                if (unityAlive(tr)) { Vec3 sc = { carSizeVal, carSizeVal, carSizeVal }; void* a[1]={&sc}; i_runtime_invoke(g_mTransSetScale, tr, a, NULL); }
+                void* tr = few1n_safeInvoke(g_mCompGetTransform, g_rb, NULL);
+                if (unityAlive(tr)) { Vec3 sc = { carSizeVal, carSizeVal, carSizeVal }; void* a[1]={&sc}; few1n_safeInvoke(g_mTransSetScale, tr, a); }
             }
         }
         if (!unityAlive(g_carDrive)) return;   // araba oldu -> field yazma (crash korumasi)
@@ -4350,7 +4377,7 @@ static void few1n_forcePlate(void) {
     if (!g_plateTypeObj || g_offPlateParts <= 0 || g_offPlateDisableSplit <= 0) return;
     @try {
         void* a[1]; a[0] = g_plateTypeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 0 || cnt > 64) return;
@@ -4374,7 +4401,7 @@ static void few1n_forcePlate(void) {
                 void* t = tp[k];
                 if (!ptrOk(t)) continue;
                 void* pa[1]; pa[0] = (k == 0) ? str : g_plateEmptyStr;   // ilk parca=metin, digerleri bos
-                i_runtime_invoke(g_mTmpSetText, t, pa, NULL);
+                few1n_safeInvoke(g_mTmpSetText, t, pa);
             }
         }
     } @catch (...) {}
@@ -4393,14 +4420,14 @@ static bool few1n_spinServerPlate(void) {
     if (!g_plateUiTypeObj || !g_mPlateSpinRandom) return false;
     @try {
         void* args[1] = { g_plateUiTypeObj };
-        void* array = i_runtime_invoke(g_mFindObjectsPlural, NULL, args, NULL);
+        void* array = few1n_safeInvoke(g_mFindObjectsPlural, NULL, args);
         if (!ptrOk(array)) return false;
         int count = *(int*)((uintptr_t)array + 0x18);
         if (count < 1 || count > 16) return false;
         void** elements = (void**)((uintptr_t)array + 0x20);
         for (int i = 0; i < count; i++) {
             if (!ptrOk(elements[i])) continue;
-            i_runtime_invoke(g_mPlateSpinRandom, elements[i], NULL, NULL);
+            few1n_safeInvoke(g_mPlateSpinRandom, elements[i], NULL);
             FLog(@"Plaka: resmi sunucu cevirmesi baslatildi");
             return true;
         }
@@ -4427,7 +4454,7 @@ static bool few1n_pvIsMineFor(void* comp) {
     @try {
         unsigned char inc = 1;
         void* a[2] = { g_photonViewType, &inc };
-        void* pv = i_runtime_invoke(g_mGetCompInParent, comp, a, NULL);
+        void* pv = few1n_safeInvoke(g_mGetCompInParent, comp, a);
         if (!ptrOk(pv)) return true;   // PhotonView yok = garaj/tek arac -> uygula
         return *(unsigned char*)((uintptr_t)pv + g_isMineOff) != 0;
     } @catch (...) { return true; }
@@ -4461,7 +4488,7 @@ static void few1n_broadcastTuning(const char* who) {
               mEaj?@"✓":@"✗", mEac?@"✓":@"✗", mEahBool?@"✓":@"✗", mEad?@"✓":@"✗", mEae?@"✓":@"✗", mEai?@"✓":@"✗"]);
         if (!tmType) return;
         void* b[1] = { tmType };
-        void* tms = i_runtime_invoke(g_mFindObjectsPlural, NULL, b, NULL);
+        void* tms = few1n_safeInvoke(g_mFindObjectsPlural, NULL, b);
         if (!ptrOk(tms)) { FLog(@"Yayin: TuningManager instance yok"); return; }
         int tc = *(int*)((uintptr_t)tms + 0x18);
         void** tmi = (void**)((uintptr_t)tms + 0x20);
@@ -4476,10 +4503,10 @@ static void few1n_broadcastTuning(const char* who) {
             // eah/ead/eae yayinina geri donuldu. Plaka tipi "eu" (v114.55) korunuyor.
             // NOT: eaj/eac olmadan yayin currentData'yi tazelemez -> plaka karsi tarafta
             // gorunmeyebilir (lokal kalabilir). AMA COKMEZ. Oncelik: cokme yok + eu tipi.
-            if (mEahBool) { @try { void* a[1]={&t}; i_runtime_invoke(mEahBool, tm, a, NULL); } @catch (...) {} }
-            if (mEad)     { @try { i_runtime_invoke(mEad, tm, NULL, NULL); } @catch (...) {} }
-            if (mEae)     { @try { i_runtime_invoke(mEae, tm, NULL, NULL); } @catch (...) {} }
-            if (mEai)     { @try { i_runtime_invoke(mEai, tm, NULL, NULL); } @catch (...) {} }
+            if (mEahBool) { @try { void* a[1]={&t}; few1n_safeInvoke(mEahBool, tm, a); } @catch (...) {} }
+            if (mEad)     { @try { few1n_safeInvoke(mEad, tm, NULL); } @catch (...) {} }
+            if (mEae)     { @try { few1n_safeInvoke(mEae, tm, NULL); } @catch (...) {} }
+            if (mEai)     { @try { few1n_safeInvoke(mEai, tm, NULL); } @catch (...) {} }
             done++;
         }
         FLog([NSString stringWithFormat:@"%s: %d TuningManager'a yayin (eah+ead+eae+eai)", who ?: "Tuning", done]);
@@ -4508,7 +4535,7 @@ static bool few1n_applyServerPlate(NSString *text) {
     int applied = 0;
     @try {
         void* a[1] = { ptType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"OzelPlaka: PlateTuner instance yok (garaj/tuning ekranini ac)"); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 64) return false;
@@ -4519,7 +4546,7 @@ static bool few1n_applyServerPlate(NSString *text) {
             if (!few1n_pvIsMineFor(pt)) continue;   // uzak oyuncunun plakasina dokunma
             // v114.59: country = "eu1" -> tip HEP Avrupa (Rus/ABD degil).
             void* args[2] = { euStr, textStr };
-            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, pt, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
 
@@ -4541,7 +4568,7 @@ static void* few1n_myPhotonView(void) {
     if (!g_photonViewType || g_isMineOff <= 0 || !g_mFindObjectsPlural || !i_runtime_invoke) return NULL;
     @try {
         void* a[1]; a[0] = g_photonViewType;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return NULL;
         int n = *(int*)((uintptr_t)arr + 0x18);
         if (n < 1 || n > 512) return NULL;
@@ -4566,7 +4593,7 @@ static int few1n_viewIDOf(void* pv) {
     }
     if (!mVID) return 0;
     @try {
-        void* box = i_runtime_invoke(mVID, pv, NULL, NULL);
+        void* box = few1n_safeInvoke(mVID, pv, NULL);
         if (ptrOk(box)) return *(int*)((uintptr_t)box + 0x10);   // boxed int unbox
     } @catch (...) {}
     return 0;
@@ -4588,7 +4615,7 @@ static bool few1n_officialPlate(NSString *country, NSString *text) {
     @try {
         int price = 0;
         void* args[3] = { &price, cStr, tStr };
-        i_runtime_invoke(mGoy, pm, args, NULL);   // UniTask -> fire & forget (istek sunucuya gider)
+        few1n_safeInvoke(mGoy, pm, args);   // UniTask -> fire & forget (istek sunucuya gider)
         FLog([NSString stringWithFormat:@"🔰 ResmiPlaka: goy(0,'%@','%@') sunucuya gonderildi", country, text]);
         return true;
     } @catch (...) { FLog(@"ResmiPlaka: goy exception"); return false; }
@@ -4608,7 +4635,7 @@ static bool few1n_officialNickname(NSString *name) {
     if (!nStr) return false;
     @try {
         void* args[1] = { nStr };
-        i_runtime_invoke(mGow, pm, args, NULL);   // UniTask -> fire & forget
+        few1n_safeInvoke(mGow, pm, args);   // UniTask -> fire & forget
         FLog([NSString stringWithFormat:@"🏷️ SunucuIsmi: gow('%@') sunucuya gonderildi", name]);
         return true;
     } @catch (...) { FLog(@"SunucuIsmi: gow exception"); return false; }
@@ -4628,7 +4655,7 @@ static bool few1n_instantWin(void) {
         void* mEnz = i_class_get_method_from_name(cls, "enz", 1);
         if (mEnz && ptrOk(pv)) {
             void* a[1] = { pv };
-            i_runtime_invoke(mEnz, inst, a, NULL);
+            few1n_safeInvoke(mEnz, inst, a);
             FLog([NSString stringWithFormat:@"🏆 AnindaKazan: enz(PhotonView) gonderildi (viewID=%d)", vid]);
             return true;
         }
@@ -4636,7 +4663,7 @@ static bool few1n_instantWin(void) {
         void* mWon = i_class_get_method_from_name(cls, "NetworkPlayerWonRPC", 1);
         if (mWon && vid > 0) {
             void* a[1] = { &vid };
-            i_runtime_invoke(mWon, inst, a, NULL);
+            few1n_safeInvoke(mWon, inst, a);
             FLog([NSString stringWithFormat:@"🏆 AnindaKazan: NetworkPlayerWonRPC(%d) lokal tetiklendi", vid]);
             return true;
         }
@@ -4663,7 +4690,7 @@ static bool few1n_trafficStrike(void) {
         Vec3 fwd; if (few1n_fwd(g_rb, &fwd)) { pos.x += fwd.x * 30.0f; pos.y += fwd.y * 30.0f; pos.z += fwd.z * 30.0f; }  // 30m ilerisi
         unsigned char model = 0;
         void* args[3] = { &vid, &model, &pos };
-        i_runtime_invoke(mEnable, inst, args, NULL);
+        few1n_safeInvoke(mEnable, inst, args);
         FLog([NSString stringWithFormat:@"🚧 TrafikFirlat: EnableTrafficvehicleRPC(vid=%d, model=0) 30m ileriye gonderildi", vid]);
         return true;
     } @catch (...) { FLog(@"TrafikFirlat: exception"); return false; }
@@ -4681,7 +4708,7 @@ static bool few1n_applyTunerInt(const char* className, int index, const char* wh
     int applied = 0;
     @try {
         void* a[1] = { tobj };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog([NSString stringWithFormat:@"%s: tuner yok (garaj/arac ac)", who]); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 64) return false;
@@ -4690,7 +4717,7 @@ static bool few1n_applyTunerInt(const char* className, int index, const char* wh
             void* tn = items[i];
             if (!unityAlive(tn) || !few1n_pvIsMineFor(tn)) continue;
             void* args[1] = { &index };
-            @try { i_runtime_invoke(mApply, tn, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, tn, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
     if (applied == 0) { FLog([NSString stringWithFormat:@"%s: benim tuner bulunamadi", who]); return false; }
@@ -4718,7 +4745,7 @@ static void* few1n_tuningManagerOfActor(int actor) {
     if (!tobj) return NULL;
     @try {
         void* a[1] = { tobj };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return NULL;
         int n = few1n_rdI32(arr, 0x18, 0); if (n < 1 || n > 64) return NULL;   // v114.79: guvenli sayac
         for (int i = 0; i < n; i++) {
@@ -4747,7 +4774,7 @@ static bool few1n_copyTuningToTarget(int targetActor) {
     void* myTM = NULL;
     @try {
         void* a[1] = { tobj };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (ptrOk(arr)) {
             int n = *(int*)((uintptr_t)arr + 0x18);
             void** el = (void**)((uintptr_t)arr + 0x20);
@@ -4757,7 +4784,7 @@ static bool few1n_copyTuningToTarget(int targetActor) {
     if (!ptrOk(myTM)) { FLog(@"HedefTuning: benim TuningManager yok (araca bin/garaj)"); return false; }
     // 2) benim tuning verim
     void* myData = NULL;
-    @try { myData = i_runtime_invoke(mEaj, myTM, NULL, NULL); } @catch (...) {}
+    @try { myData = few1n_safeInvoke(mEaj, myTM, NULL); } @catch (...) {}
     if (!ptrOk(myData)) { FLog(@"HedefTuning: benim TuningData alinamadi"); return false; }
     // 3) hedefin TuningManager'i
     void* tgtTM = few1n_tuningManagerOfActor(targetActor);
@@ -4765,9 +4792,9 @@ static bool few1n_copyTuningToTarget(int targetActor) {
     // 4) hedefin currentData = benim data; sonra hedefin view'inden yayinla
     @try {
         void* a1[1] = { myData };
-        i_runtime_invoke(mEac, tgtTM, a1, NULL);            // eac(myData)
+        few1n_safeInvoke(mEac, tgtTM, a1);            // eac(myData)
         unsigned char t = 1; void* a2[1] = { &t };
-        i_runtime_invoke(mEah, tgtTM, a2, NULL);            // eah(true) -> LoadTuners RPC
+        few1n_safeInvoke(mEah, tgtTM, a2);            // eah(true) -> LoadTuners RPC
         FLog([NSString stringWithFormat:@"🎭 HedefTuning: actor=%d arabasina benim tuning yayinlandi", targetActor]);
         return true;
     } @catch (...) { FLog(@"HedefTuning: eac/eah exception"); return false; }
@@ -4795,7 +4822,7 @@ static void* few1n_plateTunerOfActor(int actor) {
     if (!tobj) return NULL;
     @try {
         void* a[1] = { tobj };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return NULL;
         int n = few1n_rdI32(arr, 0x18, 0); if (n < 1 || n > 128) return NULL;   // v114.79: guvenli sayac
         for (int i = 0; i < n; i++) {
@@ -4803,7 +4830,7 @@ static void* few1n_plateTunerOfActor(int actor) {
             unsigned char inc = 1;
             void* ga[2] = { g_photonViewType, &inc };
             void* pv = NULL;
-            @try { pv = i_runtime_invoke(g_mGetCompInParent, pt, ga, NULL); } @catch (...) {}
+            @try { pv = few1n_safeInvoke(g_mGetCompInParent, pt, ga); } @catch (...) {}
             if (!ptrOk(pv)) continue;
             void* owner = few1n_rdPtr(pv, (uintptr_t)g_pvOwnerOff);   // v114.79: offset drift = cokme yerine NULL
             if (!ptrOk(owner) || !few1n_memOk(owner)) continue;
@@ -4947,10 +4974,10 @@ static bool few1n_setTargetPlateNonOwner(int targetActor, NSString* text) {
     if (!mUTF8 || !mGetBytes) { FLog(@"HedefPlaka2: UTF8.GetBytes yok"); return false; }
     void* bytes = NULL;
     @try {
-        void* utf8 = i_runtime_invoke(mUTF8, NULL, NULL, NULL);
+        void* utf8 = few1n_safeInvoke(mUTF8, NULL, NULL);
         if (!ptrOk(utf8)) return false;
         void* ga[1] = { jsonStr };
-        bytes = i_runtime_invoke(mGetBytes, utf8, ga, NULL);
+        bytes = few1n_safeInvoke(mGetBytes, utf8, ga);
     } @catch (...) {}
     if (!ptrOk(bytes)) { FLog(@"HedefPlaka2: bytes olusmadi"); return false; }
     // 4) hedefin view'inde RPC("LoadTuners", All, [bytes]) enjekte (non-owner)
@@ -5004,7 +5031,7 @@ static bool few1n_teleportPlayerTo(void* targetPlayer, int targetActor, Vec3 des
         if (ptrOk(inst) && mEod) {
             @try {
                 void* args[2] = { &dest, targetPlayer };
-                i_runtime_invoke(mEod, inst, args, NULL);
+                few1n_safeInvoke(mEod, inst, args);
                 FLog([NSString stringWithFormat:@"🎯 TP PRIMARY: eod(pos,player) actor=%d -> (%.0f,%.0f,%.0f)", targetActor, dest.x, dest.y, dest.z]);
                 return true;
             } @catch (...) { FLog(@"TP: eod exception -> plan B"); }
@@ -5036,7 +5063,7 @@ static bool few1n_teleportPlayerTo(void* targetPlayer, int targetActor, Vec3 des
         void* nameStr = mkStr(@"TeleportCar_RPC");
         int all = 0;
         void* args[3] = { nameStr, &all, arr };
-        i_runtime_invoke(mRPC, carPV, args, NULL);
+        few1n_safeInvoke(mRPC, carPV, args);
         FLog([NSString stringWithFormat:@"🎯 TP PLAN B: RPC injection actor=%d", targetActor]);
         return true;
     } @catch (...) { FLog(@"TP: injection exception"); return false; }
@@ -5100,12 +5127,12 @@ static bool few1n_setTargetNameNonOwner(int targetActor, NSString* name) {
     if (!byteCls) { strcpy(g_plateDiag,"isim: Byte class yok"); return false; }
     void* ht = i_object_new(g_hashtableClass);
     if (!ht) { strcpy(g_plateDiag,"isim: hashtable new yok"); return false; }
-    @try { i_runtime_invoke(g_mHashtableCtor, ht, NULL, NULL); } @catch (...) { strcpy(g_plateDiag,"isim: ctor hata"); return false; }
+    @try { few1n_safeInvoke(g_mHashtableCtor, ht, NULL); } @catch (...) { strcpy(g_plateDiag,"isim: ctor hata"); return false; }
     unsigned char keyByte = 255;   // ActorProperties.PlayerName
     void* boxedKey = i_value_box(byteCls, &keyByte);
     void* valStr = mkStr(name);
     if (!boxedKey || !valStr) { strcpy(g_plateDiag,"isim: key/val olusmadi"); return false; }
-    @try { void* a[2] = { boxedKey, valStr }; i_runtime_invoke(g_mHashtableSetItem, ht, a, NULL); } @catch (...) { strcpy(g_plateDiag,"isim: hashtable set hata"); return false; }
+    @try { void* a[2] = { boxedKey, valStr }; few1n_safeInvoke(g_mHashtableSetItem, ht, a); } @catch (...) { strcpy(g_plateDiag,"isim: hashtable set hata"); return false; }
     // hedef Player uzerinde SetCustomProperties(ht, null, null) -> guard
     { bool cr=false; void* args[3] = { ht, NULL, NULL }; few1n_guardedInvoke(mSet, p, args, &cr);
       if (cr) { strcpy(g_plateDiag,"isim: SetCustomProperties SEGFAULT"); return false; } }
@@ -5131,7 +5158,7 @@ static bool few1n_setTargetPropNonOwner(int targetActor, NSString* keyStr, bool 
     if (!g_hashtableClass || !g_mHashtableCtor || !g_mHashtableSetItem || !i_object_new) { strcpy(g_plateDiag,"prop: hashtable yok"); return false; }
     void* ht = i_object_new(g_hashtableClass);
     if (!ht) { strcpy(g_plateDiag,"prop: ht new yok"); return false; }
-    @try { i_runtime_invoke(g_mHashtableCtor, ht, NULL, NULL); } @catch (...) { strcpy(g_plateDiag,"prop: ctor hata"); return false; }
+    @try { few1n_safeInvoke(g_mHashtableCtor, ht, NULL); } @catch (...) { strcpy(g_plateDiag,"prop: ctor hata"); return false; }
     void* keyObj = NULL;
     if (numericKey) {
         void* byteCls = few1n_classAnyImage("System", "Byte");
@@ -5143,7 +5170,7 @@ static bool few1n_setTargetPropNonOwner(int targetActor, NSString* keyStr, bool 
     }
     void* valStr = mkStr(val);
     if (!keyObj || !valStr) { strcpy(g_plateDiag,"prop: key/val olusmadi"); return false; }
-    @try { void* a[2] = { keyObj, valStr }; i_runtime_invoke(g_mHashtableSetItem, ht, a, NULL); } @catch(...) { strcpy(g_plateDiag,"prop: set hata"); return false; }
+    @try { void* a[2] = { keyObj, valStr }; few1n_safeInvoke(g_mHashtableSetItem, ht, a); } @catch(...) { strcpy(g_plateDiag,"prop: set hata"); return false; }
     { bool cr=false; void* args[3] = { ht, NULL, NULL }; few1n_guardedInvoke(mSet, p, args, &cr);
       if (cr) { strcpy(g_plateDiag,"prop: SetCustomProperties SEGFAULT"); return false; } }
     snprintf(g_plateDiag, sizeof(g_plateDiag), "prop: key=%s(%s) gonderildi", keyStr.UTF8String, numericKey?"num":"str");
@@ -5253,7 +5280,7 @@ static bool few1n_forceWinTarget(int targetActor) {
     void* cls  = few1n_classAnyImage("", "HR_PhotonHandler");
     void* mEnz = cls ? i_class_get_method_from_name(cls, "enz", 1) : NULL;
     if (!ptrOk(inst) || !mEnz) { FLog(@"Kazandir: enz yok"); return false; }
-    @try { void* a[1] = { tgtPV }; i_runtime_invoke(mEnz, inst, a, NULL);
+    @try { void* a[1] = { tgtPV }; few1n_safeInvoke(mEnz, inst, a);
            FLog([NSString stringWithFormat:@"🏁 Kazandir: enz(hedefPV) actor=%d", targetActor]); return true; }
     @catch (...) { FLog(@"Kazandir: enz exception"); return false; }
 }
@@ -5267,7 +5294,7 @@ static void* few1n_myTuningManager(void) {
     if (!tobj) return NULL;
     @try {
         void* a[1] = { tobj };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return NULL;
         int n = *(int*)((uintptr_t)arr + 0x18);
         void** el = (void**)((uintptr_t)arr + 0x20);
@@ -5297,9 +5324,9 @@ static bool few1n_copyMyCarToTarget(int targetActor) {
     void* tgtPV = NULL; unsigned char saved = 0; bool flipped = false;
     @try { tgtPV = mbp_getPhotonView(tgtTM); } @catch (...) {}
     if (ptrOk(tgtPV)) { saved = *(unsigned char*)((uintptr_t)tgtPV + g_isMineOff); *(unsigned char*)((uintptr_t)tgtPV + g_isMineOff) = 1; flipped = true; }
-    if (mEah) { @try { unsigned char t=1; void* a[1]={&t}; i_runtime_invoke(mEah, tgtTM, a, NULL); } @catch (...) {} }
-    if (mEad) { @try { i_runtime_invoke(mEad, tgtTM, NULL, NULL); } @catch (...) {} }
-    if (mEae) { @try { i_runtime_invoke(mEae, tgtTM, NULL, NULL); } @catch (...) {} }
+    if (mEah) { @try { unsigned char t=1; void* a[1]={&t}; few1n_safeInvoke(mEah, tgtTM, a); } @catch (...) {} }
+    if (mEad) { @try { few1n_safeInvoke(mEad, tgtTM, NULL); } @catch (...) {} }
+    if (mEae) { @try { few1n_safeInvoke(mEae, tgtTM, NULL); } @catch (...) {} }
     if (flipped) *(unsigned char*)((uintptr_t)tgtPV + g_isMineOff) = saved;
     FLog([NSString stringWithFormat:@"🚗 AracKopya: actor=%d arabasi benim aracima kopyalandi (flip=%d)", targetActor, flipped]);
     return true;
@@ -5321,9 +5348,9 @@ static bool few1n_cloneTargetCarToMe(int targetActor) {
     void* mEad = tmCls ? i_class_get_method_from_name(tmCls, "ead", 0) : NULL;
     void* mEae = tmCls ? i_class_get_method_from_name(tmCls, "eae", 0) : NULL;
     @try { *(void**)((uintptr_t)myTM + 0x40) = theirData; } @catch (...) { return false; }   // benim currentData = onunki
-    if (mEah) { @try { unsigned char t=1; void* a[1]={&t}; i_runtime_invoke(mEah, myTM, a, NULL); } @catch (...) {} }
-    if (mEad) { @try { i_runtime_invoke(mEad, myTM, NULL, NULL); } @catch (...) {} }
-    if (mEae) { @try { i_runtime_invoke(mEae, myTM, NULL, NULL); } @catch (...) {} }
+    if (mEah) { @try { unsigned char t=1; void* a[1]={&t}; few1n_safeInvoke(mEah, myTM, a); } @catch (...) {} }
+    if (mEad) { @try { few1n_safeInvoke(mEad, myTM, NULL); } @catch (...) {} }
+    if (mEae) { @try { few1n_safeInvoke(mEae, myTM, NULL); } @catch (...) {} }
     FLog([NSString stringWithFormat:@"🎭 AracCal: actor=%d arabasi BENIM aracima klonlandi", targetActor]);
     return true;
 }
@@ -5356,7 +5383,7 @@ static bool few1n_applyServerColor(float r, float g, float b) {
     int applied = 0;
     @try {
         void* a[1] = { ptType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"OzelRenk: PaintTuner instance yok (garaj/tuning ekranini ac)"); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 64) return false;
@@ -5365,7 +5392,7 @@ static bool few1n_applyServerColor(float r, float g, float b) {
             void* pt = items[i];
             if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
             void* args[2] = { &col, &type };
-            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, pt, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
     if (applied == 0) { FLog(@"OzelRenk: benim PaintTuner bulunamadi"); return false; }
@@ -5390,7 +5417,7 @@ static bool few1n_applyRimColor(float r, float g, float b) {
     int t = 0; int applied = 0;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"Jant: instance yok (garaj/tuning ac)"); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 64) return false;
@@ -5399,7 +5426,7 @@ static bool few1n_applyRimColor(float r, float g, float b) {
             void* pt = items[i];
             if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
             void* args[3] = { &col, &col, &t };
-            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, pt, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
     if (applied == 0) { FLog(@"Jant: benim DiskPaintTuner yok"); return false; }
@@ -5419,7 +5446,7 @@ static bool few1n_setChrome(bool on) {
     unsigned char b = on ? 1 : 0; int applied = 0;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"Krom: instance yok (garaj/tuning ac)"); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 64) return false;
@@ -5428,7 +5455,7 @@ static bool few1n_setChrome(bool on) {
             void* pt = items[i];
             if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
             void* args[1] = { &b };
-            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, pt, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
     if (applied == 0) { FLog(@"Krom: benim ChromeTuner yok"); return false; }
@@ -5448,7 +5475,7 @@ static bool few1n_setGlass(float value) {
     float v = value; int applied = 0;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"Cam: instance yok (garaj/tuning ac)"); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 64) return false;
@@ -5457,7 +5484,7 @@ static bool few1n_setGlass(float value) {
             void* pt = items[i];
             if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
             void* args[1] = { &v };
-            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, pt, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
     if (applied == 0) { FLog(@"Cam: benim GlassTuner yok"); return false; }
@@ -5482,7 +5509,7 @@ static bool few1n_applyStance(float camber, float offset, float width, float rad
     int applied = 0;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"Stance: instance yok (garaj/tuning ac)"); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 64) return false;
@@ -5491,7 +5518,7 @@ static bool few1n_applyStance(float camber, float offset, float width, float rad
             void* pt = items[i];
             if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
             void* args[10] = { &fCamber,&rCamber,&fDist,&rDist,&fOfs,&rOfs,&fWid,&rWid,&fRad,&rRad };
-            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, pt, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
     if (applied == 0) { FLog(@"Stance: benim WheelbaseTuner yok"); return false; }
@@ -5512,7 +5539,7 @@ static bool few1n_applyBodyPart(int partIndex) {
     int idx = partIndex; unsigned char async = 0; int applied = 0;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"Parca: instance yok (garaj/tuning ac)"); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 64) return false;
@@ -5521,7 +5548,7 @@ static bool few1n_applyBodyPart(int partIndex) {
             void* pt = items[i];
             if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
             void* args[2] = { &idx, &async };
-            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, pt, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
     if (applied == 0) { FLog(@"Parca: benim PartTuner yok"); return false; }
@@ -5541,14 +5568,14 @@ static bool few1n_finishTeleport(void) {
     int called = 0;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"Bitis: instance yok"); return false; }
         int cnt = *(int*)((uintptr_t)arr + 0x18);
         if (cnt < 1 || cnt > 16) return false;
         void** items = (void**)((uintptr_t)arr + 0x20);
         for (int i = 0; i < cnt; i++) {
             if (!unityAlive(items[i])) continue;
-            @try { i_runtime_invoke(mEni, items[i], NULL, NULL); called++; } @catch (...) {}
+            @try { few1n_safeInvoke(mEni, items[i], NULL); called++; } @catch (...) {}
         }
     } @catch (...) {}
     FLog([NSString stringWithFormat:@"Bitis teleport eni() %d cagri", called]);
@@ -5582,7 +5609,7 @@ static void few1n_forceNos(void) {
     if (!g_nosType) return;
     @try {
         void* a[1] = { g_nosType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 1 || cnt > 64) return;
@@ -5614,7 +5641,7 @@ static void few1n_setTrafficDensity(int mode) {
         void* t = few1n_typeObjOf(c);
         @try {
             void* a[1] = { t };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (!ptrOk(arr)) continue;
             int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
             if (cnt < 0 || cnt > 64) continue;
@@ -5665,14 +5692,14 @@ static void few1n_refreshCarMats(void) {
     @try {
         bool inc = true;
         void* a[2]; a[0] = g_rendererType; a[1] = &inc;
-        void* arr = i_runtime_invoke(g_mGetCompsChild, g_rb, a, NULL);   // g_rb'den (carDrive bulunamiyor)
+        void* arr = few1n_safeInvoke(g_mGetCompsChild, g_rb, a);   // g_rb'den (carDrive bulunamiyor)
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 0 || cnt > 96) return;
         void** rends = (void**)((uintptr_t)arr + 0x20);
         for (int i = 0; i < cnt && g_carMatCount < 96; i++) {
             void* rend = rends[i]; if (!ptrOk(rend)) continue;
-            void* mat = i_runtime_invoke(g_mRendGetMat, rend, NULL, NULL);
+            void* mat = few1n_safeInvoke(g_mRendGetMat, rend, NULL);
             if (ptrOk(mat)) g_carMats[g_carMatCount++] = mat;
         }
     } @catch (...) {}
@@ -5689,7 +5716,7 @@ static void few1n_applyColor(void) {
         else c = g_carColor;
         void* a[1]; a[0] = &c;
         for (int i = 0; i < g_carMatCount; i++)
-            if (unityAlive(g_carMats[i])) i_runtime_invoke(g_mMatSetColor, g_carMats[i], a, NULL);
+            if (unityAlive(g_carMats[i])) few1n_safeInvoke(g_mMatSetColor, g_carMats[i], a);
     } @catch (...) {}
 }
 
@@ -5704,7 +5731,7 @@ static void few1n_applyGodmode(void) {
         if (!g_playerHandlerType || !g_mFindObjectsPlural || !i_runtime_invoke || g_isMineOff <= 0) return;
         @try {
             void* a[1]; a[0] = g_playerHandlerType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (!ptrOk(arr)) return;
             int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
             if (cnt < 0 || cnt > 64) return;
@@ -5736,7 +5763,7 @@ static void few1n_applyAlwaysLights(void) {
         @try {
             Vec3 myPos; rbGetPosIl(g_rb, &myPos);
             void* a[1]; a[0] = g_rccpLightsType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (!ptrOk(arr)) return;
             int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
             if (cnt <= 0 || cnt > 256) return;
@@ -5763,7 +5790,7 @@ static inline void few1n_writeFloatOnAllOfType(void* typeObj, int off, float val
     if (!typeObj || off <= 0 || !g_mFindObjectsPlural || !i_runtime_invoke) return;
     @try {
         void* a[1]; a[0] = typeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt <= 0 || cnt > 128) return;
@@ -5780,7 +5807,7 @@ static inline void few1n_writeBoolOnAllOfType(void* typeObj, int off, bool val) 
     if (!typeObj || off <= 0 || !g_mFindObjectsPlural || !i_runtime_invoke) return;
     @try {
         void* a[1]; a[0] = typeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt <= 0 || cnt > 128) return;
@@ -5835,7 +5862,7 @@ static void few1n_applyGizliCheats(void) {
         for (int i = 0; i < g_carMatCount; i++) {
             if (unityAlive(g_carMats[i])) {
                 void* a[1]; a[0] = &hotEmis;
-                @try { i_runtime_invoke(g_mMatSetColor, g_carMats[i], a, NULL); } @catch (...) {}
+                @try { few1n_safeInvoke(g_mMatSetColor, g_carMats[i], a); } @catch (...) {}
             }
         }
     }
@@ -5843,7 +5870,7 @@ static void few1n_applyGizliCheats(void) {
         // HR_TrafficCar objelerini bul, hepsinin _ikx_k__BackingField (Rigidbody) hizini 0 yap
         @try {
             void* a[1]; a[0] = g_hrTrafficCarTypeObj;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (ptrOk(arr)) {
                 int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
                 if (cnt > 0 && cnt < 256) {
@@ -5876,7 +5903,7 @@ static void few1n_applySelektor(void) {
         @try {
             Vec3 myPos; rbGetPosIl(g_rb, &myPos);
             void* a[1]; a[0] = g_rccpLightsType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (!ptrOk(arr)) return;
             int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
             if (cnt < 0 || cnt > 256) return;
@@ -5915,7 +5942,7 @@ static void few1n_applyPoliceAndNeonLights(void) {
         @try {
             Vec3 myPos; rbGetPosIl(g_rb, &myPos);
             void* a[1]; a[0] = g_rccpLightsType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (!ptrOk(arr)) return;
             int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
             if (cnt < 0 || cnt > 256) return;
@@ -6017,12 +6044,11 @@ static bool few1n_setGhostNoHit(bool on) {
                         void* p = pls[i];
                         if (!ptrOk(p)) continue;
                         void* props = NULL;
-                        @try { props = i_runtime_invoke(mGetProps, p, NULL, NULL); } @catch (...) {}
+                        @try { props = few1n_safeInvoke(mGetProps, p, NULL); } @catch (...) {}
                         if (ptrOk(props) && pidKey) {
                             void* gArgs[1] = { pidKey };
-                            void* val = NULL;
-                            @try { val = i_runtime_invoke(htGet, props, gArgs, NULL); } @catch (...) {}
-                            if (ptrOk(val)) {
+                            void* val = few1n_safeInvoke(htGet, props, gArgs);
+                            if (few1n_isStringObj(val)) {
                                 NSString *ps = readStr(val);
                                 if (ps.length > 0) [pids addObject:ps];
                             }
@@ -6038,11 +6064,11 @@ static bool few1n_setGhostNoHit(bool on) {
 
         void* ht = i_object_new(htCls);
         if (!ptrOk(ht)) return false;
-        i_runtime_invoke(htCtor, ht, NULL, NULL);
+        few1n_safeInvoke(htCtor, ht, NULL);
         void* keyStr = mkStr(@"noHit");
         if (!ptrOk(keyStr)) return false;
         void* sArgs[2] = { keyStr, pidArr };
-        i_runtime_invoke(htSet, ht, sArgs, NULL);
+        few1n_safeInvoke(htSet, ht, sArgs);
         void* pArgs[3] = { ht, NULL, NULL };
         bool crashed = false;
         few1n_guardedInvoke(mSetProps, me, pArgs, &crashed);
@@ -6069,7 +6095,7 @@ static bool few1n_syncClearTraffic(void) {
     if (!mRPC || !tpType) return false;
     @try {
         void* a[1] = { tpType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return false;
         int n = few1n_rdI32(arr, 0x18, 0);
         if (n <= 0 || n > 16) return false;
@@ -6102,7 +6128,7 @@ static int few1n_getTrafficStartMs(void* tp, void* tpCls) {
     void* mIuf = i_class_get_method_from_name(tpCls, "iuf", 0);
     if (!mIuf) return 0;
     @try {
-        void* box = i_runtime_invoke(mIuf, tp, NULL, NULL);
+        void* box = few1n_safeInvoke(mIuf, tp, NULL);
         if (ptrOk(box)) return *(int*)((uintptr_t)box + 0x10);
     } @catch (...) {}
     return 0;
@@ -6127,7 +6153,7 @@ static bool few1n_syncSpawnTraffic(int carIdx, int paintIdx, float speed, bool o
     if (!mRPC || !tpType) return false;
     @try {
         void* a[1] = { tpType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return false;
         int n = few1n_rdI32(arr, 0x18, 0);
         if (n <= 0 || n > 16) return false;
@@ -6190,7 +6216,7 @@ static bool few1n_syncSpawnBatchTraffic(int mode) {
     if (!mRPC || !tpType) return false;
     @try {
         void* a[1] = { tpType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr) || few1n_rdI32(arr, 0x18, 0) <= 0) return false;
         void* tp = few1n_rdPtr(arr, 0x20);
         if (!unityAlive(tp)) return false;
@@ -6270,7 +6296,7 @@ static bool few1n_applyPlateWithCode(NSString *country, NSString *text) {
     int applied = 0;
     @try {
         void* a[1] = { ptType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return false;
         int cnt = few1n_rdI32(arr, 0x18, 0);
         void** items = (void**)((uintptr_t)arr + 0x20);
@@ -6278,7 +6304,7 @@ static bool few1n_applyPlateWithCode(NSString *country, NSString *text) {
             void* pt = items[i];
             if (!unityAlive(pt) || !few1n_pvIsMineFor(pt)) continue;
             void* args[2] = { cStr, tStr };
-            @try { i_runtime_invoke(mApply, pt, args, NULL); applied++; } @catch (...) {}
+            @try { few1n_safeInvoke(mApply, pt, args); applied++; } @catch (...) {}
         }
     } @catch (...) {}
     if (applied > 0) {
@@ -6303,14 +6329,14 @@ static bool few1n_applyHdrBodyPaint(float r, float g, float b, float r2, float g
             void* mApply2 = i_class_get_method_from_name(cls, "Apply", 2);
             if (type && (mApply3 || mApply2)) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 for (int i = 0; i < cnt && i < 64 && items; i++) {
                     void* it = items[i];
                     if (!unityAlive(it) || !few1n_pvIsMineFor(it)) continue;
-                    if (mApply3) { void* args[3] = { &c1, &c2, &pt }; @try { i_runtime_invoke(mApply3, it, args, NULL); applied++; } @catch (...) {} }
-                    else         { void* args[2] = { &c1, &pt };      @try { i_runtime_invoke(mApply2, it, args, NULL); applied++; } @catch (...) {} }
+                    if (mApply3) { void* args[3] = { &c1, &c2, &pt }; @try { few1n_safeInvoke(mApply3, it, args); applied++; } @catch (...) {} }
+                    else         { void* args[2] = { &c1, &pt };      @try { few1n_safeInvoke(mApply2, it, args); applied++; } @catch (...) {} }
                 }
             }
         }
@@ -6321,14 +6347,14 @@ static bool few1n_applyHdrBodyPaint(float r, float g, float b, float r2, float g
                 void* mD = i_class_get_method_from_name(dcls, "Apply", 3);
                 if (dtype && mD) {
                     void* a[1] = { dtype };
-                    void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                    void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                     int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                     void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                     for (int i = 0; i < cnt && i < 64 && items; i++) {
                         void* it = items[i];
                         if (!unityAlive(it) || !few1n_pvIsMineFor(it)) continue;
                         void* args[3] = { &c1, &c2, &pt };
-                        @try { i_runtime_invoke(mD, it, args, NULL); applied++; } @catch (...) {}
+                        @try { few1n_safeInvoke(mD, it, args); applied++; } @catch (...) {}
                     }
                 }
             }
@@ -6354,16 +6380,16 @@ static bool few1n_stripCarParts(bool stripParts, bool stripWheels, bool stripTir
         if (!type || !m) continue;
         @try {
             void* a[1] = { type };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
             void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
             int neg = -1; uint8_t asyncF = 0;
             for (int i = 0; i < cnt && i < 128 && items; i++) {
                 void* it = items[i];
                 if (!unityAlive(it) || !few1n_pvIsMineFor(it)) continue;
-                if (resetAll) { @try { i_runtime_invoke(m, it, NULL, NULL); applied++; } @catch (...) {} }
-                else if (k == 0) { void* args[2] = { &neg, &asyncF }; @try { i_runtime_invoke(m, it, args, NULL); applied++; } @catch (...) {} }
-                else             { void* args[1] = { &neg };          @try { i_runtime_invoke(m, it, args, NULL); applied++; } @catch (...) {} }
+                if (resetAll) { @try { few1n_safeInvoke(m, it, NULL); applied++; } @catch (...) {} }
+                else if (k == 0) { void* args[2] = { &neg, &asyncF }; @try { few1n_safeInvoke(m, it, args); applied++; } @catch (...) {} }
+                else             { void* args[1] = { &neg };          @try { few1n_safeInvoke(m, it, args); applied++; } @catch (...) {} }
             }
         } @catch (...) {}
     }
@@ -6404,7 +6430,7 @@ static bool few1n_roomScreenBlackout(bool closeScreen) {
 static void few1n_applyCrabWalk(void) {
     if (!unityAlive(g_myRccp)) return;
     @try {
-        void* rearAxle = *(void**)((uintptr_t)g_myRccp + 0x88);
+        void* rearAxle = few1n_rdPtr(g_myRccp, 0x88);
         if (!unityAlive(rearAxle)) return;
         if (g_crabWalkMode == 0) {
             *(uint8_t*)((uintptr_t)rearAxle + 0x5D) = 0; // isSteer = false
@@ -6417,31 +6443,39 @@ static void few1n_applyCrabWalk(void) {
     } @catch (...) {}
 }
 
-// #9 Magnet Orbit (Seçilen oyuncunun etrafında yörüngede dön)
+// #9 Magnet Orbit (Seçilen oyuncunun etrafında yörüngede dön — cached PV, zero frame lag)
 static void few1n_tickMagnetOrbit(void) {
     if (!isMagnetOrbitEnabled || g_magnetOrbitActor <= 0 || !unityAlive(g_rb)) return;
-    if (!g_photonViewType || !g_mFindObjectsPlural || !i_runtime_invoke) return;
-    @try {
-        void* a[1] = { g_photonViewType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-        if (!ptrOk(arr)) return;
-        int n = few1n_rdI32(arr, 0x18, 0);
-        void** pvs = (void**)((uintptr_t)arr + 0x20);
-        void* pvCls = few1n_classAnyImage("Photon.Pun", "PhotonView");
-        if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
-        void* mOwner = pvCls ? i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0) : NULL;
-        if (!mOwner) return;
-        Vec3 targetPos = {0,0,0}; bool found = false;
-        for (int i = 0; i < n && i < 256; i++) {
-            void* pv = pvs[i];
-            if (!unityAlive(pv)) continue;
-            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
-            int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
-            if (act == g_magnetOrbitActor) {
-                if (few1n_objPos(pv, &targetPos)) { found = true; break; }
+    static void* s_orbitPV = NULL;
+    static int   s_orbitActorCached = -1;
+    static int   s_orbitSearchTick = 0;
+    if (s_orbitActorCached != g_magnetOrbitActor || !unityAlive(s_orbitPV)) {
+        s_orbitPV = NULL;
+        s_orbitActorCached = g_magnetOrbitActor;
+        if ((s_orbitSearchTick++ % 30) != 0) return;
+        if (!g_photonViewType || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+        @try {
+            void* a[1] = { g_photonViewType };
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
+            if (!ptrOk(arr)) return;
+            int n = few1n_rdI32(arr, 0x18, 0);
+            void* pvCls = few1n_classAnyImage("Photon.Pun", "PhotonView");
+            if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+            void* mOwner = pvCls ? i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0) : NULL;
+            if (!mOwner) return;
+            for (int i = 0; i < n && i < 256; i++) {
+                void* pv = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*));
+                if (!unityAlive(pv)) continue;
+                void* box = few1n_safeInvoke(mOwner, pv, NULL);
+                int act = ptrOk(box) ? few1n_rdI32(box, 0x10, -1) : -1;
+                if (act == g_magnetOrbitActor) { s_orbitPV = pv; break; }
             }
-        }
-        if (found) {
+        } @catch (...) {}
+    }
+    if (!unityAlive(s_orbitPV)) return;
+    @try {
+        Vec3 targetPos = {0,0,0};
+        if (few1n_objPos(s_orbitPV, &targetPos)) {
             g_magnetOrbitAngle += 0.08f;
             if (g_magnetOrbitAngle > 6.28318f) g_magnetOrbitAngle -= 6.28318f;
             Vec3 p = { targetPos.x + cosf(g_magnetOrbitAngle) * 7.0f, targetPos.y + 1.2f, targetPos.z + sinf(g_magnetOrbitAngle) * 7.0f };
@@ -6550,14 +6584,14 @@ static bool few1n_toggleNativeDrone(bool on, float speed, float fov, bool focusC
             few1n_guardedInvoke(mEn, NULL, args, &crashed);
             if (crashed) return false;
             void* mInst = i_class_get_method_from_name(dmCls, "fyv", 0);
-            void* dm = mInst ? i_runtime_invoke(mInst, NULL, NULL, NULL) : NULL;
+            void* dm = mInst ? few1n_safeInvoke(mInst, NULL, NULL) : NULL;
             if (unityAlive(dm)) {
                 void* mSpd = i_class_get_method_from_name(dmCls, "SetSpeed", 1);
                 void* mFov = i_class_get_method_from_name(dmCls, "fzd", 1);
                 void* mFoc = i_class_get_method_from_name(dmCls, "SetFocusCar", 0);
-                if (mSpd && speed > 0) { void* a[1]={&speed}; @try { i_runtime_invoke(mSpd, dm, a, NULL); } @catch (...) {} }
-                if (mFov && fov > 10)  { void* a[1]={&fov};   @try { i_runtime_invoke(mFov, dm, a, NULL); } @catch (...) {} }
-                if (mFoc && focusCar)  { @try { i_runtime_invoke(mFoc, dm, NULL, NULL); } @catch (...) {} }
+                if (mSpd && speed > 0) { void* a[1]={&speed}; @try { few1n_safeInvoke(mSpd, dm, a); } @catch (...) {} }
+                if (mFov && fov > 10)  { void* a[1]={&fov};   @try { few1n_safeInvoke(mFov, dm, a); } @catch (...) {} }
+                if (mFoc && focusCar)  { @try { few1n_safeInvoke(mFoc, dm, NULL); } @catch (...) {} }
             }
             isNativeDroneEnabled = true;
             return true;
@@ -6581,7 +6615,7 @@ static bool few1n_spectateRccp(void* targetRccp) {
     if (!camType || !mCio) return false;
     @try {
         void* a[1] = { camType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 8 && items; i++) {
@@ -6595,44 +6629,52 @@ static bool few1n_spectateRccp(void* targetRccp) {
     return false;
 }
 
-// #14 Gerçek Pops & Bangs (MufflerCrackleRandom) + RGB Egzoz Alevi (RCCP_Exhaust)
+// #14 Gerçek Pops & Bangs (MufflerCrackleRandom) + RGB Egzoz Alevi (RCCP_Exhaust — cached)
 static void few1n_tickRealPopsAndRgbExhaust(void) {
     if (!isRealPopsBangsEnabled && !isRgbExhaustEnabled) return;
-    if (!g_mFindObjectsPlural || !i_runtime_invoke) return;
     static float exHue = 0.0f;
     static int exTick = 0;
+    static void* s_exCache[16];
+    static int   s_exCount = 0;
     exTick++;
     if (isRgbExhaustEnabled) {
         exHue += 0.025f; if (exHue >= 1.0f) exHue -= 1.0f;
     }
-    if ((exTick % 3) != 0) return;
-    @try {
-        if (g_rccpExhaustTypeObj) {
+    // Refresh exhaust list once per ~60 frames (1s) instead of 20x/sec
+    if ((exTick % 60) == 1 && g_rccpExhaustTypeObj && g_mFindObjectsPlural) {
+        s_exCount = 0;
+        @try {
             void* a[1] = { g_rccpExhaustTypeObj };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
-            void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
-            Color4 c = hueToRGB(exHue);
-            c.r *= 2.0f; c.g *= 2.0f; c.b *= 2.0f; c.a = 1.0f;
-            for (int i = 0; i < cnt && i < 32 && items; i++) {
-                void* ex = items[i];
-                if (!unityAlive(ex)) continue;
-                if (isRgbExhaustEnabled) {
-                    *(Color4*)((uintptr_t)ex + 0xAC) = c; // flameColor
-                    *(Color4*)((uintptr_t)ex + 0xBC) = c; // boostFlameColor
-                    *(uint8_t*)((uintptr_t)ex + 0x50) = 1; // flameOnCutOff
-                }
-                if (isRealPopsBangsEnabled) {
-                    *(uint8_t*)((uintptr_t)ex + 0xE4) = 1; // popping = true
-                    void* mc = *(void**)((uintptr_t)ex + 0x40); // mufflerCrackle
-                    if (unityAlive(mc)) {
-                        *(int*)((uintptr_t)mc + 0x2C) = 100; // chanceToCrackle
-                        *(int*)((uintptr_t)mc + 0x30) = 100; // chanceToFire
-                        *(uint8_t*)((uintptr_t)mc + 0x38) = 1; // playDuringShifting
-                        *(uint8_t*)((uintptr_t)mc + 0x39) = 1; // playWithRevLimiter
-                        *(float*)((uintptr_t)mc + 0x68) = 0.0f; // startDelay
-                        *(uint8_t*)((uintptr_t)mc + 0x8C) = 0; // randomlyNotPlaying = false
-                    }
+            for (int i = 0; i < cnt && s_exCount < 16; i++) {
+                void* ex = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*));
+                if (unityAlive(ex)) s_exCache[s_exCount++] = ex;
+            }
+        } @catch (...) {}
+    }
+    if ((exTick % 3) != 0 || s_exCount == 0) return;
+    @try {
+        Color4 c = hueToRGB(exHue);
+        c.r *= 2.0f; c.g *= 2.0f; c.b *= 2.0f; c.a = 1.0f;
+        for (int i = 0; i < s_exCount; i++) {
+            void* ex = s_exCache[i];
+            if (!unityAlive(ex)) continue;
+            if (isRgbExhaustEnabled) {
+                *(Color4*)((uintptr_t)ex + 0xAC) = c; // flameColor
+                *(Color4*)((uintptr_t)ex + 0xBC) = c; // boostFlameColor
+                *(uint8_t*)((uintptr_t)ex + 0x50) = 1; // flameOnCutOff
+            }
+            if (isRealPopsBangsEnabled) {
+                *(uint8_t*)((uintptr_t)ex + 0xE4) = 1; // popping = true
+                void* mc = few1n_rdPtr(ex, 0x40); // mufflerCrackle
+                if (unityAlive(mc)) {
+                    *(int*)((uintptr_t)mc + 0x2C) = 100; // chanceToCrackle
+                    *(int*)((uintptr_t)mc + 0x30) = 100; // chanceToFire
+                    *(uint8_t*)((uintptr_t)mc + 0x38) = 1; // playDuringShifting
+                    *(uint8_t*)((uintptr_t)mc + 0x39) = 1; // playWithRevLimiter
+                    *(float*)((uintptr_t)mc + 0x68) = 0.0f; // startDelay
+                    *(uint8_t*)((uintptr_t)mc + 0x8C) = 0; // randomlyNotPlaying = false
                 }
             }
         }
@@ -6646,16 +6688,18 @@ static void few1n_applyFreeTuningShop(void) {
         void* uiCls = few1n_classAnyImage("TuningShop", "UIController");
         if (!uiCls) return;
         void* mInst = i_class_get_method_from_name(uiCls, "eaq", 0);
-        void* ui = mInst ? i_runtime_invoke(mInst, NULL, NULL, NULL) : NULL;
+        void* ui = mInst ? few1n_safeInvoke(mInst, NULL, NULL) : NULL;
         if (!unityAlive(ui)) return;
-        void* pm = *(void**)((uintptr_t)ui + 0x28); // hy priceManager
+        void* pm = few1n_rdPtr(ui, 0x28); // hy priceManager
         if (!ptrOk(pm)) return;
-        void* arr = *(void**)((uintptr_t)pm + 0x10); // ValueTuple<hs, int, object>[] iog
+        void* arr = few1n_rdPtr(pm, 0x10); // ValueTuple<hs, int, object>[] iog
         if (ptrOk(arr)) {
             int cnt = few1n_rdI32(arr, 0x18, 0);
-            // Each ValueTuple<hs,int,object> on arm64 is 24 bytes: [0x00 hs][0x08 int][0x10 object]
-            for (int i = 0; i < cnt && i < 64; i++) {
-                *(int*)((uintptr_t)arr + 0x20 + (size_t)i * 24 + 0x08) = 0;
+            if (cnt > 0 && cnt <= 64) {
+                for (int i = 0; i < cnt; i++) {
+                    void* slot = (void*)((uintptr_t)arr + 0x20 + (size_t)i * 24 + 0x08);
+                    if (few1n_memOk(slot)) *(int*)slot = 0;
+                }
             }
         }
         void* mRef = i_class_get_method_from_name(uiCls, "eba", 0);
@@ -6676,7 +6720,7 @@ static int few1n_unlockAllMaps(void) {
     int unlocked = 0;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         uint8_t f0 = 0, t1 = 1;
@@ -6685,11 +6729,11 @@ static int few1n_unlockAllMaps(void) {
             if (!unityAlive(mb)) continue;
             *(float*)((uintptr_t)mb + 0x48) = 0.0f; // requiredDistanceKm = 0
             void* btn = *(void**)((uintptr_t)mb + 0x20);
-            if (unityAlive(btn) && mSetInt) { void* ia[1]={&t1}; @try { i_runtime_invoke(mSetInt, btn, ia, NULL); } @catch (...) {} }
+            if (unityAlive(btn) && mSetInt) { void* ia[1]={&t1}; @try { few1n_safeInvoke(mSetInt, btn, ia); } @catch (...) {} }
             void* lImg = *(void**)((uintptr_t)mb + 0x28);
             void* lTxt = *(void**)((uintptr_t)mb + 0x30);
-            if (unityAlive(lImg) && mSetAct) { void* fa[1]={&f0}; @try { i_runtime_invoke(mSetAct, lImg, fa, NULL); } @catch (...) {} }
-            if (unityAlive(lTxt) && mSetAct) { void* fa[1]={&f0}; @try { i_runtime_invoke(mSetAct, lTxt, fa, NULL); } @catch (...) {} }
+            if (unityAlive(lImg) && mSetAct) { void* fa[1]={&f0}; @try { few1n_safeInvoke(mSetAct, lImg, fa); } @catch (...) {} }
+            if (unityAlive(lTxt) && mSetAct) { void* fa[1]={&f0}; @try { few1n_safeInvoke(mSetAct, lTxt, fa); } @catch (...) {} }
             unlocked++;
         }
         void* mMyt = i_class_get_method_from_name(cls, "myt", 0);
@@ -6731,23 +6775,24 @@ static NSString* few1n_getLobbyRoomDetails(void) {
     void* mGet   = i_class_get_method_from_name(htCls, "get_Item", 1);
     @try {
         NSString *rName = @"?";
-        if (mName) { void* s = i_runtime_invoke(mName, rm, NULL, NULL); if (ptrOk(s)) rName = readStr(s); }
+        if (mName) { void* s = few1n_safeInvoke(mName, rm, NULL); if (few1n_isStringObj(s)) rName = readStr(s); }
         int pCnt = 0, pMax = 0;
-        if (mCnt) { void* b = i_runtime_invoke(mCnt, rm, NULL, NULL); if (ptrOk(b)) pCnt = *(uint8_t*)((uintptr_t)b + 0x10); }
-        if (mMax) { void* b = i_runtime_invoke(mMax, rm, NULL, NULL); if (ptrOk(b)) pMax = *(uint8_t*)((uintptr_t)b + 0x10); }
+        if (mCnt) { void* b = few1n_safeInvoke(mCnt, rm, NULL); if (ptrOk(b)) pCnt = few1n_rdI32(b, 0x10, 0) & 0xFF; }
+        if (mMax) { void* b = few1n_safeInvoke(mMax, rm, NULL); if (ptrOk(b)) pMax = few1n_rdI32(b, 0x10, 0) & 0xFF; }
         NSString *pwdStr = @"(Yok)";
         NSString *mapStr = @"(Bilinmiyor)";
         if (mProps && mGet) {
-            void* ht = i_runtime_invoke(mProps, rm, NULL, NULL);
+            void* ht = few1n_safeInvoke(mProps, rm, NULL);
             if (ptrOk(ht)) {
                 void* kPwd = mkStr(@"pwd");
                 void* a1[1] = { kPwd };
-                void* vPwd = NULL; @try { vPwd = i_runtime_invoke(mGet, ht, a1, NULL); } @catch (...) {}
-                if (ptrOk(vPwd)) { NSString *s = readStr(vPwd); if (s.length) pwdStr = s; }
+                void* vPwd = few1n_safeInvoke(mGet, ht, a1);
+                if (few1n_isStringObj(vPwd)) { NSString *s = readStr(vPwd); if (s.length) pwdStr = s; }
                 void* kMap = mkStr(@"map");
                 void* a2[1] = { kMap };
-                void* vMap = NULL; @try { vMap = i_runtime_invoke(mGet, ht, a2, NULL); } @catch (...) {}
-                if (ptrOk(vMap)) { NSString *s = readStr(vMap); if (s.length) mapStr = s; }
+                void* vMap = few1n_safeInvoke(mGet, ht, a2);
+                if (few1n_isStringObj(vMap)) { NSString *s = readStr(vMap); if (s.length) mapStr = s; }
+                else if (ptrOk(vMap)) { mapStr = [NSString stringWithFormat:@"Harita #%d", few1n_rdI32(vMap, 0x10, 0)]; }
             }
         }
         return [NSString stringWithFormat:@"Oda: %@\nOyuncu: %d / %d\nŞifre (pwd): %@\nHarita (map): %@", rName, pCnt, pMax, pwdStr, mapStr];
@@ -6781,7 +6826,7 @@ static bool few1n_rerollDailyTasks(bool setStreak30) {
     void* cls = few1n_classAnyImage("", "DailyTaskManager");
     if (!cls) return false;
     void* mInst = i_class_get_method_from_name(cls, "gbs", 0);
-    void* dm = mInst ? i_runtime_invoke(mInst, NULL, NULL, NULL) : NULL;
+    void* dm = mInst ? few1n_safeInvoke(mInst, NULL, NULL) : NULL;
     if (!unityAlive(dm)) return false;
     if (setStreak30) {
         void* mSet = i_class_get_method_from_name(cls, "gbv", 1);
@@ -6805,7 +6850,7 @@ static bool few1n_setDroneFilter(int idx) {
     if (!type || !mLix) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         uint8_t on = (idx > 0) ? 1 : 0;
@@ -6840,7 +6885,7 @@ static bool few1n_setRecordMode(bool hideHud, float customFov) {
         void* camType = camCls ? few1n_typeObjOf(camCls) : NULL;
         if (camType) {
             void* a[1] = { camType };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
             void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
             for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -6863,7 +6908,7 @@ static bool few1n_setExtremeGraphics(void) {
     if (!type) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         int q = 5, ref = 3, fps = 120;
@@ -6903,7 +6948,7 @@ static int few1n_repairVehicleBody(bool disableDamage) {
     int repaired = 0;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 32 && items; i++) {
@@ -6927,7 +6972,7 @@ static bool few1n_toggleZeroTo100(bool show) {
     if (!type || !m) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -6945,17 +6990,25 @@ static bool few1n_showGoldPopup(NSString *title, NSString *desc, NSString *rewar
     void* popCls = few1n_classAnyImage("PopupSystem", "Popup");
     void* qtCls  = few1n_classAnyImage("PopupSystem", "qt");
     if (!popCls || !qtCls) return false;
+    void* mGdx  = i_class_get_method_from_name(popCls, "gdx", 0);
     void* mGdz  = i_class_get_method_from_name(popCls, "gdz", 1);
     void* mCtor = i_class_get_method_from_name(qtCls, ".ctor", 3);
     if (!mGdz || !mCtor) return false;
+    // Popup singleton yoksa cagirirsak sahne disinda NullRef atar
+    if (mGdx) {
+        void* inst = few1n_safeInvoke(mGdx, NULL, NULL);
+        if (!unityAlive(inst)) return false;
+    }
     @try {
         void* qt = i_object_new(qtCls);
         if (!ptrOk(qt)) return false;
         void* tStr = mkStr(title ?: @"FEW1N VIP");
         void* dStr = mkStr(desc ?: @"Mod Menu Aktif!");
         void* cArgs[3] = { tStr, dStr, NULL };
-        i_runtime_invoke(mCtor, qt, cArgs, NULL);
-        if (rewardText.length > 0) {
+        bool cc = false;
+        few1n_guardedInvoke(mCtor, qt, cArgs, &cc);
+        if (cc) return false;
+        if (rewardText.length > 0 && few1n_memOk((void*)((uintptr_t)qt + 0x30))) {
             *(void**)((uintptr_t)qt + 0x30) = mkStr(rewardText); // pbl gold reward text
         }
         void* gArgs[1] = { qt };
@@ -6983,7 +7036,7 @@ static bool few1n_applyAvatarDriverMod(int mode) {
     if (!type) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 16 && items; i++) {
@@ -6991,10 +7044,10 @@ static bool few1n_applyAvatarDriverMod(int mode) {
             if (!unityAlive(av)) continue;
             void* settings = *(void**)((uintptr_t)av + 0x38); // AvatarDriverSettings
             void* anim     = *(void**)((uintptr_t)av + 0x40); // Animator
-            void* go = mGetGo ? i_runtime_invoke(mGetGo, av, NULL, NULL) : NULL;
-            void* tr = mGetTr ? i_runtime_invoke(mGetTr, av, NULL, NULL) : NULL;
+            void* go = mGetGo ? few1n_safeInvoke(mGetGo, av, NULL) : NULL;
+            void* tr = mGetTr ? few1n_safeInvoke(mGetTr, av, NULL) : NULL;
             uint8_t act = (mode == 1) ? 0 : 1;
-            if (unityAlive(go) && mSetAct) { void* p[1]={&act}; @try { i_runtime_invoke(mSetAct, go, p, NULL); } @catch (...) {} }
+            if (unityAlive(go) && mSetAct) { void* p[1]={&act}; @try { few1n_safeInvoke(mSetAct, go, p); } @catch (...) {} }
             if (ptrOk(settings)) {
                 *(uint8_t*)((uintptr_t)settings + 0x18) = (mode == 3) ? 0 : 1; // ikActive
                 Vec3 pos = {0.0f, (mode == 4) ? 0.85f : 0.0f, 0.0f};
@@ -7003,12 +7056,12 @@ static bool few1n_applyAvatarDriverMod(int mode) {
             if (unityAlive(anim) && mSetEn) {
                 uint8_t en = (mode == 3) ? 0 : 1;
                 void* p[1] = { &en };
-                @try { i_runtime_invoke(mSetEn, anim, p, NULL); } @catch (...) {}
+                @try { few1n_safeInvoke(mSetEn, anim, p); } @catch (...) {}
             }
             if (unityAlive(tr) && mSetSc) {
                 Vec3 sc = (mode == 2) ? (Vec3){1.65f, 1.65f, 1.65f} : (Vec3){1.0f, 1.0f, 1.0f};
                 void* p[1] = { &sc };
-                @try { i_runtime_invoke(mSetSc, tr, p, NULL); } @catch (...) {}
+                @try { few1n_safeInvoke(mSetSc, tr, p); } @catch (...) {}
             }
         }
         g_avatarModMode = mode;
@@ -7026,7 +7079,7 @@ static bool few1n_recorderAction(int act) {
     if (!unityAlive(rec)) {
         void* oaCls = few1n_classAnyImage("", "RCCP_OtherAddons");
         void* mDnx = oaCls ? i_class_get_method_from_name(oaCls, "dnx", 0) : NULL;
-        if (mDnx) { @try { rec = i_runtime_invoke(mDnx, addons, NULL, NULL); } @catch (...) {} }
+        if (mDnx) { @try { rec = few1n_safeInvoke(mDnx, addons, NULL); } @catch (...) {} }
     }
     if (!unityAlive(rec)) return false;
     void* recCls = few1n_classAnyImage("", "RCCP_Recorder");
@@ -7087,7 +7140,7 @@ static bool few1n_cleanAllSkidmarks(void) {
     if (!type || !mCvd) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -7106,7 +7159,7 @@ static void few1n_applyActiveSpoiler(void) {
     if (!type) return;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         float thresh = (g_activeSpoilerMode == 1) ? 0.0f : 99999.0f;
@@ -7124,7 +7177,7 @@ static bool few1n_detachTrailers(void) {
     if (!type || !mCwd) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 16 && items; i++) {
@@ -7147,12 +7200,12 @@ static void few1n_applyHighwayMods(void) {
             void* type = cls ? few1n_typeObjOf(cls) : NULL;
             if (type) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 uint8_t en = 0;
                 for (int i = 0; i < cnt && i < 32 && items; i++) {
-                    if (unityAlive(items[i])) { void* p[1]={&en}; @try { i_runtime_invoke(mSetEn, items[i], p, NULL); } @catch (...) {} }
+                    if (unityAlive(items[i])) { void* p[1]={&en}; @try { few1n_safeInvoke(mSetEn, items[i], p); } @catch (...) {} }
                 }
             }
         }
@@ -7161,12 +7214,12 @@ static void few1n_applyHighwayMods(void) {
             void* type = cls ? few1n_typeObjOf(cls) : NULL;
             if (type) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 uint8_t en = 0;
                 for (int i = 0; i < cnt && i < 16 && items; i++) {
-                    if (unityAlive(items[i])) { void* p[1]={&en}; @try { i_runtime_invoke(mSetEn, items[i], p, NULL); } @catch (...) {} }
+                    if (unityAlive(items[i])) { void* p[1]={&en}; @try { few1n_safeInvoke(mSetEn, items[i], p); } @catch (...) {} }
                 }
             }
         }
@@ -7183,7 +7236,7 @@ static bool few1n_setWindshieldRainAndWipers(float spawnRate, float spawnAmount,
             void* rType = rCls ? few1n_typeObjOf(rCls) : NULL;
             if (rType) {
                 void* a[1] = { rType };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 for (int i = 0; i < cnt && i < 8 && items; i++) {
@@ -7200,7 +7253,7 @@ static bool few1n_setWindshieldRainAndWipers(float spawnRate, float spawnAmount,
             void* mEzt = wCls ? i_class_get_method_from_name(wCls, "ezt", 1) : NULL;
             if (wType && mEzt) {
                 void* a[1] = { wType };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 int wm = wiperMode;
@@ -7229,7 +7282,7 @@ static bool few1n_setMirrorReflections(bool ultraMirror) {
         void* spType = spCls ? few1n_typeObjOf(spCls) : NULL;
         if (spType) {
             void* a[1] = { spType };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
             void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
             for (int i = 0; i < cnt && i < 8 && items; i++) {
@@ -7271,7 +7324,7 @@ static bool few1n_syncCarScaleEveryone(float sx, float sy, float sz) {
     int applied = 0;
     @try {
         void* a[1] = { ssType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         Vec3 sc = { sx, sy, sz };
@@ -7281,13 +7334,13 @@ static bool few1n_syncCarScaleEveryone(float sx, float sy, float sz) {
             // syncScale = XYZ (0) so SmoothSync streams scale changes continuously
             *(int*)((uintptr_t)ss + 0x98) = 0;
             *(float*)((uintptr_t)ss + 0x48) = 0.001f; // sendScaleThreshold
-            void* tr = i_runtime_invoke(mGetTr, ss, NULL, NULL);
+            void* tr = few1n_safeInvoke(mGetTr, ss, NULL);
             Vec3 pos = {0,0,0}, rot = {0,0,0};
             if (unityAlive(tr)) {
                 void* pArgs[1] = { &sc };
-                @try { i_runtime_invoke(mSetSc, tr, pArgs, NULL); } @catch (...) {}
-                if (mGetPos) { void* b = i_runtime_invoke(mGetPos, tr, NULL, NULL); if (ptrOk(b)) pos = *(Vec3*)((uintptr_t)b + 0x10); }
-                if (mGetEul) { void* b = i_runtime_invoke(mGetEul, tr, NULL, NULL); if (ptrOk(b)) rot = *(Vec3*)((uintptr_t)b + 0x10); }
+                @try { few1n_safeInvoke(mSetSc, tr, pArgs); } @catch (...) {}
+                if (mGetPos) { void* b = few1n_safeInvoke(mGetPos, tr, NULL); if (ptrOk(b)) pos = *(Vec3*)((uintptr_t)b + 0x10); }
+                if (mGetEul) { void* b = few1n_safeInvoke(mGetEul, tr, NULL); if (ptrOk(b)) rot = *(Vec3*)((uintptr_t)b + 0x10); }
             }
             void* pv = few1n_myPhotonView();
             if (ptrOk(pv)) {
@@ -7327,7 +7380,7 @@ static void few1n_applyEngineAudioMod(void) {
             void* type = few1n_typeObjOf(cls);
             if (!type) continue;
             void* a[1] = { type };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
             void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
             for (int i = 0; i < cnt && i < 16 && items; i++) {
@@ -7347,7 +7400,7 @@ static void few1n_applyAeroDynamics(void) {
     if (!type) return;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 16 && items; i++) {
@@ -7391,7 +7444,7 @@ static int few1n_setAllTrafficPlates(NSString *plateText) {
     void* tStr = mkStr(plateText.length ? plateText : @"FEW1N");
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 64 && items; i++) {
@@ -7416,7 +7469,7 @@ static void few1n_applyWeatherVisuals(void) {
             void* type = cls ? few1n_typeObjOf(cls) : NULL;
             if (type) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 for (int i = 0; i < cnt && i < 16 && items; i++) {
@@ -7432,7 +7485,7 @@ static void few1n_applyWeatherVisuals(void) {
             void* type = cls ? few1n_typeObjOf(cls) : NULL;
             if (type) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -7455,7 +7508,7 @@ static void few1n_applyCamBlurAndSharpen(void) {
             void* type = cls ? few1n_typeObjOf(cls) : NULL;
             if (type) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -7477,7 +7530,7 @@ static void few1n_applyCamBlurAndSharpen(void) {
             void* type = cls ? few1n_typeObjOf(cls) : NULL;
             if (type) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -7501,7 +7554,7 @@ static bool few1n_triggerSocialRewards(void) {
     if (!type) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 8 && items; i++) {
@@ -7529,11 +7582,11 @@ static void few1n_applyHapticsMod(void) {
             void* type = cls ? few1n_typeObjOf(cls) : NULL;
             if (!type) continue;
             void* a[1] = { type };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
             void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
             for (int i = 0; i < cnt && i < 8 && items; i++) {
-                if (unityAlive(items[i])) { void* p[1]={&off}; @try { i_runtime_invoke(mSetEn, items[i], p, NULL); } @catch (...) {} }
+                if (unityAlive(items[i])) { void* p[1]={&off}; @try { few1n_safeInvoke(mSetEn, items[i], p); } @catch (...) {} }
             }
         }
     } @catch (...) {}
@@ -7549,12 +7602,12 @@ static NSString* few1n_getDeviceInfoDisplay(void) {
     if (!type || !mFuj) return @"DeviceInfoDisplay.fuj yok.";
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 4 && items; i++) {
             if (!unityAlive(items[i])) continue;
-            void* s = i_runtime_invoke(mFuj, items[i], NULL, NULL);
+            void* s = few1n_safeInvoke(mFuj, items[i], NULL);
             if (ptrOk(s)) return readStr(s);
         }
     } @catch (...) {}
@@ -7571,12 +7624,12 @@ static void few1n_applyBombFreeze(void) {
     if (!type || !mSetEn) return;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         uint8_t off = 0;
         for (int i = 0; i < cnt && i < 8 && items; i++) {
-            if (unityAlive(items[i])) { void* p[1]={&off}; @try { i_runtime_invoke(mSetEn, items[i], p, NULL); } @catch (...) {} }
+            if (unityAlive(items[i])) { void* p[1]={&off}; @try { few1n_safeInvoke(mSetEn, items[i], p); } @catch (...) {} }
         }
     } @catch (...) {}
 }
@@ -7595,7 +7648,7 @@ static bool few1n_setHiddenCameraMode(int mode, float tpsDist, float tpsHeight) 
     if (!type || !mCiu) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -7620,7 +7673,7 @@ static void few1n_applyNoCameraShake(void) {
         void* t1 = c1 ? few1n_typeObjOf(c1) : NULL;
         if (t1) {
             void* a[1] = { t1 };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
             void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
             for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -7635,7 +7688,7 @@ static void few1n_applyNoCameraShake(void) {
         void* t2 = c2 ? few1n_typeObjOf(c2) : NULL;
         if (t2) {
             void* a[1] = { t2 };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
             void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
             for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -7678,7 +7731,7 @@ static bool few1n_boostHighwayNearMiss(void) {
     if (!type) return false;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 8 && items; i++) {
@@ -7706,12 +7759,12 @@ static void few1n_applySmokeAndLensFlare(void) {
             void* mSetEn = behCls ? i_class_get_method_from_name(behCls, "set_enabled", 1) : NULL;
             if (type && mSetEn) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 uint8_t off = 0;
                 for (int i = 0; i < cnt && i < 16 && items; i++) {
-                    if (unityAlive(items[i])) { void* p[1]={&off}; @try { i_runtime_invoke(mSetEn, items[i], p, NULL); } @catch (...) {} }
+                    if (unityAlive(items[i])) { void* p[1]={&off}; @try { few1n_safeInvoke(mSetEn, items[i], p); } @catch (...) {} }
                 }
             }
         }
@@ -7720,7 +7773,7 @@ static void few1n_applySmokeAndLensFlare(void) {
             void* type = cls ? few1n_typeObjOf(cls) : NULL;
             if (type) {
                 void* a[1] = { type };
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
                 void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
                 float val = (g_lensFlareMode == 1) ? 0.0f : 6.0f;
@@ -7763,7 +7816,7 @@ static void few1n_applyShowroomCamFree(float customDist) {
     if (!type) return;
     @try {
         void* a[1] = { type };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 4 && items; i++) {
@@ -7805,7 +7858,7 @@ static int few1n_remoteScaleOrFlipActor(int targetActor, float sx, float sy, flo
     int hit = 0;
     @try {
         void* a[1] = { ssType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         Vec3 sc = { sx, sy, sz };
@@ -7818,16 +7871,16 @@ static int few1n_remoteScaleOrFlipActor(int targetActor, float sx, float sy, flo
             if (few1n_pvIsMineFor(ss)) continue; // kendi aracimiza dokunma
             void* pv = mbp_getPhotonView(ss);
             if (!ptrOk(pv)) continue;
-            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+            void* box = NULL; @try { box = few1n_safeInvoke(mOwner, pv, NULL); } @catch (...) {}
             int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
             if (targetActor > 0 && act != targetActor) continue;
 
-            void* tr = i_runtime_invoke(mGetTr, ss, NULL, NULL);
+            void* tr = few1n_safeInvoke(mGetTr, ss, NULL);
             Vec3 pos = {0, 0, 0}, rot = {0, 0, 0};
             if (unityAlive(tr)) {
-                if (mGetPos) { void* b = i_runtime_invoke(mGetPos, tr, NULL, NULL); if (ptrOk(b)) pos = *(Vec3*)((uintptr_t)b + 0x10); }
-                if (mGetEul) { void* b = i_runtime_invoke(mGetEul, tr, NULL, NULL); if (ptrOk(b)) rot = *(Vec3*)((uintptr_t)b + 0x10); }
-                if (!flip180 && mSetSc) { void* p[1]={&sc}; @try { i_runtime_invoke(mSetSc, tr, p, NULL); } @catch (...) {} }
+                if (mGetPos) { void* b = few1n_safeInvoke(mGetPos, tr, NULL); if (ptrOk(b)) pos = *(Vec3*)((uintptr_t)b + 0x10); }
+                if (mGetEul) { void* b = few1n_safeInvoke(mGetEul, tr, NULL); if (ptrOk(b)) rot = *(Vec3*)((uintptr_t)b + 0x10); }
+                if (!flip180 && mSetSc) { void* p[1]={&sc}; @try { few1n_safeInvoke(mSetSc, tr, p); } @catch (...) {} }
             }
             if (flip180) { pos.y += 1.8f; rot.z = 180.0f; sc = (Vec3){1.0f, 1.0f, 1.0f}; }
 
@@ -7872,7 +7925,7 @@ static int few1n_remoteRespawnGhostActor(int targetActor) {
     int hit = 0;
     @try {
         void* a[1] = { rcType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         void* rpcName = mkStr(@"SetState");
@@ -7882,7 +7935,7 @@ static int few1n_remoteRespawnGhostActor(int targetActor) {
             if (!unityAlive(rc)) continue;
             void* pv = mbp_getPhotonView(rc);
             if (!ptrOk(pv)) continue;
-            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+            void* box = NULL; @try { box = few1n_safeInvoke(mOwner, pv, NULL); } @catch (...) {}
             int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
             if (targetActor > 0 && act != targetActor) continue;
             void* oArr = i_array_new(objCls, 0);
@@ -7910,18 +7963,18 @@ static bool few1n_setRoomWeatherEveryone(float rainVal, float lightVal) {
     @try {
         void* ht = i_object_new(htCls);
         if (!ptrOk(ht)) return false;
-        i_runtime_invoke(htCtor, ht, NULL, NULL);
+        few1n_safeInvoke(htCtor, ht, NULL);
         if (rainVal >= 0.0f) {
             void* k = mkStr(@"WeatherRain");
             void* v = i_value_box(fltCls, &rainVal);
             void* a[2] = { k, v };
-            i_runtime_invoke(htSet, ht, a, NULL);
+            few1n_safeInvoke(htSet, ht, a);
         }
         if (lightVal >= 0.0f) {
             void* k = mkStr(@"WeatherLighting");
             void* v = i_value_box(fltCls, &lightVal);
             void* a[2] = { k, v };
-            i_runtime_invoke(htSet, ht, a, NULL);
+            few1n_safeInvoke(htSet, ht, a);
         }
         void* pArgs[3] = { ht, NULL, NULL };
         bool crashed = false;
@@ -7960,7 +8013,7 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
     if (tType && tApp) {
         @try {
             void* a[1] = { tType };
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
             void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
             for (int i = 0; i < cnt && i < 64 && items; i++) {
@@ -7969,10 +8022,10 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
                 void* pv = NULL;
                 if (g_mGetCompInParent && g_photonViewType) {
                     uint8_t inc = 1; void* pa[2] = { g_photonViewType, &inc };
-                    @try { pv = i_runtime_invoke(g_mGetCompInParent, tn, pa, NULL); } @catch (...) {}
+                    @try { pv = few1n_safeInvoke(g_mGetCompInParent, tn, pa); } @catch (...) {}
                 }
                 if (!ptrOk(pv)) continue;
-                void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+                void* box = NULL; @try { box = few1n_safeInvoke(mOwner, pv, NULL); } @catch (...) {}
                 int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
                 if (targetActor > 0 && act != targetActor) continue;
 
@@ -8002,7 +8055,7 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
     void* myLP = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
     @try {
         void* a[1] = { tmType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 64 && items; i++) {
@@ -8010,7 +8063,7 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
             if (!unityAlive(tm) || few1n_pvIsMineFor(tm)) continue;
             void* pv = mbp_getPhotonView(tm);
             if (!ptrOk(pv)) continue;
-            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+            void* box = NULL; @try { box = few1n_safeInvoke(mOwner, pv, NULL); } @catch (...) {}
             int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
             if (targetActor > 0 && act != targetActor) continue;
 
@@ -8196,12 +8249,12 @@ static void few1n_triggerHorn(void) {
     if (!mCrk || !imType) return;
     @try {
         void* a[1] = { imType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return;
         int n = few1n_rdI32(arr, 0x18, 0);
         if (n <= 0 || n > 8) return;
         void* im = few1n_rdPtr(arr, 0x20);
-        if (unityAlive(im)) i_runtime_invoke(mCrk, im, NULL, NULL);
+        if (unityAlive(im)) few1n_safeInvoke(mCrk, im, NULL);
     } @catch (...) {}
 }
 
@@ -8357,7 +8410,7 @@ static NSString* few1n_writeFieldOnAllOfClass(NSString *className, NSString *fie
     if (!typeObj) return @"typeObj yok";
     @try {
         void* a[1]; a[0] = typeObj;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return @"instance yok";
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt <= 0 || cnt > 128) return [NSString stringWithFormat:@"cnt anormal %d", cnt];
@@ -8695,7 +8748,7 @@ static void h_tmp_setText_sb(void* self, void* sourceText) {
                 if (sbCls) mToStr = i_class_get_method_from_name(sbCls, "ToString", 0);
             }
             if (mToStr) {
-                void* ilStr = i_runtime_invoke(mToStr, sourceText, NULL, NULL);
+                void* ilStr = few1n_safeInvoke(mToStr, sourceText, NULL);
                 if (ptrOk(ilStr)) {
                     NSString *s = readStr(ilStr);
                     if (s && [s containsString:@"<noparse>"] && ([s containsString:@"<color"] || [s containsString:@"<#"] || [s containsString:@"<b>"])) {
@@ -9168,7 +9221,7 @@ static void few1n_pollPasswordPrefill(void) {
         void* panel = *(void**)((uintptr_t)lobby + OFFR_LOBBY_PWDPANEL);
         if (!unityAlive(panel)) { g_pwdFilledForRoom = NULL; return; }
         if (g_mGoActiveInHierarchy && i_runtime_invoke) {
-            void* box = i_runtime_invoke(g_mGoActiveInHierarchy, panel, NULL, NULL);
+            void* box = few1n_safeInvoke(g_mGoActiveInHierarchy, panel, NULL);
             bool active = box && *(unsigned char*)((uintptr_t)box + 0x10);
             if (!active) { g_pwdFilledForRoom = NULL; return; }
         }
@@ -9178,7 +9231,7 @@ static void few1n_pollPasswordPrefill(void) {
         // pendRoom'a ait RoomListLine'i bul -> cached sifresini oku
         if (!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke) return;
         void* a[1]; a[0] = g_roomLineType;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 0 || cnt > 256) return;
@@ -10724,7 +10777,7 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"🌧️  Manuel Cam Yağmuru & Silecek Hızı (#35)" color:C_CYAN atY:y action:@selector(v15RainWipersMenu)];
     y = [self toggle:@"🪞  Gerçek Zamanlı Ayna Yansıma (#35)" sub:@"6-yüz/frame sınırsız gerçek zamanlı araç yansıması" key:@"ultramirror" atY:y action:@selector(tapUltraMirror)];
 
-    y = [self header:@"🌟  EXTRA MEGA PACK (#36–#46)" atY:y];
+    y = [self header:@"🌟  EXTRA MEGA PACK (#36–#52)" atY:y];
     y = [self actionRow:@"🦖  Dev / Mini / Yassı Araba (#36 — HERKESTE)" color:C_GOLD atY:y action:@selector(v16SyncedCarScaleMenu)];
     y = [self actionRow:@"🔊  Süperşarj / Turbo / Şanzıman Ses Modu (#37)" color:C_ON atY:y action:@selector(v16EngineAudioMenu)];
     y = [self toggle:@"🏎️  F1 Downforce & Sıfır Hava Direnci (#38)" sub:@"5000 Downforce (yola yapışır), 0 rüzgar direnci, anında düzelme" key:@"f1downforce" atY:y action:@selector(tapF1Downforce)];
@@ -10747,7 +10800,7 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"🌍  Photon Sunucu Bölgesi Değiştir (EU/RU/US/TR #51)" color:C_ON atY:y action:@selector(v17RegionSwitchMenu)];
     y = [self actionRow:@"🏛️  Garaj Showroom Kamera Kilidi Kaldır (#52)" color:C_CYAN atY:y action:@selector(v17ShowroomCamMenu)];
 
-    y = [self header:@"👑  DİĞER OYUNCULARDA DEĞİŞTİR (#53–#57)" atY:y];
+    y = [self header:@"👑  DİĞER OYUNCULARDA DEĞİŞTİR (#53–#58)" atY:y];
     y = [self actionRow:@"🦖  Başkasının / Herkesin Araba Boyutunu Değiştir (#53)" color:C_RED atY:y action:@selector(v18RemoteScaleMenu)];
     y = [self actionRow:@"🙃  Başkasının / Herkesin Arabasını Ters Çevir 180° (#54)" color:C_RED atY:y action:@selector(v18RemoteFlipMenu)];
     y = [self actionRow:@"👻  Başkasının / Herkesin Aracında Respawn Hayalet (#55)" color:C_GOLD atY:y action:@selector(v18RemoteGhostMenu)];
@@ -11278,7 +11331,7 @@ static UIViewController* few1n_topVC(void) {
                 rbGetPosIl(g_rb, &savedPos);
                 rbGetVelIl(g_rb, &savedVel);
                 void* args[2]; args[0] = g_carPhotonSyncTypeObj; bool inc = true; args[1] = &inc;
-                void* cps = i_runtime_invoke(g_mGetCompInParent, g_rb, args, NULL);
+                void* cps = few1n_safeInvoke(g_mGetCompInParent, g_rb, args);
                 if (ptrOk(cps)) {
                     Vec3 crashV = {9999999.0f, 9999999.0f, 9999999.0f};
                     Quaternion crashQ = {99999.0f, 99999.0f, 99999.0f, 99999.0f};
@@ -11541,7 +11594,7 @@ static UIViewController* few1n_topVC(void) {
         if (!nm || nm.length == 0) { FLog(@"Bos isim"); return; }
         @try {
             void* a[1]; a[0] = g_lobbyDummyType;
-            void* larr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* larr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (!ptrOk(larr)) { FLog(@"Lobi yoneticisi yok"); return; }
             int lc = (int)(*(uintptr_t*)((uintptr_t)larr + 0x18));
             if (lc <= 0) { FLog(@"Lobi yoneticisi bulunamadi"); return; }
@@ -11550,7 +11603,7 @@ static UIViewController* few1n_topVC(void) {
             void* ns = mkStr(nm);
             if (!ns) return;
             *(void**)((uintptr_t)mgr + OFFR_DUMMY_KICKNAME) = ns;
-            @try { i_runtime_invoke(g_mDummyKick, mgr, NULL, NULL); } @catch (...) {}
+            @try { few1n_safeInvoke(g_mDummyKick, mgr, NULL); } @catch (...) {}
             FLog([NSString stringWithFormat:@"'%@' icin KickPlayerRPC gonderildi -> dusmeli", nm]);
         } @catch (...) { FLog(@"Gercek kick hatasi"); }
     }]];
@@ -11794,7 +11847,7 @@ static UIViewController* few1n_topVC(void) {
                             if (nsStr) {
                                 *(void**)((uintptr_t)mgr + OFFR_DUMMY_KICKNAME) = nsStr;
                                 @try {
-                                    i_runtime_invoke(g_mDummyKick, mgr, NULL, NULL);
+                                    few1n_safeInvoke(g_mDummyKick, mgr, NULL);
                                     successCount++;
                                     FLog(@"  ✓ Metod A: LobbyDummy.KickPlayerRPC gonderildi");
                                 } @catch (...) { FLog(@"  ✗ Metod A: RPC exception"); }
@@ -11880,7 +11933,7 @@ static UIViewController* few1n_topVC(void) {
     if (!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke || !pn_joinRoom) { FLog(@"Goz at hazir degil (oda listesine gir)"); return; }
     @try {
         void* a[1]; a[0] = g_roomLineType;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         if (!ptrOk(arr)) { FLog(@"Oda listesi yok"); return; }
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt < 0 || cnt > 128) { FLog(@"Oda sayisi anormal"); return; }
@@ -11949,7 +12002,7 @@ static UIViewController* few1n_topVC(void) {
     if (!g_roomLineType || !g_mFindObjectsPlural || !i_runtime_invoke) { FLog(@"Sifre kirici hazir degil (oda listesine gir)"); return; }
     @try {
         void* a[1]; a[0] = g_roomLineType;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? (int)(*(uintptr_t*)((uintptr_t)arr + 0x18)) : 0;
         if (cnt < 0 || cnt > 128) cnt = 0;
         void** lines = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
@@ -12022,7 +12075,7 @@ static UIViewController* few1n_topVC(void) {
         // Field-read (metod cagirmaz) -> cokme YOK. IsMine@0x68 ile kendi araban elenir.
         if (g_photonViewType && g_isMineOff > 0 && g_pvOwnerOff > 0 && g_mFindObjectsPlural && i_runtime_invoke) {
             void* a[1]; a[0] = g_photonViewType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (ptrOk(arr)) {
                 int n = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
                 if (n > 0 && n <= 512) {
@@ -13125,7 +13178,7 @@ static NSString* rainbowWrap(NSString* text, int idx) {
     if (!g_wgType || !g_mFindObjectsPlural || !i_runtime_invoke) return;
     @try {
         void* a1[1]; a1[0] = g_wgType;
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a1, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a1);
         if (!ptrOk(arr)) return;
         int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
         if (cnt <= 0 || cnt > 256) return;
@@ -14276,7 +14329,7 @@ static NSString* few1n_scenePathByBuildIndex(int idx) {
         FLog([NSString stringWithFormat:@"🗺️ SceneUtility.GetScenePathByBuildIndex=%p", mGet]);
     }
     if (!mGet || !i_runtime_invoke) return nil;
-    @try { void* a[1] = { &idx }; void* s = i_runtime_invoke(mGet, NULL, a, NULL); return readStr(s); } @catch (...) {}
+    @try { void* a[1] = { &idx }; void* s = few1n_safeInvoke(mGet, NULL, a); return readStr(s); } @catch (...) {}
     return nil;
 }
 // isim -> build index. Build sahne listesini tarar, dosya adini isimle eslestirir.
@@ -14309,7 +14362,7 @@ static bool few1n_hideLoadingScreen(void) {
         if (!cls || !mGet || !mSet) { FLog(@"🖼️ HR_LoadingScreen henuz bulunamadi (cls/ejg/SetState)"); return false; }
     }
     @try {
-        void* inst = i_runtime_invoke(mGet, NULL, NULL, NULL);   // static -> HR_LoadingScreen instance
+        void* inst = few1n_safeInvoke(mGet, NULL, NULL);   // static -> HR_LoadingScreen instance
         if (!ptrOk(inst)) return false;
         bool no = false; void* args[1] = { &no };
         bool cr = false; few1n_guardedInvoke(mSet, inst, args, &cr);   // SetState(false), crash-guard'li
@@ -14981,7 +15034,7 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
                     if (g_mRoomSetName && i_runtime_invoke && nameStr) {
                         @try {
                             void* args[1]; args[0] = nameStr;
-                            i_runtime_invoke(g_mRoomSetName, room, args, NULL);
+                            few1n_safeInvoke(g_mRoomSetName, room, args);
                             FLog(@"✓ Metod 2 Room.set_Name(string) invoke edildi (sunucu push)");
                         } @catch (...) { FLog(@"✗ Metod 2 Room.set_Name exception"); }
                     } else FLog(@"- Metod 2 g_mRoomSetName YOK");
@@ -14997,7 +15050,7 @@ static void few1n_startCarCloneAttempt(NSString *scene) {
                             if (ht && ptrOk(room) && g_mRoomSetCustomProperties && i_runtime_invoke) {
                                 @try {
                                     void *args[3] = { ht, NULL, NULL };
-                                    void *ret = i_runtime_invoke(g_mRoomSetCustomProperties, room, args, NULL);
+                                    void *ret = few1n_safeInvoke(g_mRoomSetCustomProperties, room, args);
                                     bool ok = few1n_unboxBool(ret);
                                     FLog([NSString stringWithFormat:@"🎨 Oda ismi server sync: SetCustomProperties(customName='%@') → %s", newName, ok?"OK":"FAIL"]);
                                 } @catch (...) { FLog(@"🎨 SetCustomProperties exception"); }
@@ -15329,7 +15382,7 @@ static NSString* few1n_roomPasswordPropertyKey(void) {
             if (ptrOk(room) && ht && g_mRoomSetCustomProperties && i_runtime_invoke) {
                 void *args[3] = { ht, NULL, NULL };
                 @try {
-                    void *ret = i_runtime_invoke(g_mRoomSetCustomProperties, room, args, NULL);
+                    void *ret = few1n_safeInvoke(g_mRoomSetCustomProperties, room, args);
                     // Boxed bool: Il2CppObject header (0x10) + value (bool byte)
                     if (ret) accepted = *(unsigned char*)((uintptr_t)ret + 0x10) != 0;
                 } @catch (...) { FLog(@"🔑 SetCustomProperties exception"); }
@@ -15343,7 +15396,7 @@ static NSString* few1n_roomPasswordPropertyKey(void) {
                 if (arr) {
                     void *args2[1] = { arr };
                     @try {
-                        i_runtime_invoke(g_mRoomSetPropertiesListedInLobby, room, args2, NULL);
+                        few1n_safeInvoke(g_mRoomSetPropertiesListedInLobby, room, args2);
                         FLog([NSString stringWithFormat:@"🔑 pWd propertiesListedInLobby'ye eklendi"]);
                     } @catch (...) { FLog(@"🔑 SetPropertiesListedInLobby exception"); }
                 }
@@ -15616,7 +15669,7 @@ static void* few1n_getMainMenu(void) {
 static bool few1n_invoke0(void* method, void* obj, const char* label) {
     if (!method || !i_runtime_invoke) { FLog([NSString stringWithFormat:@"%s: metod yok", label]); return false; }
     if (!obj) { FLog([NSString stringWithFormat:@"%s: nesne yok", label]); return false; }
-    @try { i_runtime_invoke(method, obj, NULL, NULL); FLog([NSString stringWithFormat:@"%s: calisti", label]); return true; }
+    @try { few1n_safeInvoke(method, obj, NULL); FLog([NSString stringWithFormat:@"%s: calisti", label]); return true; }
     @catch (...) { FLog([NSString stringWithFormat:@"%s: cagri hatasi", label]); return false; }
 }
 
@@ -16459,7 +16512,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
                 @try {
                     if (g_roomLineType && g_mFindObjectsPlural && i_runtime_invoke) {
                         void* aRL[1]; aRL[0] = g_roomLineType;
-                        void* rlarr = i_runtime_invoke(g_mFindObjectsPlural, NULL, aRL, NULL);
+                        void* rlarr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, aRL);
                         if (ptrOk(rlarr)) {
                             int rcnt = (int)(*(uintptr_t*)((uintptr_t)rlarr + 0x18));
                             if (rcnt > 0 && rcnt < 256) {
@@ -16524,7 +16577,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
     if (g_roomLineType && g_mFindObjectsPlural && i_runtime_invoke) {
         @try {
             void* a[1]; a[0] = g_roomLineType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (ptrOk(arr)) {
                 int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
                 if (cnt > 0 && cnt < 256) {
@@ -16595,7 +16648,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
         @try {
             if (g_hrLobbyMgrDummyType && g_offRoomListPanel > 0 && g_mGoSetActive && g_mFindObjectsPlural && i_runtime_invoke) {
                 void* a[1]; a[0] = g_hrLobbyMgrDummyType;
-                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
                 if (ptrOk(arr)) {
                     int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
                     if (cnt > 0 && cnt < 8) {
@@ -16606,7 +16659,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
                             if (ptrOk(panel)) {
                                 bool activate = true;
                                 void* args[1]; args[0] = &activate;
-                                i_runtime_invoke(g_mGoSetActive, panel, args, NULL);
+                                few1n_safeInvoke(g_mGoSetActive, panel, args);
                                 FLog(@"🌐 roomListPanel SetActive(true) - oda listesi ekrani goruntulendi");
                             }
                         }
@@ -16700,7 +16753,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
     if (g_roomLineType && g_mFindObjectsPlural && i_runtime_invoke) {
         @try {
             void* a[1]; a[0] = g_roomLineType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
             if (ptrOk(arr)) {
                 int cnt = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
                 if (cnt > 0 && cnt < 256) {
@@ -17844,8 +17897,8 @@ static void few1n_joinTargetRoom(NSString *nm) {
         for (int i = 0; i < cnt && i < 20 && pls; i++) {
             void* p = pls[i]; if (!ptrOk(p)) continue;
             NSString *nm = @"Oyuncu"; int act = -1;
-            if (mNick) { void* s = i_runtime_invoke(mNick, p, NULL, NULL); if (ptrOk(s)) nm = readStr(s); }
-            if (mAct)  { void* b = i_runtime_invoke(mAct,  p, NULL, NULL); if (ptrOk(b)) act = *(int*)((uintptr_t)b + 0x10); }
+            if (mNick) { void* s = few1n_safeInvoke(mNick, p, NULL); if (ptrOk(s)) nm = readStr(s); }
+            if (mAct)  { void* b = few1n_safeInvoke(mAct, p, NULL); if (ptrOk(b)) act = *(int*)((uintptr_t)b + 0x10); }
             if (act > 0) {
                 [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎯 %@ (#%d)", nm, act] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
                     g_magnetOrbitActor = act; isMagnetOrbitEnabled = true;
@@ -17917,7 +17970,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
     void* rccpType = rccpCls ? few1n_typeObjOf(rccpCls) : NULL;
     if (rccpType && g_mFindObjectsPlural && i_runtime_invoke) {
         void* a[1] = { rccpType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
         int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
         void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
         for (int i = 0; i < cnt && i < 16 && items; i++) {
@@ -18266,9 +18319,14 @@ static void few1n_joinTargetRoom(NSString *nm) {
 // v117.18 REMOTE & ROOM-WIDE SYNC UI HANDLERS (#53 - #57)
 // ============================================================================
 - (void)v18PickPlayer:(NSString*)title onPick:(void(^)(int actorNr, NSString* name))cb {
+    void (^fire)(int, NSString*) = ^(int a, NSString* n){
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (cb) cb(a, n);
+        });
+    };
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:title
         message:@"Hedef oyuncuyu veya tüm odayı seç:" preferredStyle:UIAlertControllerStyleActionSheet];
-    [ac addAction:[UIAlertAction actionWithTitle:@"🌐 TÜM ODA (Herkese Uygula)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){ cb(-1, @"Tüm Oda"); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌐 TÜM ODA (Herkese Uygula)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){ fire(-1, @"Tüm Oda"); }]];
     if (pn_getPlayerListOthers && i_runtime_invoke) {
         void* others = NULL; @try { others = pn_getPlayerListOthers(); } @catch (...) {}
         void* plyCls = few1n_classAnyImage("Photon.Realtime", "Player");
@@ -18279,10 +18337,10 @@ static void few1n_joinTargetRoom(NSString *nm) {
             void* p = few1n_rdPtr(others, 0x20 + (uintptr_t)i * sizeof(void*));
             if (!ptrOk(p)) continue;
             NSString *nm = @"Oyuncu"; int act = -1;
-            if (mNick) { bool c=false; void* s = few1n_guardedInvoke(mNick, p, NULL, &c); if (!c && ptrOk(s)) nm = readStr(s); }
+            if (mNick) { bool c=false; void* s = few1n_guardedInvoke(mNick, p, NULL, &c); if (!c && few1n_isStringObj(s)) nm = readStr(s); }
             if (mAct)  { bool c=false; void* b = few1n_guardedInvoke(mAct,  p, NULL, &c); if (!c && ptrOk(b)) act = few1n_rdI32(b, 0x10, -1); }
             if (act > 0) {
-                [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎯 %@ (#%d)", nm, act] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ cb(act, nm); }]];
+                [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎯 %@ (#%d)", nm, act] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ fire(act, nm); }]];
             }
         }
     }
@@ -18407,7 +18465,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
         rbGetVelIl(g_rb, &savedVel);
         // Kendi CPS'inden NaN RPC gonder (ag uzerinden diger clientlara gider)
         void* args[2]; args[0] = g_carPhotonSyncTypeObj; bool inc = true; args[1] = &inc;
-        void* cps = i_runtime_invoke(g_mGetCompInParent, g_rb, args, NULL);
+        void* cps = few1n_safeInvoke(g_mGetCompInParent, g_rb, args);
         if (ptrOk(cps)) {
             Vec3 nan = {nanf(""), nanf(""), nanf("")};
             Quaternion nanQ = {nanf(""), nanf(""), nanf(""), nanf("")};
@@ -18542,7 +18600,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
         // 2) Kendi CPS'inden Exploit RPC gönder
         if (unityAlive(g_rb) && g_carPhotonSyncTypeObj && g_mGetCompInParent && i_runtime_invoke && cps_TeleportCar_RPC) {
             void* args[2]; args[0] = g_carPhotonSyncTypeObj; bool inc = true; args[1] = &inc;
-            void* cps = i_runtime_invoke(g_mGetCompInParent, g_rb, args, NULL);
+            void* cps = few1n_safeInvoke(g_mGetCompInParent, g_rb, args);
             if (ptrOk(cps)) {
                 cps_TeleportCar_RPC(cps, crashV, crashQ, NULL);
             }
@@ -18595,7 +18653,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
         // 4) Sahnedeki TÜM PhotonView nesnelerine Teleport RPC Düşürme paketi
         if (g_photonViewType && g_mFindObjectsPlural && i_runtime_invoke) {
             void* b[1]; b[0] = g_photonViewType;
-            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, b, NULL);
+            void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, b);
             if (ptrOk(arr)) {
                 int c = (int)(*(uintptr_t*)((uintptr_t)arr + 0x18));
                 void** pvs = (void**)((uintptr_t)arr + 0x20);
@@ -18605,7 +18663,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
                     Quaternion crashQ = {99999.0f, 99999.0f, 99999.0f, 99999.0f};
                     if (g_carPhotonSyncTypeObj && g_mGetCompInParent && cps_TeleportCar_RPC) {
                         void* args[2]; args[0] = g_carPhotonSyncTypeObj; bool inc = true; args[1] = &inc;
-                        void* cps = i_runtime_invoke(g_mGetCompInParent, pv, args, NULL);
+                        void* cps = few1n_safeInvoke(g_mGetCompInParent, pv, args);
                         if (ptrOk(cps)) {
                             cps_TeleportCar_RPC(cps, crashV, crashQ, NULL);
                         }
