@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.13
+#define FEW1N_VERSION 117.14
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -2047,7 +2047,10 @@ static void few1n_sbReplace(void* sb, NSString* oldS, NSString* newS) {
     static void* m = NULL;
     if (!m) {
         void* klass = few1n_classAnyImage("System.Text", "StringBuilder");
-        if (klass) m = i_class_get_method_from_name(klass, "Replace", 2);
+        if (klass) {
+            const char* prm[2] = { "String", "String" };
+            m = few1n_methodBySig(klass, "StringBuilder", prm, 2, 0);
+        }
     }
     if (m && i_runtime_invoke) {
         void* o = mkStr(oldS);
@@ -2078,7 +2081,7 @@ static void w_chat_klv(void* self) {
     }
 }
 
-// v117.13: ChatUI (allText, ozh, input) richText kilidini guvenli ac (Queue bellek yuruyusu YOK)
+// v117.14: ChatUI (allText, ozh, input) richText kilidini ac + oza <noparse> temizle (sideload uyumlu)
 static void few1n_enableChatRichText(void) {
     if (!i_runtime_invoke) return;
     @try {
@@ -2101,6 +2104,26 @@ static void few1n_enableChatRichText(void) {
             *(unsigned char*)((uintptr_t)inp + 0x221) = 1; // m_RichText
             *(unsigned char*)((uintptr_t)inp + 0x2D2) = 1; // m_isRichTextEditingAllowed
             *(int*)((uintptr_t)inp + 0x188) = 0;           // m_CharacterValidation = None
+        }
+        // Sideload/hookless fallback: oza StringBuilder icinde renkli tag varsa <noparse> kaldir
+        void* oza = *(void**)((uintptr_t)cm + 0x58); // StringBuilder
+        if (ptrOk(oza)) {
+            static void* mToStr = NULL;
+            if (!mToStr) {
+                void* sbCls = few1n_classAnyImage("System.Text", "StringBuilder");
+                if (sbCls) mToStr = i_class_get_method_from_name(sbCls, "ToString", 0);
+            }
+            if (mToStr) {
+                void* ilStr = i_runtime_invoke(mToStr, oza, NULL, NULL);
+                if (ptrOk(ilStr)) {
+                    NSString *s = readStr(ilStr);
+                    if (s && [s containsString:@"<noparse>"] && ([s containsString:@"<color"] || [s containsString:@"<#"] || [s containsString:@"<b>"])) {
+                        few1n_sbReplace(oza, @"<noparse>", @"");
+                        few1n_sbReplace(oza, @"</noparse>", @"");
+                        w_chat_klv(cm);
+                    }
+                }
+            }
         }
     } @catch (...) {}
 }
@@ -6513,11 +6536,13 @@ static void few1n_replyToRoomAiPrompt(NSString *prompt) {
 // ===== 1.4.4 CENSORSHIP & CHAT (Vanilla Mod — Yerel sansür/noparse modifikasyonu kaldırıldı) =====
 static void* (*o_censorship_opn)(void*, int) = NULL;
 static void* h_censorship_opn(void* a, int b) {
+    if (a) { @try { NSString *s = readStr(a); if (s && ([s containsString:@"<color"] || [s containsString:@"<#"] || [s containsString:@"<b>"])) return a; } @catch (...) {} }
     return o_censorship_opn ? o_censorship_opn(a, b) : a;
 }
 
 static void* (*o_censorship_opo)(void*, int) = NULL;
 static void* h_censorship_opo(void* a, int b) {
+    if (a) { @try { NSString *s = readStr(a); if (s && ([s containsString:@"<color"] || [s containsString:@"<#"] || [s containsString:@"<b>"])) return a; } @catch (...) {} }
     return o_censorship_opo ? o_censorship_opo(a, b) : a;
 }
 
@@ -6536,6 +6561,7 @@ static void* h_censorship_opp(void* inputStr) {
 
 static void* (*o_chat_klw)(void*, int) = NULL;
 static void* h_chat_klw(void* a, int b) {
+    if (a) { @try { NSString *s = readStr(a); if (s && ([s containsString:@"<color"] || [s containsString:@"<#"] || [s containsString:@"<b>"])) return a; } @catch (...) {} }
     return o_chat_klw ? o_chat_klw(a, b) : a;
 }
 
@@ -8837,6 +8863,7 @@ static UIViewController* few1n_topVC(void) {
     few1n_applySelektor();   // selektor: RCCP high/low beam hizli cakma
     few1n_applyPoliceAndNeonLights(); // v117.7: Polis Cakari + Gokkusagi Far/Neon
     few1n_applyAlwaysLights(); // v97: Farlar Surekli Acik (offset 0x40/0x41)
+    { static int richTick = 0; if ((richTick++ % 4) == 0 && g_il2cppReady) few1n_enableChatRichText(); }
     // ===== UCUS: havada GERCEK surus (gaz=ileri, fren=geri, direksiyon=don) - PURUZSUZ =====
     // Hepsi hiz/acisal-hiz (fizik) ile -> Photon dogal senkronlar -> baskalarinda titremez.
     if (isFlyEnabled && !isFlyPadShown && unityAlive(g_rb)) {
@@ -16239,6 +16266,18 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("Censorship",      "ra",             "opp",             1, (void*)h_censorship_opp,  (void**)&o_censorship_opp,  "Censorship.ra.opp");
     if (!o_censorship_opp && global_base) {
         safeHook((void*)(global_base + 0x32852FC), (void*)h_censorship_opp, (void**)&o_censorship_opp, "Censorship.ra.opp (direct RVA)");
+    }
+    safeHookByName("Censorship",      "ra",             "opn",             2, (void*)h_censorship_opn,  (void**)&o_censorship_opn,  "Censorship.ra.opn");
+    if (!o_censorship_opn && global_base) {
+        safeHook((void*)(global_base + 0x3284EE0), (void*)h_censorship_opn, (void**)&o_censorship_opn, "Censorship.ra.opn (direct RVA)");
+    }
+    safeHookByName("Censorship",      "ra",             "opo",             2, (void*)h_censorship_opo,  (void**)&o_censorship_opo,  "Censorship.ra.opo");
+    if (!o_censorship_opo && global_base) {
+        safeHook((void*)(global_base + 0x3285260), (void*)h_censorship_opo, (void**)&o_censorship_opo, "Censorship.ra.opo (direct RVA)");
+    }
+    safeHookByName("",                "ChatManager",    "klw",             2, (void*)h_chat_klw,        (void**)&o_chat_klw,        "ChatManager.klw");
+    if (!o_chat_klw && global_base) {
+        safeHook((void*)(global_base + 0x32858F4), (void*)h_chat_klw, (void**)&o_chat_klw, "ChatManager.klw (direct RVA)");
     }
     safeHookByName("",                "ChatManager",    "Send",            1, (void*)h_chatSend,        (void**)&o_chatSend,        "ChatManager.Send");
     if (!o_chatSend && global_base) {
