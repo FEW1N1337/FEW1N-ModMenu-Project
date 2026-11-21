@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.19
+#define FEW1N_VERSION 117.20
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -2589,10 +2589,20 @@ static void* few1n_guardedInvoke(void* method, void* obj, void** args, bool* pCr
     if (pCrashed) *pCrashed = false;
     if (!method || !i_runtime_invoke) { if (pCrashed) *pCrashed = true; return NULL; }
     void* ret = NULL;
+    void* exc = NULL;
     int prev = few1n_inProtected;
     few1n_inProtected = 1;
     if (sigsetjmp(few1n_jmpBuf, 1) == 0) {
-        ret = i_runtime_invoke(method, obj, args, NULL);
+        @try {
+            ret = i_runtime_invoke(method, obj, args, &exc);
+        } @catch (...) {
+            if (pCrashed) *pCrashed = true;
+            ret = NULL;
+        }
+        if (exc != NULL) {
+            if (pCrashed) *pCrashed = true;
+            ret = NULL;
+        }
     } else {
         if (pCrashed) *pCrashed = true;   // segfault yakalandi -> cokme onlendi
         ret = NULL;
@@ -8047,29 +8057,20 @@ static void* few1n_encodeLoadTunersZipper(NSString *outerJson) {
 }
 
 static NSString* few1n_detectPlateTunerKey(void) {
-    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return @"Plate";
+    if (!g_mFindObjectsPlural || !i_runtime_invoke) return @"Plate";
     void* ptCls = few1n_classAnyImage("", "PlateTuner");
     void* ptType = ptCls ? few1n_typeObjOf(ptCls) : NULL;
     if (!ptCls || !ptType) return @"Plate";
-    void* mDul = i_class_get_method_from_name(ptCls, "dul", 0);
-    void* mDum = i_class_get_method_from_name(ptCls, "dum", 0);
     @try {
         void* a[1] = { ptType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
-        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
-        for (int i = 0; i < cnt && i < 16 && items; i++) {
-            void* pt = items[i];
+        bool fc = false;
+        void* arr = few1n_guardedInvoke(g_mFindObjectsPlural, NULL, a, &fc);
+        if (fc || !ptrOk(arr)) return @"Plate";
+        int cnt = few1n_rdI32(arr, 0x18, 0);
+        for (int i = 0; i < cnt && i < 16; i++) {
+            void* pt = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*));
             if (!unityAlive(pt)) continue;
-            if (mDul) {
-                bool c = false; void* s = few1n_guardedInvoke(mDul, pt, NULL, &c);
-                if (!c && ptrOk(s)) { NSString *k = readStr(s); if (k.length > 0) return k; }
-            }
-            if (mDum) {
-                bool c = false; void* s = few1n_guardedInvoke(mDum, pt, NULL, &c);
-                if (!c && ptrOk(s)) { NSString *k = readStr(s); if (k.length > 0) return k; }
-            }
-            void* nmPtr = *(void**)((uintptr_t)pt + 0x20); // internal string _name
+            void* nmPtr = few1n_rdPtr(pt, 0x20); // internal string _name
             if (ptrOk(nmPtr)) { NSString *k = readStr(nmPtr); if (k.length > 0) return k; }
         }
     } @catch (...) {}
@@ -8112,19 +8113,21 @@ static int few1n_injectRemotePlateZipper(int targetActor, NSString *country, NSS
     int hit = 0;
     @try {
         void* a[1] = { tmType };
-        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
-        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
-        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        bool fc = false;
+        void* arr = few1n_guardedInvoke(g_mFindObjectsPlural, NULL, a, &fc);
+        if (fc || !ptrOk(arr)) return 0;
+        int cnt = few1n_rdI32(arr, 0x18, 0);
         void* rpcName = mkStr(@"LoadTuners");
-        int targetBuf = 3; // RpcTarget.AllBuffered (sonradan girenler de görür!)
-        for (int i = 0; i < cnt && i < 64 && items; i++) {
-            void* tm = items[i];
+        int targetBuf = 3; // RpcTarget.AllBuffered
+        for (int i = 0; i < cnt && i < 64; i++) {
+            void* tm = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*));
             if (!unityAlive(tm)) continue;
             if (targetActor == -1 && few1n_pvIsMineFor(tm)) continue;
             void* pv = mbp_getPhotonView(tm);
             if (!ptrOk(pv)) continue;
-            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
-            int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
+            bool oc = false;
+            void* box = few1n_guardedInvoke(mOwner, pv, NULL, &oc);
+            int act = (!oc && ptrOk(box)) ? few1n_rdI32(box, 0x10, -1) : -1;
             if (targetActor > 0 && act != targetActor) continue;
 
             void* oArr = i_array_new(objCls, 1);
@@ -8135,7 +8138,7 @@ static int few1n_injectRemotePlateZipper(int targetActor, NSString *country, NSS
             few1n_guardedInvoke(mRPC, pv, rArgs, &cr);
             if (!cr) hit++;
         }
-        FLog([NSString stringWithFormat:@"🔥 Zipper Plaka Enjeksiyonu: key='%@' -> %d araca AllBuffered LoadTuners yollandı!", pKey, hit]);
+        FLog([NSString stringWithFormat:@"🔥 Zipper Plaka: key='%@' -> %d araca LoadTuners yollandı!", pKey, hit]);
     } @catch (...) {}
     return hit;
 }
@@ -18272,12 +18275,12 @@ static void few1n_joinTargetRoom(NSString *nm) {
         void* mNick = plyCls ? i_class_get_method_from_name(plyCls, "get_NickName", 0) : NULL;
         void* mAct  = plyCls ? i_class_get_method_from_name(plyCls, "get_ActorNumber", 0) : NULL;
         int cnt = ptrOk(others) ? few1n_rdI32(others, 0x18, 0) : 0;
-        void** pls = ptrOk(others) ? (void**)((uintptr_t)others + 0x20) : NULL;
-        for (int i = 0; i < cnt && i < 24 && pls; i++) {
-            void* p = pls[i]; if (!ptrOk(p)) continue;
+        for (int i = 0; i < cnt && i < 24; i++) {
+            void* p = few1n_rdPtr(others, 0x20 + (uintptr_t)i * sizeof(void*));
+            if (!ptrOk(p)) continue;
             NSString *nm = @"Oyuncu"; int act = -1;
-            if (mNick) { void* s = i_runtime_invoke(mNick, p, NULL, NULL); if (ptrOk(s)) nm = readStr(s); }
-            if (mAct)  { void* b = i_runtime_invoke(mAct,  p, NULL, NULL); if (ptrOk(b)) act = *(int*)((uintptr_t)b + 0x10); }
+            if (mNick) { bool c=false; void* s = few1n_guardedInvoke(mNick, p, NULL, &c); if (!c && ptrOk(s)) nm = readStr(s); }
+            if (mAct)  { bool c=false; void* b = few1n_guardedInvoke(mAct,  p, NULL, &c); if (!c && ptrOk(b)) act = few1n_rdI32(b, 0x10, -1); }
             if (act > 0) {
                 [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎯 %@ (#%d)", nm, act] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ cb(act, nm); }]];
             }
