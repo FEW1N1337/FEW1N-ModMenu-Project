@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.21
+#define FEW1N_VERSION 117.22
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -2508,15 +2508,12 @@ static float getTimeScaleVal(void) {
 
 static bool few1n_memOk(void* addr);
 static NSString* readStr(void* il2s) {
-    if (!il2s || (uintptr_t)il2s < 0x1000) return @"";
+    if (!il2s || (uintptr_t)il2s < 0x100000000ULL) return @"";
     if (!few1n_memOk((void*)((uintptr_t)il2s + OFF_IL2CPP_STRING_LEN))) return @"";
     @try {
         int32_t len = *(int32_t*)((uintptr_t)il2s + OFF_IL2CPP_STRING_LEN);
         if (len <= 0 || len > 4096) return @"";
-        void* charsStart = (void*)((uintptr_t)il2s + OFF_IL2CPP_STRING_CHARS);
-        void* charsEnd   = (void*)((uintptr_t)charsStart + (size_t)(len - 1) * 2);
-        if (!few1n_memOk(charsStart) || !few1n_memOk(charsEnd)) return @"";
-        return [NSString stringWithCharacters:(const unichar*)charsStart length:len];
+        return [NSString stringWithCharacters:(const unichar*)((uintptr_t)il2s + OFF_IL2CPP_STRING_CHARS) length:len];
     } @catch (...) { return @""; }
 }
 #include <signal.h>
@@ -2561,12 +2558,12 @@ static inline void few1n_after(double seconds, dispatch_block_t block) {
 // ozel exception yakalamak icin manuel @try/@catch yaz.
 #define FEW1N_SAFE(expr) do { @try { expr; } @catch (...) {} } while(0)
 
-// Bir pointer okunabilir mi test et (crash-safe)
+// Bir pointer okunabilir mi test et (crash-safe, savemask=0 -> ZERO kernel syscall!)
 static inline bool few1n_memOk(void* p) {
     if ((uintptr_t)p < 0x1000) return false;
     few1n_inProtected = 1;
     volatile bool ok = false;
-    if (sigsetjmp(few1n_jmpBuf, 1) == 0) {
+    if (sigsetjmp(few1n_jmpBuf, 0) == 0) {
         volatile uint8_t dummy = *(volatile uint8_t*)p;
         (void)dummy;
         ok = true;
@@ -11183,7 +11180,7 @@ static UIViewController* few1n_topVC(void) {
 
 - (void)frameTick {
     enforceScale();          // her ekran frame'inde timeScale'i zorla
-    few1n_tickVoteKickFullYes(); // 1.4.4: 0sn oylama kilidi sifirla + oylamayi oto 99 EVET yap
+    // v117.22 FPS FIX: few1n_tickVoteKickFullYes() ve few1n_enableChatRichText() frameTick'ten alindi (tick()'te 0.3sn/1.5sn aralikla calisir)
     // ===== OTOMATIK KARSILAMA: odaya YENI girince (false->true kenari) mesaj at =====
     // Optimizasyon: sadece ozellik ACIKKEN poll et (kapaliyken her frame cagri yok)
     if (isAutoGreetEnabled && pn_getInRoom) {
@@ -11205,7 +11202,6 @@ static UIViewController* few1n_topVC(void) {
     few1n_applyPoliceAndNeonLights(); // v117.7: Polis Cakari + Gokkusagi Far/Neon
     few1n_applyAlwaysLights(); // v97: Farlar Surekli Acik (offset 0x40/0x41)
     few1n_tickV11715Frame();   // v117.15: Orbit, Lowrider, SuperEngine, InstantBrake, Pops/RGB Exhaust
-    { static int richTick = 0; if ((richTick++ % 4) == 0 && g_il2cppReady) few1n_enableChatRichText(); }
     // ===== UCUS: havada GERCEK surus (gaz=ileri, fren=geri, direksiyon=don) - PURUZSUZ =====
     // Hepsi hiz/acisal-hiz (fizik) ile -> Photon dogal senkronlar -> baskalarinda titremez.
     if (isFlyEnabled && !isFlyPadShown && unityAlive(g_rb)) {
@@ -12148,6 +12144,7 @@ static UIViewController* few1n_topVC(void) {
     few1n_yoyoTick();           // v114.94: Firlatip-Getir (yo-yo)
     few1n_forceRoomRichText();  // v114.47: hooksuz renkli oda ismi (richText zorla, sideload)
     few1n_tickV11715Slow();     // v117.15: CrabWalk, FreeTuning, MapsUnlock, BodyTilt, WheelFX, Spoiler, Highway
+    { static int richSlow = 0; if ((++richSlow % 5) == 0 && g_il2cppReady) few1n_enableChatRichText(); }
     // v92: BALATA SICAK TUT + HASAR YOK frame update GERI ALINDI — dokunmatik/input bug sebep olabilir
     // Toggle'lar UI'da duruyor ama etkisiz (placeholder). Bug root cause'u bulunca gercek fix gelecek.
     // arac rengi acikken materyalleri BIR KEZ al (tekrar fetch instance sizdirir/coker)
