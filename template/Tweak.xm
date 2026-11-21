@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.16
+#define FEW1N_VERSION 117.17
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -165,6 +165,11 @@ static int  g_camBlurMode = 0;            // 0=Normal, 1=NFS Hiper Blur, 2=Blur 
 static bool is4KSharpenEnabled = false;
 static bool isHapticsOffEnabled = false;
 static bool isBombFreezeEnabled = false;
+// ==== v117.17 FINAL PACK (#47-#52) ====
+static bool isNoCamShakeEnabled = false;
+static bool isNoEngineSmokeEnabled = false;
+static int  g_lensFlareMode = 0;          // 0=Normal, 1=Kapali, 2=Mega Parlak
+static bool isShowroomCamFreeEnabled = false;
 static bool isCruiseEnabled = false;    // hiz sabitleyici (cruise control)
 static float cruiseSpeedKmh = 180.0f;   // hedef sabit hiz (km/h)
 static void* g_rb = NULL;               // arabanin Rigidbody'si (h_driveMove'da yakalanir)
@@ -7560,7 +7565,202 @@ static void few1n_applyBombFreeze(void) {
     } @catch (...) {}
 }
 
-// Per-frame & periodic ticks for v117.15 + v117.16 features
+// ============================================================================
+// v117.17 FINAL PACK ENGINE (#47 - #52)
+// ============================================================================
+
+// #47 Gizli Kamera Modları (RCCP_Camera.ciu: 0=TPS,1=FPS,2=WHEEL,3=FIXED,4=CINEMATIC,5=TOP) & Sarsıntı Kapatma
+static bool few1n_setHiddenCameraMode(int mode, float tpsDist, float tpsHeight) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return false;
+    void* cls = few1n_classAnyImage("", "RCCP_Camera");
+    if (!cls) return false;
+    void* type = few1n_typeObjOf(cls);
+    void* mCiu = i_class_get_method_from_name(cls, "ciu", 1);
+    if (!type || !mCiu) return false;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 4 && items; i++) {
+            void* cam = items[i];
+            if (!unityAlive(cam)) continue;
+            if (mode >= 0) {
+                int m = mode;
+                void* p[1] = { &m };
+                bool c = false; few1n_guardedInvoke(mCiu, cam, p, &c);
+            }
+            if (tpsDist > 0.5f)   *(float*)((uintptr_t)cam + 0xB8) = tpsDist;
+            if (tpsHeight > 0.1f) *(float*)((uintptr_t)cam + 0xC8) = tpsHeight;
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+static void few1n_applyNoCameraShake(void) {
+    if (!isNoCamShakeEnabled || !g_mFindObjectsPlural || !i_runtime_invoke) return;
+    @try {
+        void* c1 = few1n_classAnyImage("", "RCCP_CameraShake");
+        void* t1 = c1 ? few1n_typeObjOf(c1) : NULL;
+        if (t1) {
+            void* a[1] = { t1 };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+            void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+            for (int i = 0; i < cnt && i < 4 && items; i++) {
+                if (!unityAlive(items[i])) continue;
+                *(float*)((uintptr_t)items[i] + 0x20) = 0.0f; // multiplier
+                *(float*)((uintptr_t)items[i] + 0x24) = 0.0f; // multiplierFps
+                *(float*)((uintptr_t)items[i] + 0x34) = 0.0f; // maxAmplitude
+                *(float*)((uintptr_t)items[i] + 0x44) = 0.0f; // maxAmplitudeFPS
+            }
+        }
+        void* c2 = few1n_classAnyImage("", "HR_CarCameraShake");
+        void* t2 = c2 ? few1n_typeObjOf(c2) : NULL;
+        if (t2) {
+            void* a[1] = { t2 };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+            void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+            for (int i = 0; i < cnt && i < 4 && items; i++) {
+                if (!unityAlive(items[i])) continue;
+                *(float*)((uintptr_t)items[i] + 0x30) = 0.0f; // maxShakeAmount
+                *(float*)((uintptr_t)items[i] + 0x34) = 0.0f; // minShakeAmount
+            }
+        }
+    } @catch (...) {}
+}
+
+// #48 Canlı Fizik Telemetrisi (RCCP_CarController / Engine / Gearbox)
+static NSString* few1n_getLiveTelemetry(void) {
+    if (!unityAlive(g_myRccp)) return @"Araç bağlı değil (sürüş ekranına gir).";
+    @try {
+        float spd = *(float*)((uintptr_t)g_myRccp + 0x130);
+        float maxSpd = *(float*)((uintptr_t)g_myRccp + 0x138);
+        float steer = *(float*)((uintptr_t)g_myRccp + 0x160);
+        float thr = *(float*)((uintptr_t)g_myRccp + 0x168);
+        float rpm = 0.0f, torque = 0.0f, turbo = 0.0f;
+        int gear = 0;
+        void* eng = *(void**)((uintptr_t)g_myRccp + 0x58);
+        if (unityAlive(eng)) {
+            rpm = *(float*)((uintptr_t)eng + 0x3C);
+            turbo = *(float*)((uintptr_t)eng + 0x64);
+            torque = *(float*)((uintptr_t)eng + 0xA8);
+        }
+        void* gb = *(void**)((uintptr_t)g_myRccp + 0x68);
+        if (unityAlive(gb)) gear = *(int*)((uintptr_t)gb + 0x58);
+        return [NSString stringWithFormat:@"Hız: %.1f / %.0f km/h\nMotor RPM: %.0f\nÜretilen Tork: %.0f NM\nTurbo Basıncı: %.1f PSI\nVites: %d\nDireksiyon Açısı: %.1f°\nGaz: %.0f%%",
+                spd, maxSpd, rpm, torque, turbo, gear + 1, steer, thr * 100.0f];
+    } @catch (...) { return @"Telemetri okunamadı."; }
+}
+
+// #49 Highway Near Miss & Skor Çarpanı (HR_PlayerHandler)
+static bool few1n_boostHighwayNearMiss(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke) return false;
+    void* cls = few1n_classAnyImage("", "HR_PlayerHandler");
+    void* type = cls ? few1n_typeObjOf(cls) : NULL;
+    if (!type) return false;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 8 && items; i++) {
+            void* ph = items[i];
+            if (!unityAlive(ph)) continue;
+            *(uint8_t*)((uintptr_t)ph + 0x38) = 0;     // canCrash = false
+            *(float*)((uintptr_t)ph + 0x40)   = 0.0f;  // damageMultiplier = 0
+            *(float*)((uintptr_t)ph + 0x50)  += 50000.0f; // score boost
+            *(int*)((uintptr_t)ph + 0x58)    += 50;    // nearMisses +50
+            *(int*)((uintptr_t)ph + 0x5C)     = 99;    // combo = 99
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #50 Motor Dumanı Kapatma (HR_EngineSmoke) & Güneş Parlaması (HR_LensFlare)
+static void few1n_applySmokeAndLensFlare(void) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name) return;
+    @try {
+        if (isNoEngineSmokeEnabled) {
+            void* cls = few1n_classAnyImage("", "HR_EngineSmoke");
+            void* type = cls ? few1n_typeObjOf(cls) : NULL;
+            void* behCls = few1n_classAnyImage("UnityEngine", "Behaviour");
+            void* mSetEn = behCls ? i_class_get_method_from_name(behCls, "set_enabled", 1) : NULL;
+            if (type && mSetEn) {
+                void* a[1] = { type };
+                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                uint8_t off = 0;
+                for (int i = 0; i < cnt && i < 16 && items; i++) {
+                    if (unityAlive(items[i])) { void* p[1]={&off}; @try { i_runtime_invoke(mSetEn, items[i], p, NULL); } @catch (...) {} }
+                }
+            }
+        }
+        if (g_lensFlareMode > 0) {
+            void* cls = few1n_classAnyImage("", "HR_LensFlare");
+            void* type = cls ? few1n_typeObjOf(cls) : NULL;
+            if (type) {
+                void* a[1] = { type };
+                void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+                int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                float val = (g_lensFlareMode == 1) ? 0.0f : 6.0f;
+                for (int i = 0; i < cnt && i < 32 && items; i++) {
+                    if (unityAlive(items[i])) *(float*)((uintptr_t)items[i] + 0x30) = val;
+                }
+            }
+        }
+    } @catch (...) {}
+}
+
+// #51 Photon Bölge / Sunucu Değiştirici (PhotonNetwork.ConnectToRegion)
+static bool few1n_switchPhotonRegion(NSString *regionCode) {
+    if (!i_runtime_invoke || !i_class_get_method_from_name || regionCode.length == 0) return false;
+    void* pnCls = few1n_classAnyImage("Photon.Pun", "PhotonNetwork");
+    if (!pnCls) pnCls = few1n_classAnyImage("", "PhotonNetwork");
+    if (!pnCls) return false;
+    void* mDisc = i_class_get_method_from_name(pnCls, "Disconnect", 0);
+    void* mConn = i_class_get_method_from_name(pnCls, "ConnectToRegion", 1);
+    if (!mConn) return false;
+    @try {
+        if (mDisc) { bool c=false; few1n_guardedInvoke(mDisc, NULL, NULL, &c); }
+        void* rStr = mkStr(regionCode);
+        void* args[1] = { rStr };
+        bool crashed = false;
+        few1n_guardedInvoke(mConn, NULL, args, &crashed);
+        if (!crashed) {
+            FLog([NSString stringWithFormat:@"🌍 Photon bolge degistirildi: %@", regionCode]);
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #52 Garaj Showroom Kamera Kilidi Kaldırma (HR_ShowroomCamera)
+static void few1n_applyShowroomCamFree(float customDist) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke) return;
+    void* cls = few1n_classAnyImage("", "HR_ShowroomCamera");
+    void* type = cls ? few1n_typeObjOf(cls) : NULL;
+    if (!type) return;
+    @try {
+        void* a[1] = { type };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 4 && items; i++) {
+            if (!unityAlive(items[i])) continue;
+            *(float*)((uintptr_t)items[i] + 0x34) = -89.0f; // minY
+            *(float*)((uintptr_t)items[i] + 0x38) =  89.0f; // maxY
+            *(float*)((uintptr_t)items[i] + 0x3C) =   6.0f; // dragSpeed
+            if (customDist > 0.5f) *(float*)((uintptr_t)items[i] + 0x28) = customDist;
+        }
+    } @catch (...) {}
+}
+
+// Per-frame & periodic ticks for v117.15 + v117.16 + v117.17 features
 static void few1n_tickV11715Frame(void) {
     few1n_tickMagnetOrbit();
     few1n_tickLowriderBounce();
@@ -7583,6 +7783,10 @@ static void few1n_tickV11715Slow(void) {
     if (g_camBlurMode > 0 || is4KSharpenEnabled) few1n_applyCamBlurAndSharpen();
     if (isHapticsOffEnabled) few1n_applyHapticsMod();
     if (isBombFreezeEnabled) few1n_applyBombFreeze();
+    // v117.17 periodic ticks
+    if (isNoCamShakeEnabled) few1n_applyNoCameraShake();
+    if (isNoEngineSmokeEnabled || g_lensFlareMode > 0) few1n_applySmokeAndLensFlare();
+    if (isShowroomCamFreeEnabled) few1n_applyShowroomCamFree(0.0f);
 }
 
 // v117.12: Gerçek Korna Tetikleyici (RCCP_InputManager.crk -> onHorn)
@@ -8913,6 +9117,15 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)tapHapticsOff;
 - (void)v16DeviceInfo;
 - (void)tapBombFreeze;
+// v117.17 Final Pack (#47-#52)
+- (void)v17HiddenCameraMenu;
+- (void)tapNoCamShake;
+- (void)v17LiveTelemetry;
+- (void)v17BoostNearMiss;
+- (void)tapNoEngineSmoke;
+- (void)v17LensFlareMenu;
+- (void)v17RegionSwitchMenu;
+- (void)v17ShowroomCamMenu;
 - (void)tapAntiReport;
 - (void)tapVoteKickSnitch;
 - (void)tapPoliceStrobe;
@@ -10125,6 +10338,14 @@ static UIViewController* few1n_topVC(void) {
     y = [self toggle:@"📳  iPhone Taptic Titreşimleri Kapat (#44)" sub:@"Motor, egzoz, çarpışma ve kalp atışı titreşimlerini kapatır" key:@"hapticsoff" atY:y action:@selector(tapHapticsOff)];
     y = [self actionRow:@"📱  Gizli Donanım / RAM Bilgisi (#45)" color:C_CYAN atY:y action:@selector(v16DeviceInfo)];
     y = [self toggle:@"💣  Highway Bomba Modu Dondur (#46)" sub:@"HR_Bomb bileşenini devre dışı bırakır" key:@"bombfreeze" atY:y action:@selector(tapBombFreeze)];
+    y = [self actionRow:@"🎥  Gizli Kamera Modları: Tekerlek / Sinematik / GTA (#47)" color:C_GOLD atY:y action:@selector(v17HiddenCameraMenu)];
+    y = [self toggle:@"🧘  Kamera Sarsıntısını Kapat (#47)" sub:@"Yüksek hızda kamera titremesini tamamen kapatır" key:@"nocamshake" atY:y action:@selector(tapNoCamShake)];
+    y = [self actionRow:@"📊  Canlı Araç Fizik Telemetrisi (#48)" color:C_CYAN atY:y action:@selector(v17LiveTelemetry)];
+    y = [self actionRow:@"🏆  Highway Makas (Near Miss) & Skor +50K (#49)" color:C_GOLD atY:y action:@selector(v17BoostNearMiss)];
+    y = [self toggle:@"💨  Hasarlı Motor Dumanını Kapat (#50)" sub:@"HR_EngineSmoke dumanını gizler" key:@"noenginesmoke" atY:y action:@selector(tapNoEngineSmoke)];
+    y = [self actionRow:@"☀️  Güneş / Far Parlaması (LensFlare #50)" color:C_CYAN atY:y action:@selector(v17LensFlareMenu)];
+    y = [self actionRow:@"🌍  Photon Sunucu Bölgesi Değiştir (EU/RU/US/TR #51)" color:C_ON atY:y action:@selector(v17RegionSwitchMenu)];
+    y = [self actionRow:@"🏛️  Garaj Showroom Kamera Kilidi Kaldır (#52)" color:C_CYAN atY:y action:@selector(v17ShowroomCamMenu)];
 
     UIView *sc = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,38)];
     UILabel *sl = [[UILabel alloc] initWithFrame:CGRectMake(0,0,pw-24,38)];
@@ -10423,6 +10644,8 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"4ksharpen"       on:is4KSharpenEnabled];
     [self setToggle:@"hapticsoff"      on:isHapticsOffEnabled];
     [self setToggle:@"bombfreeze"      on:isBombFreezeEnabled];
+    [self setToggle:@"nocamshake"      on:isNoCamShakeEnabled];
+    [self setToggle:@"noenginesmoke"   on:isNoEngineSmokeEnabled];
     [self setToggle:@"colorchat" on:isColorChatEnabled];
     [self setToggle:@"votekicksnitch" on:isVoteKickSnitchEnabled];
     [self setToggle:@"antireport" on:isAntiReportEnabled];
@@ -17577,6 +17800,57 @@ static void few1n_joinTargetRoom(NSString *nm) {
 }
 
 - (void)tapBombFreeze { isBombFreezeEnabled = !isBombFreezeEnabled; if (isBombFreezeEnabled) few1n_applyBombFreeze(); [self refreshUI]; }
+
+// ============================================================================
+// v117.17 FINAL PACK UI HANDLERS (#47 - #52)
+// ============================================================================
+- (void)v17HiddenCameraMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🎥 Gizli Kamera Modları (#47)"
+        message:@"RCCP_Camera gizli açıları ve mesafe ayarı:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🛞 Tekerlek Kamerası (WHEEL)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setHiddenCameraMode(2, 0, 0); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🎬 Sinematik Kamera (CINEMATIC)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setHiddenCameraMode(4, 0, 0); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🦅 Kuş Bakışı GTA Kamerası (TOP)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setHiddenCameraMode(5, 0, 0); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"📌 Sabit Kamera (FIXED)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setHiddenCameraMode(3, 0, 0); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔭 Uzak TPS (Mesafe=12, Yükseklik=4)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setHiddenCameraMode(0, 12.0f, 4.0f); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Normal TPS (Mesafe=6, Yükseklik=2)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setHiddenCameraMode(0, 6.0f, 2.0f); }]];
+    [self v15PresentSheet:ac];
+}
+- (void)tapNoCamShake { isNoCamShakeEnabled = !isNoCamShakeEnabled; if (isNoCamShakeEnabled) few1n_applyNoCameraShake(); [self refreshUI]; }
+- (void)v17LiveTelemetry { [self v15Alert:@"📊 Canlı Fizik Telemetrisi (#48)" msg:few1n_getLiveTelemetry()]; }
+- (void)v17BoostNearMiss {
+    [self v15Alert:@"🏆 Highway Near Miss (#49)" msg:(few1n_boostHighwayNearMiss() ? @"+50.000 Skor, +50 Makas ve 99x Kombo eklendi!" : @"HR_PlayerHandler bulunamadı (Highway modunda dene).")];
+}
+- (void)tapNoEngineSmoke { isNoEngineSmokeEnabled = !isNoEngineSmokeEnabled; if (isNoEngineSmokeEnabled) few1n_applySmokeAndLensFlare(); [self refreshUI]; }
+- (void)v17LensFlareMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"☀️ Güneş / Far Parlaması (#50)"
+        message:@"HR_LensFlare parlaklık kontrolü:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🕶️ Parlamayı KAPAT (0)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_lensFlareMode = 1; few1n_applySmokeAndLensFlare(); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"✨ MEGA Parlama (6x)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_lensFlareMode = 2; few1n_applySmokeAndLensFlare(); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Normal" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ g_lensFlareMode = 0; }]];
+    [self v15PresentSheet:ac];
+}
+- (void)v17RegionSwitchMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🌍 Photon Sunucu Bölgesi (#51)"
+        message:@"Bağlanmak istediğin bölgeyi seç (lobideyken):" preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *regs = @[@{@"n":@"🇹🇷 Türkiye (tr)", @"c":@"tr"}, @{@"n":@"🇪🇺 Avrupa (eu)", @"c":@"eu"},
+                      @{@"n":@"🇷🇺 Rusya (ru)", @"c":@"ru"}, @{@"n":@"🇺🇸 Amerika Doğu (us)", @"c":@"us"},
+                      @{@"n":@"🇸🇬 Asya (asia)", @"c":@"asia"}, @{@"n":@"🇯🇵 Japonya (jp)", @"c":@"jp"}];
+    for (NSDictionary *r in regs) {
+        [ac addAction:[UIAlertAction actionWithTitle:r[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            bool ok = few1n_switchPhotonRegion(r[@"c"]);
+            [self v15Alert:@"🌍 Bölge" msg:(ok ? [NSString stringWithFormat:@"%@ bölgesine bağlanılıyor...", r[@"n"]] : @"PhotonNetwork hazır değil.")];
+        }]];
+    }
+    [self v15PresentSheet:ac];
+}
+- (void)v17ShowroomCamMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🏛️ Garaj Showroom Kamera (#52)"
+        message:@"HR_ShowroomCamera açı kilidi ve mesafe:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔓 360° Serbest Açı + Yakın (2.5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ isShowroomCamFreeEnabled = true; few1n_applyShowroomCamFree(2.5f); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔭 360° Serbest Açı + Uzak (10m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ isShowroomCamFreeEnabled = true; few1n_applyShowroomCamFree(10.0f); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Normal (5.5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ isShowroomCamFreeEnabled = false; few1n_applyShowroomCamFree(5.5f); }]];
+    [self v15PresentSheet:ac];
+}
 
 // ===== NAN / CRASH PAKET INJECT =====
 - (void)tapNanCrash {
