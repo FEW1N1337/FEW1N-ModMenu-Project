@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.17
+#define FEW1N_VERSION 117.18
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -4871,9 +4871,11 @@ static bool few1n_hijackPlateToTarget(int targetActor, NSString* text) {
     }
     // eah = oyunun kendi yayini (gecerli JSON -> alicida cokmez). Guard'li.
     bool eahSent = false;
+    void* mEai = tmCls ? i_class_get_method_from_name(tmCls, "eai", 0) : NULL;
     if (mEah) { bool cr=false; unsigned char t=1; void* a[1]={&t}; few1n_guardedInvoke(mEah, tgtTM, a, &cr); if (!cr) eahSent = true; }
     if (mEad) { bool cr=false; few1n_guardedInvoke(mEad, tgtTM, NULL, &cr); }
     if (mEae) { bool cr=false; few1n_guardedInvoke(mEae, tgtTM, NULL, &cr); }
+    if (mEai) { bool cr=false; few1n_guardedInvoke(mEai, tgtTM, NULL, &cr); if (!cr) eahSent = true; }
     // GERI AL (RPC zaten senkron gitti)
     if (spoofed) { @try {
         *(unsigned char*)(b + oM)        = sMine;
@@ -7760,6 +7762,269 @@ static void few1n_applyShowroomCamFree(float customDist) {
     } @catch (...) {}
 }
 
+// ============================================================================
+// v117.18 REMOTE & ROOM-WIDE SYNC ENGINE (#53 - #57)
+// ============================================================================
+
+// #53 & #54 Başkasının / Herkesin Arabasının Boyutunu Değiştir veya 180° Ters Çevir
+// targetActor == -1 -> odadaki TÜM diğer oyuncular
+static int few1n_remoteScaleOrFlipActor(int targetActor, float sx, float sy, float sz, bool flip180) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_array_new || !i_value_box || !mbp_getPhotonView) return 0;
+    void* ssCls   = few1n_classAnyImage("", "SmoothSyncRCC");
+    void* pvCls   = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    void* objCls  = few1n_classAnyImage("System", "Object");
+    void* vecCls  = few1n_classAnyImage("UnityEngine", "Vector3");
+    void* fltCls  = few1n_classAnyImage("System", "Single");
+    void* compCls = few1n_classAnyImage("UnityEngine", "Component");
+    void* trCls   = few1n_classAnyImage("UnityEngine", "Transform");
+    if (!ssCls || !pvCls || !objCls || !vecCls || !fltCls || !compCls || !trCls) return 0;
+    void* ssType  = few1n_typeObjOf(ssCls);
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC    = few1n_methodBySig(pvCls, "Void", prm, 3, 0);
+    void* mOwner  = i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0);
+    void* mGetTr  = i_class_get_method_from_name(compCls, "get_transform", 0);
+    void* mGetPos = i_class_get_method_from_name(trCls, "get_position", 0);
+    void* mGetEul = i_class_get_method_from_name(trCls, "get_eulerAngles", 0);
+    void* mSetSc  = i_class_get_method_from_name(trCls, "set_localScale", 1);
+    if (!ssType || !mRPC || !mOwner || !mGetTr) return 0;
+    int hit = 0;
+    @try {
+        void* a[1] = { ssType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        Vec3 sc = { sx, sy, sz };
+        int all = 0; // RpcTarget.All
+        void* rpcTel = mkStr(@"RpcTeleport");
+        void* rpcSrv = mkStr(@"RpcNonServerOwnedTeleportFromServer");
+        for (int i = 0; i < cnt && i < 64 && items; i++) {
+            void* ss = items[i];
+            if (!unityAlive(ss)) continue;
+            if (few1n_pvIsMineFor(ss)) continue; // kendi aracimiza dokunma
+            void* pv = mbp_getPhotonView(ss);
+            if (!ptrOk(pv)) continue;
+            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+            int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
+            if (targetActor > 0 && act != targetActor) continue;
+
+            void* tr = i_runtime_invoke(mGetTr, ss, NULL, NULL);
+            Vec3 pos = {0, 0, 0}, rot = {0, 0, 0};
+            if (unityAlive(tr)) {
+                if (mGetPos) { void* b = i_runtime_invoke(mGetPos, tr, NULL, NULL); if (ptrOk(b)) pos = *(Vec3*)((uintptr_t)b + 0x10); }
+                if (mGetEul) { void* b = i_runtime_invoke(mGetEul, tr, NULL, NULL); if (ptrOk(b)) rot = *(Vec3*)((uintptr_t)b + 0x10); }
+                if (!flip180 && mSetSc) { void* p[1]={&sc}; @try { i_runtime_invoke(mSetSc, tr, p, NULL); } @catch (...) {} }
+            }
+            if (flip180) { pos.y += 1.8f; rot.z = 180.0f; sc = (Vec3){1.0f, 1.0f, 1.0f}; }
+
+            // 1) RpcTeleport(pos, rot, scale, 0.0f)
+            float tmp = 0.0f;
+            void* o4 = i_array_new(objCls, 4);
+            void** e4 = (void**)((uintptr_t)o4 + 0x20);
+            e4[0] = i_value_box(vecCls, &pos);
+            e4[1] = i_value_box(vecCls, &rot);
+            e4[2] = i_value_box(vecCls, &sc);
+            e4[3] = i_value_box(fltCls, &tmp);
+            void* r1[3] = { rpcTel, &all, o4 };
+            bool c1 = false; few1n_guardedInvoke(mRPC, pv, r1, &c1);
+
+            // 2) RpcNonServerOwnedTeleportFromServer(pos, rot, scale)
+            void* o3 = i_array_new(objCls, 3);
+            void** e3 = (void**)((uintptr_t)o3 + 0x20);
+            e3[0] = i_value_box(vecCls, &pos);
+            e3[1] = i_value_box(vecCls, &rot);
+            e3[2] = i_value_box(vecCls, &sc);
+            void* r2[3] = { rpcSrv, &all, o3 };
+            bool c2 = false; few1n_guardedInvoke(mRPC, pv, r2, &c2);
+            hit++;
+        }
+    } @catch (...) {}
+    return hit;
+}
+
+// #55 Başkasının / Herkesin Aracında Hayalet / Respawn Durumunu Tetikle (RespawnCollision.SetState RPC)
+static int few1n_remoteRespawnGhostActor(int targetActor) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_array_new || !mbp_getPhotonView) return 0;
+    void* rcCls  = few1n_classAnyImage("", "RespawnCollision");
+    void* pvCls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    void* objCls = few1n_classAnyImage("System", "Object");
+    if (!rcCls || !pvCls || !objCls) return 0;
+    void* rcType = few1n_typeObjOf(rcCls);
+    const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+    void* mRPC   = few1n_methodBySig(pvCls, "Void", prm, 3, 0);
+    void* mOwner = i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0);
+    if (!rcType || !mRPC || !mOwner) return 0;
+    int hit = 0;
+    @try {
+        void* a[1] = { rcType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        void* rpcName = mkStr(@"SetState");
+        int all = 0;
+        for (int i = 0; i < cnt && i < 64 && items; i++) {
+            void* rc = items[i];
+            if (!unityAlive(rc)) continue;
+            void* pv = mbp_getPhotonView(rc);
+            if (!ptrOk(pv)) continue;
+            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+            int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
+            if (targetActor > 0 && act != targetActor) continue;
+            void* oArr = i_array_new(objCls, 0);
+            void* args[3] = { rpcName, &all, oArr };
+            bool c = false; few1n_guardedInvoke(mRPC, pv, args, &c);
+            if (!c) hit++;
+        }
+    } @catch (...) {}
+    return hit;
+}
+
+// #56 Odadaki Herkeste Canlı Yağmur & Gece/Gündüz Değiştir (Room CustomProperties: WeatherRain / WeatherLighting)
+static bool few1n_setRoomWeatherEveryone(float rainVal, float lightVal) {
+    if (!pn_getCurrentRoom || !i_runtime_invoke || !i_class_get_method_from_name || !i_object_new || !i_value_box) return false;
+    void* rm = NULL; @try { rm = pn_getCurrentRoom(); } @catch (...) {}
+    if (!ptrOk(rm)) return false;
+    void* rmCls  = few1n_classAnyImage("Photon.Realtime", "Room");
+    void* htCls  = few1n_classAnyImage("ExitGames.Client.Photon", "Hashtable");
+    void* fltCls = few1n_classAnyImage("System", "Single");
+    if (!rmCls || !htCls || !fltCls) return false;
+    void* htCtor = i_class_get_method_from_name(htCls, ".ctor", 0);
+    void* htSet  = i_class_get_method_from_name(htCls, "set_Item", 2);
+    void* mSetP  = i_class_get_method_from_name(rmCls, "SetCustomProperties", 3);
+    if (!htCtor || !htSet || !mSetP) return false;
+    @try {
+        void* ht = i_object_new(htCls);
+        if (!ptrOk(ht)) return false;
+        i_runtime_invoke(htCtor, ht, NULL, NULL);
+        if (rainVal >= 0.0f) {
+            void* k = mkStr(@"WeatherRain");
+            void* v = i_value_box(fltCls, &rainVal);
+            void* a[2] = { k, v };
+            i_runtime_invoke(htSet, ht, a, NULL);
+        }
+        if (lightVal >= 0.0f) {
+            void* k = mkStr(@"WeatherLighting");
+            void* v = i_value_box(fltCls, &lightVal);
+            void* a[2] = { k, v };
+            i_runtime_invoke(htSet, ht, a, NULL);
+        }
+        void* pArgs[3] = { ht, NULL, NULL };
+        bool crashed = false;
+        few1n_guardedInvoke(mSetP, rm, pArgs, &crashed);
+        if (!crashed) {
+            FLog([NSString stringWithFormat:@"🌦️ Oda hava durumu yayinlandi (Rain=%.2f Light=%.2f)", rainVal, lightVal]);
+            return true;
+        }
+    } @catch (...) {}
+    return false;
+}
+
+// #57 Başkasının / Herkesin Aracına Canlı Plaka / HDR Boya / UFO Tekerlek / Çıplak Bas (TuningManager.eai() Spoof)
+// presetMode: 0=3D Plaka, 1=HDR Neon Boya, 2=UFO 90° Kamber, 3=Tekerlek Sök (-1)
+static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSString *plateText) {
+    if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name || !mbp_getPhotonView) return 0;
+    void* tmCls  = few1n_classAnyImage("", "TuningManager");
+    void* pvCls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    if (!tmCls || !pvCls) return 0;
+    void* tmType = few1n_typeObjOf(tmCls);
+    void* mOwner = i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0);
+    void* mEah   = i_class_get_method_from_name(tmCls, "eah", 1);
+    void* mEae   = i_class_get_method_from_name(tmCls, "eae", 0);
+    void* mEai   = i_class_get_method_from_name(tmCls, "eai", 0);
+    if (!tmType || !mOwner) return 0;
+
+    // Resolve target tuner class for presetMode
+    const char* tunerName = (presetMode == 0) ? "PlateTuner" : (presetMode == 1) ? "PaintTuner" : (presetMode == 2) ? "WheelbaseTuner" : "WheelsITuner";
+    int tunerArgc = (presetMode == 0) ? 2 : (presetMode == 1) ? 3 : (presetMode == 2) ? 10 : 1;
+    void* tCls  = few1n_classAnyImage("", tunerName);
+    void* tType = tCls ? few1n_typeObjOf(tCls) : NULL;
+    void* tApp  = tCls ? i_class_get_method_from_name(tCls, "Apply", tunerArgc) : NULL;
+
+    // 1) Apply tuner locally on matching target car(s)
+    if (tType && tApp) {
+        @try {
+            void* a[1] = { tType };
+            void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+            int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+            void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+            for (int i = 0; i < cnt && i < 64 && items; i++) {
+                void* tn = items[i];
+                if (!unityAlive(tn) || few1n_pvIsMineFor(tn)) continue;
+                void* pv = NULL;
+                if (g_mGetCompInParent && g_photonViewType) {
+                    uint8_t inc = 1; void* pa[2] = { g_photonViewType, &inc };
+                    @try { pv = i_runtime_invoke(g_mGetCompInParent, tn, pa, NULL); } @catch (...) {}
+                }
+                if (!ptrOk(pv)) continue;
+                void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+                int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
+                if (targetActor > 0 && act != targetActor) continue;
+
+                bool cr = false;
+                if (presetMode == 0) {
+                    void* cS = mkStr(@"eu1"); void* tS = mkStr(plateText.length ? plateText : @"<size=350><color=#FF0033>FEW1N</color></size>");
+                    void* args[2] = { cS, tS };
+                    few1n_guardedInvoke(tApp, tn, args, &cr);
+                } else if (presetMode == 1) {
+                    Color4 c1 = {0.0f, 6.0f, 8.0f, 1.0f}, c2 = {6.0f, 0.0f, 8.0f, 1.0f}; int pt = 1;
+                    void* args[3] = { &c1, &c2, &pt };
+                    few1n_guardedInvoke(tApp, tn, args, &cr);
+                } else if (presetMode == 2) {
+                    float c=-90.0f, d=0.0f, o=0.25f, w=1.2f, r=1.4f;
+                    void* args[10] = { &c,&c,&d,&d,&o,&o,&w,&w,&r,&r };
+                    few1n_guardedInvoke(tApp, tn, args, &cr);
+                } else {
+                    int neg = -1; void* args[1] = { &neg };
+                    few1n_guardedInvoke(tApp, tn, args, &cr);
+                }
+            }
+        } @catch (...) {}
+    }
+
+    // 2) Broadcast LoadTuners via target TuningManager with temporary IsMine spoof + eai()
+    int hit = 0;
+    void* myLP = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+    @try {
+        void* a[1] = { tmType };
+        void* arr = i_runtime_invoke(g_mFindObjectsPlural, NULL, a, NULL);
+        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 64 && items; i++) {
+            void* tm = items[i];
+            if (!unityAlive(tm) || few1n_pvIsMineFor(tm)) continue;
+            void* pv = mbp_getPhotonView(tm);
+            if (!ptrOk(pv)) continue;
+            void* box = NULL; @try { box = i_runtime_invoke(mOwner, pv, NULL, NULL); } @catch (...) {}
+            int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
+            if (targetActor > 0 && act != targetActor) continue;
+
+            uintptr_t b = (uintptr_t)pv;
+            int oM = g_isMineOff;
+            uint8_t sMine = 0, sAm = 0; void* sCtrl = NULL; void* sOwn = NULL;
+            bool spoofed = false;
+            if (oM > 0 && ptrOk(myLP) && few1n_memOk((void*)(b + oM)) && few1n_memOk((void*)(b + oM + 0x18))) {
+                sMine = *(uint8_t*)(b + oM); sCtrl = *(void**)(b + oM + 0x08);
+                sAm = *(uint8_t*)(b + oM + 0x14); sOwn = *(void**)(b + oM + 0x18);
+                *(uint8_t*)(b + oM) = 1; *(void**)(b + oM + 0x08) = myLP;
+                *(uint8_t*)(b + oM + 0x14) = 1; *(void**)(b + oM + 0x18) = myLP;
+                spoofed = true;
+            }
+            uint8_t t1 = 1;
+            if (mEah) { bool cr=false; void* pa[1]={&t1}; few1n_guardedInvoke(mEah, tm, pa, &cr); }
+            if (mEae) { bool cr=false; few1n_guardedInvoke(mEae, tm, NULL, &cr); }
+            if (mEai) { bool cr=false; few1n_guardedInvoke(mEai, tm, NULL, &cr); }
+            if (spoofed) {
+                *(uint8_t*)(b + oM) = sMine; *(void**)(b + oM + 0x08) = sCtrl;
+                *(uint8_t*)(b + oM + 0x14) = sAm; *(void**)(b + oM + 0x18) = sOwn;
+            }
+            hit++;
+        }
+    } @catch (...) {}
+    return hit;
+}
+
 // Per-frame & periodic ticks for v117.15 + v117.16 + v117.17 features
 static void few1n_tickV11715Frame(void) {
     few1n_tickMagnetOrbit();
@@ -9126,6 +9391,12 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)v17LensFlareMenu;
 - (void)v17RegionSwitchMenu;
 - (void)v17ShowroomCamMenu;
+// v117.18 Remote & Room Sync (#53-#57)
+- (void)v18RemoteScaleMenu;
+- (void)v18RemoteFlipMenu;
+- (void)v18RemoteGhostMenu;
+- (void)v18RoomWeatherMenu;
+- (void)v18RemoteTuningMenu;
 - (void)tapAntiReport;
 - (void)tapVoteKickSnitch;
 - (void)tapPoliceStrobe;
@@ -10346,6 +10617,13 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"☀️  Güneş / Far Parlaması (LensFlare #50)" color:C_CYAN atY:y action:@selector(v17LensFlareMenu)];
     y = [self actionRow:@"🌍  Photon Sunucu Bölgesi Değiştir (EU/RU/US/TR #51)" color:C_ON atY:y action:@selector(v17RegionSwitchMenu)];
     y = [self actionRow:@"🏛️  Garaj Showroom Kamera Kilidi Kaldır (#52)" color:C_CYAN atY:y action:@selector(v17ShowroomCamMenu)];
+
+    y = [self header:@"👑  DİĞER OYUNCULARDA DEĞİŞTİR (#53–#57)" atY:y];
+    y = [self actionRow:@"🦖  Başkasının / Herkesin Araba Boyutunu Değiştir (#53)" color:C_RED atY:y action:@selector(v18RemoteScaleMenu)];
+    y = [self actionRow:@"🙃  Başkasının / Herkesin Arabasını Ters Çevir 180° (#54)" color:C_RED atY:y action:@selector(v18RemoteFlipMenu)];
+    y = [self actionRow:@"👻  Başkasının / Herkesin Aracında Respawn Hayalet (#55)" color:C_GOLD atY:y action:@selector(v18RemoteGhostMenu)];
+    y = [self actionRow:@"⛈️  Odadaki Herkeste Canlı Yağmur & Gece/Gündüz (#56)" color:C_ON atY:y action:@selector(v18RoomWeatherMenu)];
+    y = [self actionRow:@"🎨  Başkasının / Herkesin Plaka & Tuning'ini Değiştir (#57)" color:C_GOLD atY:y action:@selector(v18RemoteTuningMenu)];
 
     UIView *sc = [[UIView alloc] initWithFrame:CGRectMake(12,y,pw-24,38)];
     UILabel *sl = [[UILabel alloc] initWithFrame:CGRectMake(0,0,pw-24,38)];
@@ -17850,6 +18128,105 @@ static void few1n_joinTargetRoom(NSString *nm) {
     [ac addAction:[UIAlertAction actionWithTitle:@"🔭 360° Serbest Açı + Uzak (10m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ isShowroomCamFreeEnabled = true; few1n_applyShowroomCamFree(10.0f); }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"↩️ Normal (5.5m)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ isShowroomCamFreeEnabled = false; few1n_applyShowroomCamFree(5.5f); }]];
     [self v15PresentSheet:ac];
+}
+
+// ============================================================================
+// v117.18 REMOTE & ROOM-WIDE SYNC UI HANDLERS (#53 - #57)
+// ============================================================================
+- (void)v18PickPlayer:(NSString*)title onPick:(void(^)(int actorNr, NSString* name))cb {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:title
+        message:@"Hedef oyuncuyu veya tüm odayı seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌐 TÜM ODA (Herkese Uygula)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){ cb(-1, @"Tüm Oda"); }]];
+    if (pn_getPlayerListOthers && i_runtime_invoke) {
+        void* others = NULL; @try { others = pn_getPlayerListOthers(); } @catch (...) {}
+        void* plyCls = few1n_classAnyImage("Photon.Realtime", "Player");
+        void* mNick = plyCls ? i_class_get_method_from_name(plyCls, "get_NickName", 0) : NULL;
+        void* mAct  = plyCls ? i_class_get_method_from_name(plyCls, "get_ActorNumber", 0) : NULL;
+        int cnt = ptrOk(others) ? few1n_rdI32(others, 0x18, 0) : 0;
+        void** pls = ptrOk(others) ? (void**)((uintptr_t)others + 0x20) : NULL;
+        for (int i = 0; i < cnt && i < 24 && pls; i++) {
+            void* p = pls[i]; if (!ptrOk(p)) continue;
+            NSString *nm = @"Oyuncu"; int act = -1;
+            if (mNick) { void* s = i_runtime_invoke(mNick, p, NULL, NULL); if (ptrOk(s)) nm = readStr(s); }
+            if (mAct)  { void* b = i_runtime_invoke(mAct,  p, NULL, NULL); if (ptrOk(b)) act = *(int*)((uintptr_t)b + 0x10); }
+            if (act > 0) {
+                [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎯 %@ (#%d)", nm, act] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ cb(act, nm); }]];
+            }
+        }
+    }
+    [self v15PresentSheet:ac];
+}
+
+// #53 Başkasının / Herkesin Araba Boyutunu Değiştir
+- (void)v18RemoteScaleMenu {
+    [self v18PickPlayer:@"🦖 Boyutu Değişecek Hedef (#53)" onPick:^(int act, NSString *nm){
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"🦖 %@ Boyut Seç", nm]
+            message:@"SmoothSyncRCC RpcTeleport ile boyut gönder:" preferredStyle:UIAlertControllerStyleActionSheet];
+        void (^opt)(NSString*, float,float,float) = ^(NSString* t, float x, float y, float z){
+            [ac addAction:[UIAlertAction actionWithTitle:t style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                int n = few1n_remoteScaleOrFlipActor(act, x, y, z, false);
+                [self v15Alert:@"🦖 Boyut Gönderildi" msg:(n > 0 ? [NSString stringWithFormat:@"%d araca boyut RPC'si yollandı!", n] : @"Hedef araç bulunamadı.")];
+            }]];
+        };
+        opt(@"🏔️ 4x DEV TİTAN",         4.0f, 4.0f, 4.0f);
+        opt(@"🦖 2.5x DEV CANAVAR",      2.5f, 2.5f, 2.5f);
+        opt(@"🐜 0.3x KARINCA MİNİ",     0.3f, 0.3f, 0.3f);
+        opt(@"🥞 YASSI PANCAKE",         1.0f, 0.25f, 1.0f);
+        opt(@"↩️ Normal (1x)",           1.0f, 1.0f, 1.0f);
+        [self v15PresentSheet:ac];
+    }];
+}
+
+// #54 Başkasının / Herkesin Arabasını Ters Çevir (180°)
+- (void)v18RemoteFlipMenu {
+    [self v18PickPlayer:@"🙃 Ters Çevrilecek Hedef (#54)" onPick:^(int act, NSString *nm){
+        int n = few1n_remoteScaleOrFlipActor(act, 1.0f, 1.0f, 1.0f, true);
+        [self v15Alert:@"🙃 Ters Çevir 180°" msg:(n > 0 ? [NSString stringWithFormat:@"%d araç ters çevrildi!", n] : @"Hedef araç bulunamadı.")];
+    }];
+}
+
+// #55 Başkasının / Herkesin Aracında Respawn Hayalet Tetikle
+- (void)v18RemoteGhostMenu {
+    [self v18PickPlayer:@"👻 Respawn Hayalet Hedefi (#55)" onPick:^(int act, NSString *nm){
+        int n = few1n_remoteRespawnGhostActor(act);
+        [self v15Alert:@"👻 Respawn Hayalet" msg:(n > 0 ? [NSString stringWithFormat:@"%d araca SetState RPC yollandı!", n] : @"RespawnCollision bulunamadı.")];
+    }];
+}
+
+// #56 Odadaki Herkeste Canlı Yağmur & Gece/Gündüz
+- (void)v18RoomWeatherMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⛈️ Oda Hava & Saat (#56 — Herkeste)"
+        message:@"Photon Room CustomProperties (WeatherRain / WeatherLighting):" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⛈️ Sağanak Fırtına + Gece" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRoomWeatherEveryone(1.0f, 1.0f); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌧️ Sağanak Yağmur + Gündüz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRoomWeatherEveryone(1.0f, 0.0f); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🌙 Açık Hava + Gece" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRoomWeatherEveryone(0.0f, 1.0f); }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"☀️ Güneşli + Gündüz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRoomWeatherEveryone(0.0f, 0.0f); }]];
+    [self v15PresentSheet:ac];
+}
+
+// #57 Başkasının / Herkesin Plaka & Tuning'ini Değiştir (eai() Spoof)
+- (void)v18RemoteTuningMenu {
+    [self v18PickPlayer:@"🎨 Tuning Değişecek Hedef (#57)" onPick:^(int act, NSString *nm){
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"🎨 %@ — Tuning Seç", nm]
+            message:@"Hedef araca uygula + eai() LoadTuners RPC ile yayınla:" preferredStyle:UIAlertControllerStyleActionSheet];
+        [ac addAction:[UIAlertAction actionWithTitle:@"🔥 Dev Kırmızı FEW1N 3D Plaka Bas" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            int n = few1n_remoteApplyTuningToActor(act, 0, @"<size=350><color=#FF0033><b>FEW1N</b></color></size>");
+            [self v15Alert:@"🎨 Plaka & Tuning" msg:(n > 0 ? [NSString stringWithFormat:@"%d araca uygulandı & eai() yollandı!", n] : @"Hedef TuningManager bulunamadı.")];
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"🌈 HDR Neon Bukalemun Boya Bas" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            int n = few1n_remoteApplyTuningToActor(act, 1, nil);
+            [self v15Alert:@"🌈 HDR Boya" msg:(n > 0 ? [NSString stringWithFormat:@"%d araca HDR boya & eai() yollandı!", n] : @"Hedef TuningManager bulunamadı.")];
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"🛸 UFO 90° Kamber Tekerlek Yap" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            int n = few1n_remoteApplyTuningToActor(act, 2, nil);
+            [self v15Alert:@"🛸 UFO Tekerlek" msg:(n > 0 ? [NSString stringWithFormat:@"%d araca UFO kamber & eai() yollandı!", n] : @"Hedef TuningManager bulunamadı.")];
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"💀 Tekerleklerini Sök (-1)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+            int n = few1n_remoteApplyTuningToActor(act, 3, nil);
+            [self v15Alert:@"💀 Tekerlek Sök" msg:(n > 0 ? [NSString stringWithFormat:@"%d aracın tekerleği söküldü & eai() yollandı!", n] : @"Hedef TuningManager bulunamadı.")];
+        }]];
+        [self v15PresentSheet:ac];
+    }];
 }
 
 // ===== NAN / CRASH PAKET INJECT =====
