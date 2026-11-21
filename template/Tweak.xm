@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.22
+#define FEW1N_VERSION 117.23
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -10729,73 +10729,38 @@ static UIViewController* few1n_topVC(void) {
     y = [self header:@"🎨  SENKRON MODİFİYE (HERKESTE)" atY:y];
     y = [self actionRow:@"🔥  Dev & Renkli 3D Plaka (#1 — Herkeste)" color:C_GOLD atY:y action:@selector(v15Giant3DPlateMenu)];
     y = [self actionRow:@"🇯🇵  Gizli Çin & Japon Plakaları (#15 — Herkeste)" color:C_GOLD atY:y action:@selector(v15SecretPlateCodesMenu)];
-    y = [self actionRow:@"🌈  HDR Neon / Void Boya & Jant (#2 — Herkeste)" color:C_GOLD atY:y action:@selector(v15HdrPaintMenu)];
-    y = [self actionRow:@"🛸  Monster / UFO 90° Kamber (#3 — Herkeste)" color:C_GOLD atY:y action:@selector(v15ExtremeWheelsMenu)];
-    y = [self actionRow:@"💀  Çıplak / Tekerleksiz Araba (#4 — Herkeste)" color:C_RED atY:y action:@selector(v15StripCarMenu)];
+    y = [self actionRow:@"🦖  Dev / Mini / Yassı Araba (#36 — Herkeste)" color:C_GOLD atY:y action:@selector(v16SyncedCarScaleMenu)];
 
     y = [self header:@"⚡  FİZİK, TRAFİK & ODA (HERKESTE)" atY:y];
     y = [self actionRow:@"🚦  Toplu Trafik: Barikat / Konvoy / Yağmur (#5)" color:C_GOLD atY:y action:@selector(v15BatchTrafficMenu)];
-    y = [self actionRow:@"🌑  Oda Ekran Karart / Reset RPC (#6)" color:C_RED atY:y action:@selector(v15RoomBlackoutMenu)];
     y = [self actionRow:@"🦀  Crab Walk / 4WS Direksiyon (#8)" color:C_ON atY:y action:@selector(v15CrabWalkMenu)];
     y = [self actionRow:@"🧲  Mıknatıs Yörünge / Magnet Orbit (#9)" color:C_RED atY:y action:@selector(v15MagnetOrbitMenu)];
-    y = [self toggle:@"🦘  Lowrider Zıplama (#10)" sub:@"Araç ritmik olarak zıplar ve sallanır (herkeste)" key:@"lowriderbounce" atY:y action:@selector(tapLowriderBounce)];
-    y = [self actionRow:@"🤸  Bunny Hop / Tek Teker / Tank 360° (#10)" color:C_ON atY:y action:@selector(v15PhysicsStuntsMenu)];
     y = [self toggle:@"🚀  1000+ km/h Motor & 500 Geri Vites (#11)" sub:@"Tork 6000NM, 14000 RPM, 0sn vites, Limiter kapalı" key:@"superengine1000" atY:y action:@selector(tapSuperEngine1000)];
     y = [self toggle:@"🛑  Anında Fren (Instant Brake #11)" sub:@"Frene dokunduğun an araç 0 km/h durur" key:@"instantbrake" atY:y action:@selector(tapInstantBrake)];
     y = [self actionRow:@"⚙️  Çekiş Sistemi: AWD / RWD / FWD (#11)" color:C_CYAN atY:y action:@selector(v15DriveTypeMenu)];
-    y = [self actionRow:@"🔑  Aktif Oda Harita & Şifre (pwd) Detayı (#19)" color:C_CYAN atY:y action:@selector(v15LobbyDetails)];
-
-    y = [self header:@"🎥  KAMERA, DRONE, SES & HUD" atY:y];
-    y = [self actionRow:@"🛸  Dahili Drone Kamera Aç/Kapa (#12)" color:C_ON atY:y action:@selector(v15NativeDroneMenu)];
-    y = [self actionRow:@"👁️  Canlı Oyuncu İzle / Spectate (#13)" color:C_GOLD atY:y action:@selector(v15SpectatePlayerMenu)];
-    y = [self toggle:@"💥  Gerçek Pops & Bangs Sesi (#14)" sub:@"MufflerCrackleRandom %100 patlatma + 0 gecikme" key:@"realpopsbangs" atY:y action:@selector(tapRealPopsBangs)];
-    y = [self toggle:@"🌈  RGB Egzoz Alevi (#14)" sub:@"RCCP_Exhaust alev rengini gökkuşağı yapar" key:@"rgbexhaust" atY:y action:@selector(tapRgbExhaust)];
-    y = [self actionRow:@"🎞️  13 URP Drone Kamera Filtresi (#23)" color:C_CYAN atY:y action:@selector(v15DroneFiltersMenu)];
-    y = [self actionRow:@"📸  Fotoğraf Modu / HUD Gizle / 4x Zoom (#24)" color:C_CYAN atY:y action:@selector(v15PhotoRecordMenu)];
-    y = [self actionRow:@"⏱️  0–100 km/h Drag Kronometresi (#27)" color:C_ON atY:y action:@selector(v15ZeroTo100Menu)];
-    y = [self actionRow:@"🏆  Özel Altın Popup Göster (#28)" color:C_GOLD atY:y action:@selector(v15GoldPopupPrompt)];
-
-    y = [self header:@"🛠️  GARAJ, HAVA, GRAFİK & RCCP GİZLİ" atY:y];
-    y = [self toggle:@"💸  Ücretsiz Modifiye Dükkanı (#16)" sub:@"TuningShop sepet fiyatlarını canlı 0 yapar" key:@"freetuningshop" atY:y action:@selector(tapFreeTuningShop)];
-    y = [self toggle:@"🗺️  Tüm Haritaların Kilidini Aç (#17)" sub:@"Mesafe (KM) kilitli tüm haritaları açar" key:@"unlockallmaps" atY:y action:@selector(tapUnlockAllMaps)];
-    y = [self actionRow:@"⛈️  Şimşek Fırtınası / THOR (#18)" color:C_CYAN atY:y action:@selector(v15ThunderstormMenu)];
-    y = [self actionRow:@"🎁  Reklam Ödülü / Highway / Görev Yenile (#20-22)" color:C_GOLD atY:y action:@selector(v15RewardsTasksMenu)];
-    y = [self actionRow:@"🖥️  Extreme Grafik (120FPS) & FPS Debugger (#25)" color:C_ON atY:y action:@selector(v15GraphicsFpsMenu)];
-    y = [self actionRow:@"🔧  Anında Gövde Tamiri & Hasar Kapat (#26)" color:C_ON atY:y action:@selector(v15RepairVehicleMenu)];
-    y = [self actionRow:@"🧍  Sürücü Avatar Modları (Gizli/Koca/T-Pose #29)" color:C_CYAN atY:y action:@selector(v15AvatarDriverMenu)];
-    y = [self actionRow:@"⏺️  Sürüş Kayıt & Replay / Otopilot (#30)" color:C_GOLD atY:y action:@selector(v15RecorderReplayMenu)];
-    y = [self toggle:@"📐  Aşırı Gövde Yatırma / BodyTilt (#31)" sub:@"Viraj ve gazda araç aşırı yatar (Lowrider)" key:@"bodytiltmax" atY:y action:@selector(tapBodyTiltMax)];
-    y = [self toggle:@"🌀  Tekerlek Motion Blur Boost (#32)" sub:@"Jant hareket bulanıklığını maksimuma çeker" key:@"wheelblurboost" atY:y action:@selector(tapWheelBlurBoost)];
-    y = [self toggle:@"🖤  Sürekli Drift Lastik İzi (#32)" sub:@"Tüm tekerlekler sürekli siyah drift izi bırakır" key:@"skidmarksforce" atY:y action:@selector(tapSkidmarksForce)];
-    y = [self actionRow:@"🧽  Yoldaki Tüm Lastik İzlerini Temizle (#32)" color:C_CYAN atY:y action:@selector(v15CleanSkidmarks)];
-    y = [self actionRow:@"🪽  Aktif Spoiler & Römork Kontrolü (#33)" color:C_CYAN atY:y action:@selector(v15SpoilerTrailerMenu)];
-    y = [self toggle:@"🚧  Highway Bariyer Korumasını Kapat (#34)" sub:@"Bariyerden geri sekme korumasını devre dışı bırakır" key:@"nobarrierprot" atY:y action:@selector(tapNoBarrierProt)];
-    y = [self toggle:@"🚘  Highway Sahte Karşı Trafiği Kapat (#34)" sub:@"HR_FakeOncomingTraffic bileşenini kapatır" key:@"nofaketraffic" atY:y action:@selector(tapNoFakeTraffic)];
-    y = [self actionRow:@"🌧️  Manuel Cam Yağmuru & Silecek Hızı (#35)" color:C_CYAN atY:y action:@selector(v15RainWipersMenu)];
-    y = [self toggle:@"🪞  Gerçek Zamanlı Ayna Yansıma (#35)" sub:@"6-yüz/frame sınırsız gerçek zamanlı araç yansıması" key:@"ultramirror" atY:y action:@selector(tapUltraMirror)];
-
-    y = [self header:@"🌟  EXTRA MEGA PACK (#36–#52)" atY:y];
-    y = [self actionRow:@"🦖  Dev / Mini / Yassı Araba (#36 — HERKESTE)" color:C_GOLD atY:y action:@selector(v16SyncedCarScaleMenu)];
-    y = [self actionRow:@"🔊  Süperşarj / Turbo / Şanzıman Ses Modu (#37)" color:C_ON atY:y action:@selector(v16EngineAudioMenu)];
     y = [self toggle:@"🏎️  F1 Downforce & Sıfır Hava Direnci (#38)" sub:@"5000 Downforce (yola yapışır), 0 rüzgar direnci, anında düzelme" key:@"f1downforce" atY:y action:@selector(tapF1Downforce)];
     y = [self actionRow:@"🛞  ABS / ESP / TCS Sürüş Destekleri (#39)" color:C_CYAN atY:y action:@selector(v16StabilityMenu)];
-    y = [self actionRow:@"🚘  Tüm Trafik Araçlarına Kendi Plakanı Bas (#40)" color:C_GOLD atY:y action:@selector(v16TrafficPlatesPrompt)];
-    y = [self toggle:@"💧  Islak Ayna Asfalt (#41)" sub:@"Hava güneşliyken bile asfaltı ıslak ayna gibi parlatır" key:@"wetasphalt" atY:y action:@selector(tapWetAsphalt)];
-    y = [self toggle:@"🌧️  Kamera Lensi Yağmur Damlası (#41)" sub:@"Ekrana sinematik su damlası efekti ekler" key:@"lensrain" atY:y action:@selector(tapLensRain)];
-    y = [self actionRow:@"💨  NFS Hiper-Hız Kamera Blur Ayarı (#42)" color:C_CYAN atY:y action:@selector(v16CamBlurMenu)];
-    y = [self toggle:@"💎  4K Görüntü Keskinleştirme / PrismSharpen (#42)" sub:@"Ekranı ekstra netleştirir" key:@"4ksharpen" atY:y action:@selector(tap4KSharpen)];
-    y = [self actionRow:@"🎁  Sosyal Medya Ödüllerini Anında Al (#43)" color:C_GOLD atY:y action:@selector(v16SocialRewards)];
-    y = [self toggle:@"📳  iPhone Taptic Titreşimleri Kapat (#44)" sub:@"Motor, egzoz, çarpışma ve kalp atışı titreşimlerini kapatır" key:@"hapticsoff" atY:y action:@selector(tapHapticsOff)];
-    y = [self actionRow:@"📱  Gizli Donanım / RAM Bilgisi (#45)" color:C_CYAN atY:y action:@selector(v16DeviceInfo)];
-    y = [self toggle:@"💣  Highway Bomba Modu Dondur (#46)" sub:@"HR_Bomb bileşenini devre dışı bırakır" key:@"bombfreeze" atY:y action:@selector(tapBombFreeze)];
+    y = [self actionRow:@"🔑  Aktif Oda Harita & Şifre (pwd) Detayı (#19)" color:C_CYAN atY:y action:@selector(v15LobbyDetails)];
+
+    y = [self header:@"🎥  KAMERA, SES, GRAFİK & DÜNYA" atY:y];
+    y = [self actionRow:@"👁️  Canlı Oyuncu İzle / Spectate (#13)" color:C_GOLD atY:y action:@selector(v15SpectatePlayerMenu)];
     y = [self actionRow:@"🎥  Gizli Kamera Modları: Tekerlek / Sinematik / GTA (#47)" color:C_GOLD atY:y action:@selector(v17HiddenCameraMenu)];
     y = [self toggle:@"🧘  Kamera Sarsıntısını Kapat (#47)" sub:@"Yüksek hızda kamera titremesini tamamen kapatır" key:@"nocamshake" atY:y action:@selector(tapNoCamShake)];
+    y = [self toggle:@"💥  Gerçek Pops & Bangs Sesi (#14)" sub:@"MufflerCrackleRandom %100 patlatma + 0 gecikme" key:@"realpopsbangs" atY:y action:@selector(tapRealPopsBangs)];
+    y = [self toggle:@"🌈  RGB Egzoz Alevi (#14)" sub:@"RCCP_Exhaust alev rengini gökkuşağı yapar" key:@"rgbexhaust" atY:y action:@selector(tapRgbExhaust)];
+    y = [self actionRow:@"🔊  Süperşarj / Turbo / Şanzıman Ses Modu (#37)" color:C_ON atY:y action:@selector(v16EngineAudioMenu)];
+    y = [self actionRow:@"⏱️  0–100 km/h Drag Kronometresi (#27)" color:C_ON atY:y action:@selector(v15ZeroTo100Menu)];
     y = [self actionRow:@"📊  Canlı Araç Fizik Telemetrisi (#48)" color:C_CYAN atY:y action:@selector(v17LiveTelemetry)];
-    y = [self actionRow:@"🏆  Highway Makas (Near Miss) & Skor +50K (#49)" color:C_GOLD atY:y action:@selector(v17BoostNearMiss)];
-    y = [self toggle:@"💨  Hasarlı Motor Dumanını Kapat (#50)" sub:@"HR_EngineSmoke dumanını gizler" key:@"noenginesmoke" atY:y action:@selector(tapNoEngineSmoke)];
-    y = [self actionRow:@"☀️  Güneş / Far Parlaması (LensFlare #50)" color:C_CYAN atY:y action:@selector(v17LensFlareMenu)];
-    y = [self actionRow:@"🌍  Photon Sunucu Bölgesi Değiştir (EU/RU/US/TR #51)" color:C_ON atY:y action:@selector(v17RegionSwitchMenu)];
-    y = [self actionRow:@"🏛️  Garaj Showroom Kamera Kilidi Kaldır (#52)" color:C_CYAN atY:y action:@selector(v17ShowroomCamMenu)];
+    y = [self toggle:@"🗺️  Tüm Haritaların Kilidini Aç (#17)" sub:@"Mesafe (KM) kilitli tüm haritaları açar" key:@"unlockallmaps" atY:y action:@selector(tapUnlockAllMaps)];
+    y = [self actionRow:@"⛈️  Şimşek Fırtınası / THOR (#18)" color:C_CYAN atY:y action:@selector(v15ThunderstormMenu)];
+    y = [self toggle:@"💧  Islak Ayna Asfalt (#41)" sub:@"Hava güneşliyken bile asfaltı ıslak ayna gibi parlatır" key:@"wetasphalt" atY:y action:@selector(tapWetAsphalt)];
+    y = [self toggle:@"🌧️  Kamera Lensi Yağmur Damlası (#41)" sub:@"Ekrana sinematik su damlası efekti ekler" key:@"lensrain" atY:y action:@selector(tapLensRain)];
+    y = [self actionRow:@"🖥️  Extreme Grafik (120FPS) & FPS Debugger (#25)" color:C_ON atY:y action:@selector(v15GraphicsFpsMenu)];
+    y = [self actionRow:@"📱  Gizli Donanım / RAM Bilgisi (#45)" color:C_CYAN atY:y action:@selector(v16DeviceInfo)];
+    y = [self actionRow:@"🧍  Sürücü Avatar Modları (Gizli/Koca/T-Pose #29)" color:C_CYAN atY:y action:@selector(v15AvatarDriverMenu)];
+    y = [self actionRow:@"🚘  Tüm Trafik Araçlarına Kendi Plakanı Bas (#40)" color:C_GOLD atY:y action:@selector(v16TrafficPlatesPrompt)];
+    y = [self toggle:@"🚧  Highway Bariyer Korumasını Kapat (#34)" sub:@"Bariyerden geri sekme korumasını devre dışı bırakır" key:@"nobarrierprot" atY:y action:@selector(tapNoBarrierProt)];
+    y = [self toggle:@"🚘  Highway Sahte Karşı Trafiği Kapat (#34)" sub:@"HR_FakeOncomingTraffic bileşenini kapatır" key:@"nofaketraffic" atY:y action:@selector(tapNoFakeTraffic)];
 
     y = [self header:@"👑  DİĞER OYUNCULARDA DEĞİŞTİR (#53–#58)" atY:y];
     y = [self actionRow:@"🦖  Başkasının / Herkesin Araba Boyutunu Değiştir (#53)" color:C_RED atY:y action:@selector(v18RemoteScaleMenu)];
