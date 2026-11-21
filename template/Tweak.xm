@@ -2506,15 +2506,15 @@ static float getTimeScaleVal(void) {
 }
 
 
-static bool few1n_memOk(const void* addr);
+static bool few1n_memOk(void* addr);
 static NSString* readStr(void* il2s) {
     if (!il2s || (uintptr_t)il2s < 0x1000) return @"";
-    if (!few1n_memOk((const void*)((uintptr_t)il2s + OFF_IL2CPP_STRING_LEN))) return @"";
+    if (!few1n_memOk((void*)((uintptr_t)il2s + OFF_IL2CPP_STRING_LEN))) return @"";
     @try {
         int32_t len = *(int32_t*)((uintptr_t)il2s + OFF_IL2CPP_STRING_LEN);
         if (len <= 0 || len > 4096) return @"";
-        const void* charsStart = (const void*)((uintptr_t)il2s + OFF_IL2CPP_STRING_CHARS);
-        const void* charsEnd   = (const void*)((uintptr_t)charsStart + (size_t)(len - 1) * 2);
+        void* charsStart = (void*)((uintptr_t)il2s + OFF_IL2CPP_STRING_CHARS);
+        void* charsEnd   = (void*)((uintptr_t)charsStart + (size_t)(len - 1) * 2);
         if (!few1n_memOk(charsStart) || !few1n_memOk(charsEnd)) return @"";
         return [NSString stringWithCharacters:(const unichar*)charsStart length:len];
     } @catch (...) { return @""; }
