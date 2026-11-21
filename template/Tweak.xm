@@ -17,7 +17,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.12
+#define FEW1N_VERSION 117.13
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -2078,10 +2078,31 @@ static void w_chat_klv(void* self) {
     }
 }
 
-// 1.4.4 Vanilla Chat Modu: Yerel <noparse> temizligi ve richText zorlamasi kaldirildi.
-// Diger unmodded oyuncular gibi chat tamamen normal / orijinal gorunur.
+// v117.13: ChatUI (allText, ozh, input) richText kilidini guvenli ac (Queue bellek yuruyusu YOK)
 static void few1n_enableChatRichText(void) {
-    // no-op (vanilla)
+    if (!chatGetInst || !i_runtime_invoke) return;
+    @try {
+        void* cm = chatGetInst();
+        if (!unityAlive(cm)) return;
+        void* cui = *(void**)((uintptr_t)cm + 0x40); // ChatManager.chatUI
+        if (!unityAlive(cui)) return;
+        void* allText = *(void**)((uintptr_t)cui + 0x20); // ChatUI.allText
+        if (unityAlive(allText)) {
+            setRichTextIl(allText, true);
+            *(unsigned char*)((uintptr_t)allText + 0x342) = 1; // TMP_Text.m_isRichText
+        }
+        void* ozh = *(void**)((uintptr_t)cui + 0x50); // ChatUI.ozh
+        if (unityAlive(ozh)) {
+            setRichTextIl(ozh, true);
+            *(unsigned char*)((uintptr_t)ozh + 0x342) = 1;
+        }
+        void* inp = *(void**)((uintptr_t)cui + 0x30); // ChatUI.input (TMP_InputField)
+        if (unityAlive(inp)) {
+            *(unsigned char*)((uintptr_t)inp + 0x221) = 1; // m_RichText
+            *(unsigned char*)((uintptr_t)inp + 0x2D2) = 1; // m_isRichTextEditingAllowed
+            *(int*)((uintptr_t)inp + 0x188) = 0;           // m_CharacterValidation = None
+        }
+    } @catch (...) {}
 }
 
 // ====== PlayerManager (para — sunucu-kilitli ama getters visual için) ======
@@ -6502,6 +6523,14 @@ static void* h_censorship_opo(void* a, int b) {
 
 static void* (*o_censorship_opp)(void*) = NULL;
 static void* h_censorship_opp(void* inputStr) {
+    if (inputStr) {
+        @try {
+            NSString *s = readStr(inputStr);
+            if (s && ([s containsString:@"<color"] || [s containsString:@"<#"] || [s containsString:@"<b>"])) {
+                return inputStr;
+            }
+        } @catch (...) {}
+    }
     return o_censorship_opp ? o_censorship_opp(inputStr) : inputStr;
 }
 
@@ -6517,6 +6546,26 @@ static void h_chat_cie(void* self, void* sender, void* msg) {
 
 static void (*o_tmp_setText_sb)(void*, void*) = NULL;
 static void h_tmp_setText_sb(void* self, void* sourceText) {
+    if (self && g_mSetRichText) setRichTextIl(self, true);
+    if (sourceText && i_runtime_invoke && i_class_get_method_from_name) {
+        @try {
+            static void* mToStr = NULL;
+            if (!mToStr) {
+                void* sbCls = few1n_classAnyImage("System.Text", "StringBuilder");
+                if (sbCls) mToStr = i_class_get_method_from_name(sbCls, "ToString", 0);
+            }
+            if (mToStr) {
+                void* ilStr = i_runtime_invoke(mToStr, sourceText, NULL, NULL);
+                if (ptrOk(ilStr)) {
+                    NSString *s = readStr(ilStr);
+                    if (s && [s containsString:@"<noparse>"] && ([s containsString:@"<color"] || [s containsString:@"<#"] || [s containsString:@"<b>"])) {
+                        few1n_sbReplace(sourceText, @"<noparse>", @"");
+                        few1n_sbReplace(sourceText, @"</noparse>", @"");
+                    }
+                }
+            }
+        } @catch (...) {}
+    }
     if (o_tmp_setText_sb) o_tmp_setText_sb(self, sourceText);
 }
 
@@ -6579,6 +6628,7 @@ static void few1n_applyGlobalChatColor(NSString *hexColor) {
 
 static void h_chatSend(void* self, void* msg) {
     fChat++;
+    few1n_enableChatRichText();
     if (msg) {
         NSString *orig = readStr(msg);
         if (orig.length > 0) {
@@ -6759,8 +6809,11 @@ static void h_chatSend(void* self, void* msg) {
                 void* colored = mkStr(glitchWrapChat(orig));
                 if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
             } else if (isColorChatEnabled) {
-                void* colored = mkStr([NSString stringWithFormat:@"<color=cyan><b>[FEW1N]</b></color> %@", orig]);
-                if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
+                if (![orig containsString:@"<color"] && ![orig containsString:@"<#"]) {
+                    NSString *hex = (spamColorHex && spamColorHex.length > 0) ? spamColorHex : @"00FFFF";
+                    void* colored = mkStr([NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", hex, orig]);
+                    if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
+                }
             }
         }
     }
@@ -6863,6 +6916,11 @@ static void h_tmpSetText(void* self, void* textStr) {
             if (str && [str containsString:@"FEW1N NUKE"]) {
                 // Kendi cihazımız nuke metnini render etmez -> Yerel çökme engellenir!
                 return;
+            }
+            if (str && [str containsString:@"<noparse>"] && ([str containsString:@"<color"] || [str containsString:@"<#"] || [str containsString:@"<b>"])) {
+                str = [[str stringByReplacingOccurrencesOfString:@"<noparse>" withString:@""] stringByReplacingOccurrencesOfString:@"</noparse>" withString:@""];
+                void* cleanStr = mkStr(str);
+                if (cleanStr) textStr = cleanStr;
             }
             // v102: VIDYO ISIM MODU - kisa nickname'leri buyuk ve kirmizi yap
             if (isVidyoNamesEnabled && str && str.length >= 2 && str.length <= 20
@@ -7248,6 +7306,7 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 @property (nonatomic, strong) UIView *favOverlay;
 @property (nonatomic, strong) UIView *nanOverlay;
 - (void)tapAdBlock;
+- (void)tapColorChat;
 - (void)tapPopBangs;
 - (void)tapAutoHorn;
 - (void)tapRevLimiter;
@@ -8294,6 +8353,10 @@ static UIViewController* few1n_topVC(void) {
         y += 52;
     }
     y = [self actionRow:@"💬  Evrensel Mesaj Gönder (Herkeste Görünür)" color:C_ON atY:y action:@selector(sendUniversalChatMsg)];
+    y = [self toggle:@"🌈  Renkli Chat Modu (Otomatik)" sub:@"Yazdığın her mesaj seçili renkte gönderilir" key:@"colorchat" atY:y action:@selector(tapColorChat)];
+    y = [self actionRow:@"🔥  Herkeste Renkli Chat (Seç / Sıfırla)" color:C_GOLD atY:y action:@selector(pickEveryoneChatColor)];
+    y = [self actionRow:@"🎨  Renkli Mesaj Gönder (Anlık)" color:C_ON atY:y action:@selector(sendColoredChat)];
+    y = [self actionRow:@"🖌️  Chat & Spam Rengi Seç (HEX)" color:C_CYAN atY:y action:@selector(pickSpamColor)];
     y = [self toggle:@"🟢  Matrix Chat Modu" sub:@"Mesajlarin yesil sistem stili" key:@"matrixchat" atY:y action:@selector(tapMatrixChat)];
     y = [self toggle:@"💀  Glitch Chat Modu" sub:@"Mesajlarin mor/root stili" key:@"glitchchat" atY:y action:@selector(tapGlitchChat)];
     // YENI: mod'dan yaz -> stilde gonder (hook gerektirmez, her zaman calisir)
@@ -8679,6 +8742,7 @@ static UIViewController* few1n_topVC(void) {
     [self setToggle:@"neonlights" on:isNeonLightsEnabled];
     [self setToggle:@"hazardlights" on:isHazardLightsEnabled];
     [self setToggle:@"ghostnohit" on:isGhostNoHitEnabled];
+    [self setToggle:@"colorchat" on:isColorChatEnabled];
     [self setToggle:@"votekicksnitch" on:isVoteKickSnitchEnabled];
     [self setToggle:@"antireport" on:isAntiReportEnabled];
     [self setToggle:@"antigrav"  on:isAntiGrav];
@@ -10130,6 +10194,20 @@ static UIViewController* few1n_topVC(void) {
 }
 - (void)sendMatrixMsg { [self promptStyledSend:0]; }
 - (void)sendGlitchMsg { [self promptStyledSend:1]; }
+- (void)tapColorChat {
+    isColorChatEnabled = !isColorChatEnabled;
+    if (isColorChatEnabled) {
+        isUniversalChatEnabled = false; isMatrixChatEnabled = false; isGlitchChatEnabled = false;
+        saveBool(@"universalchat", false); saveBool(@"matrixchat", false); saveBool(@"glitchchat", false);
+        few1n_enableChatRichText();
+        NSString *col = (spamColorHex[0]) ? [NSString stringWithUTF8String:spamColorHex] : @"00FFFF";
+        few1n_applyGlobalChatColor(col);
+    } else {
+        few1n_applyGlobalChatColor(@"RESET");
+    }
+    saveBool(@"colorchat", isColorChatEnabled);
+    [self refreshUI];
+}
 // Istedigin mesaji, sectigin renkte gonder (modsuzlar dahil HERKES renkli gorur)
 - (void)sendColoredChat {
     if (!chatGetInst || !chatSend) { FLog(@"Chat pointeri yok - odaya gir"); return; }
@@ -15782,7 +15860,7 @@ static void restoreSettings(void) {
     carAccelPower          = loadFloat(@"caraccel", 3.0f);
     carSteerPower          = loadFloat(@"carsteer", 1.0f);
     carTopSpeed            = loadFloat(@"cartop",   300.0f);
-    isColorChatEnabled     = false;   // [SESSION_ONLY] ozellik kaldirildi, kalici kapali
+    isColorChatEnabled     = loadBool(@"colorchat", false);
     isSpamEnabled          = loadBool(@"chatspam", false);
     isBypassPasswordEnabled= loadBool(@"bypass", true);
     isFlyEnabled           = loadBool(@"fly", false);
@@ -16150,6 +16228,17 @@ static void InstallEverything(uintptr_t b) {
     safeHookByName("TMPro",           "TMP_Text",       "set_text",        1, (void*)h_tmpSetText,      (void**)&o_tmpSetText,      "TMP_Text.set_text");
     if (!o_tmpSetText && global_base) {
         safeHook((void*)(global_base + 0x68123FC), (void*)h_tmpSetText, (void**)&o_tmpSetText, "TMP_Text.set_text (direct RVA)");
+    }
+    {
+        const char* sbPrm[1] = { "StringBuilder" };
+        safeHookBySig("TMPro", "TMP_Text", (const char*[]){"SetText", NULL}, 1, "Void", sbPrm, NULL, (void*)h_tmp_setText_sb, (void**)&o_tmp_setText_sb, "TMP_Text.SetText(StringBuilder)");
+        if (!o_tmp_setText_sb && global_base) {
+            safeHook((void*)(global_base + 0x68186C0), (void*)h_tmp_setText_sb, (void**)&o_tmp_setText_sb, "TMP_Text.SetText(SB) (direct RVA)");
+        }
+    }
+    safeHookByName("Censorship",      "ra",             "opp",             1, (void*)h_censorship_opp,  (void**)&o_censorship_opp,  "Censorship.ra.opp");
+    if (!o_censorship_opp && global_base) {
+        safeHook((void*)(global_base + 0x32852FC), (void*)h_censorship_opp, (void**)&o_censorship_opp, "Censorship.ra.opp (direct RVA)");
     }
     safeHookByName("",                "ChatManager",    "Send",            1, (void*)h_chatSend,        (void**)&o_chatSend,        "ChatManager.Send");
     if (!o_chatSend && global_base) {
