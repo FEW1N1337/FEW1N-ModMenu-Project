@@ -2080,20 +2080,20 @@ static void w_chat_klv(void* self) {
 
 // v117.13: ChatUI (allText, ozh, input) richText kilidini guvenli ac (Queue bellek yuruyusu YOK)
 static void few1n_enableChatRichText(void) {
-    if (!chatGetInst || !i_runtime_invoke) return;
+    if (!i_runtime_invoke) return;
     @try {
-        void* cm = chatGetInst();
+        void* cm = w_chatGetInst();
         if (!unityAlive(cm)) return;
         void* cui = *(void**)((uintptr_t)cm + 0x40); // ChatManager.chatUI
         if (!unityAlive(cui)) return;
         void* allText = *(void**)((uintptr_t)cui + 0x20); // ChatUI.allText
         if (unityAlive(allText)) {
-            setRichTextIl(allText, true);
+            w_tmp_set_richText(allText, true);
             *(unsigned char*)((uintptr_t)allText + 0x342) = 1; // TMP_Text.m_isRichText
         }
         void* ozh = *(void**)((uintptr_t)cui + 0x50); // ChatUI.ozh
         if (unityAlive(ozh)) {
-            setRichTextIl(ozh, true);
+            w_tmp_set_richText(ozh, true);
             *(unsigned char*)((uintptr_t)ozh + 0x342) = 1;
         }
         void* inp = *(void**)((uintptr_t)cui + 0x30); // ChatUI.input (TMP_InputField)
@@ -6810,7 +6810,7 @@ static void h_chatSend(void* self, void* msg) {
                 if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
             } else if (isColorChatEnabled) {
                 if (![orig containsString:@"<color"] && ![orig containsString:@"<#"]) {
-                    NSString *hex = (spamColorHex && spamColorHex.length > 0) ? spamColorHex : @"00FFFF";
+                    NSString *hex = (spamColorHex[0]) ? [NSString stringWithUTF8String:spamColorHex] : @"00FFFF";
                     void* colored = mkStr([NSString stringWithFormat:@"<color=#%@><b>%@</b></color>", hex, orig]);
                     if (colored) { if (o_chatSend) o_chatSend(self, colored); return; }
                 }
