@@ -10123,7 +10123,7 @@ static UIViewController* few1n_topVC(void) {
     g_secBuildIdx = -1;   // accordion: bolum sayacini sifirla (her build basinda)
     CGFloat y = 12;
 
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof__(self) weakSelf = self;
     g_liveAlertHandler = ^(NSString *title, NSString *msg) {
         [weakSelf v15Alert:title msg:msg];
     };
@@ -17865,7 +17865,7 @@ static void few1n_joinTargetRoom(NSString *nm) {
 // v118.0 LIVE OTA JS UI HANDLERS
 // ============================================================================
 - (void)liveFetchNow {
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof__(self) weakSelf = self;
     few1n_liveFetchFromUrl(^(BOOL ok, NSString *msg) {
         [weakSelf v15Alert:(ok ? @"⚡ Canlı Güncelleme Hazır" : @"⚠️ Canlı Güncelleme Hatası") msg:msg];
     });
