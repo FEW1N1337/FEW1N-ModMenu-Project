@@ -1,10 +1,9 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.0 — OTA ULTIMATE PACK
-// 20 Canlı Mod: Klonlama, Özel Plaka/Boya, Polis Çakar Boya, Gökkuşağı,
-// Oyuncu Işınla/Fırlat/Çek/Kick, Renkli Chat, Hava Durumu, Oda Raporu!
+// FEW1N LIVE OTA SCRIPT (live.js) v4.1 — TEMİZ OTA PACK
+// 12 Sade & %100 Çalışan Canlı Mod (Klonlama, Plaka, Boya, Krom, Cam, Toggle, Rapor)
 // ============================================================================
 
-FEW1N.setMeta("4.0", "OTA Ultimate: 20 Canlı Mod (Klonla, Polis Boya, Fırlat/Çek/Kick, Renkli Chat, Hava)");
+FEW1N.setMeta("4.1", "Temiz OTA Pack: Klonlama, Özel Plaka/Boya, Krom, Cam, Gökkuşağı & Polis Boya");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -38,21 +37,7 @@ function findOtherTMByActor(actorNr) {
     return "";
 }
 
-function getPosOf(obj) {
-    if (!obj) return null;
-    var tr = FEW1N.invoke(obj, "UnityEngine", "Component", "get_transform", []);
-    if (!tr) return null;
-    return FEW1N.invoke(tr, "UnityEngine", "Transform", "get_position", []);
-}
-
-function setPosOf(obj, pos) {
-    if (!obj || !pos) return false;
-    var tr = FEW1N.invoke(obj, "UnityEngine", "Component", "get_transform", []);
-    if (!tr) return false;
-    return !!FEW1N.invoke(tr, "UnityEngine", "Transform", "set_position", [pos]);
-}
-
-// Sende + Herkeste + Opsiyonel Garaj Kayit (ead() olmadan!)
+// Sende + Herkeste + Opsiyonel Garaj Kayit
 function applyAndSaveToMyCar(label, jsonStr, saveToGarage) {
     var myTM = getMyTM();
     if (!myTM) {
@@ -113,9 +98,7 @@ function addBtn(id, title, color, fn) {
     FEW1N.registerAction(id, title, fn);
 }
 
-// ============================================================================
-// 1) KLONLAMA (KİŞİ SEÇİCİLİ + GARAJ KAYITLI)
-// ============================================================================
+// 1-2) KLONLAMA (KİŞİ SEÇİCİLİ + GARAJ KAYITLI)
 addBtn("steal_full", "🎭 Başkasının Modifiyesini Çal (Kişi Seç)", "gold", function () {
     FEW1N.pickPlayer("🎭 Kimin Modifiyesini Çalacaksın?", function (act, nm) {
         stealFromActor(act, nm, false);
@@ -128,9 +111,7 @@ addBtn("steal_plate", "🪪 Başkasının Plakasını Çal (Kişi Seç)", "cyan"
     });
 });
 
-// ============================================================================
-// 2) ÖZEL PLAKA & BOYA & MODİFİYE PAKETLERİ (HERKESTE + GARAJ)
-// ============================================================================
+// 3-8) ÖZEL PLAKA, BOYA, KROM & CAM (HERKESTE + GARAJ)
 addBtn("custom_mplate", "✏️ Özel 3D Plaka Yaz (Herkeste + Garaj)", "green", function () {
     var defP = FEW1N.getPref ? FEW1N.getPref("last_plate", "<size=350><color=#FF0033><b>FEW1N</b></color></size>") : "FEW1N";
     FEW1N.prompt("🔥 Özel 3D Plaka (MPlate)", "RichText destekler (<size>, <color>, <b>):", "FEW1N", defP, function (txt) {
@@ -194,22 +175,7 @@ addBtn("dark_glass", "🪟 Zifiri Siyah Cam (Herkeste + Garaj)", "white", functi
     }
 });
 
-addBtn("ufo_camber", "🛸 UFO 90° Kamber (Herkeste + Garaj)", "gold", function () {
-    var wb = JSON.stringify({ fc: -90, rc: -90, fd: 0, rd: 0, fo: 0.25, ro: 0.25, fs: 1.2, rs: 1.2, fr: 1.4, rr: 1.4 });
-    if (applyAndSaveToMyCar("UFO Kamber", JSON.stringify({ tuners: [{ key: "WBase", value: wb }] }), true)) {
-        FEW1N.alert("🛸 UFO Kamber!", "Tekerlekler 90° yatırıldı!");
-    }
-});
-
-addBtn("strip_wheels", "💀 Tekerleklerimi Sök (Herkeste + Garaj)", "red", function () {
-    if (applyAndSaveToMyCar("Tekerlek Sök", JSON.stringify({ tuners: [{ key: "WheelT", value: JSON.stringify({ i: -1 }) }] }), true)) {
-        FEW1N.alert("💀 Tekerlekler Söküldü!", "Aracın tekerleksiz görünüyor!");
-    }
-});
-
-// ============================================================================
-// 3) CANLI OTA TOGGLE'LAR (HERKESTE GÖRÜNEN CANLI DÖNGÜLER)
-// ============================================================================
+// 9-11) CANLI OTA TOGGLE'LAR (HERKESTE GÖRÜNÜR)
 if (FEW1N.addMenuToggle && FEW1N.onTick) {
     FEW1N.addMenuToggle("rainbow_paint", "🌈 Gökkuşağı Boya (Herkeste Canlı)", "Aracının boyasını herkeste sürekli değiştirir", false, function (isOn) {
         g_rainbowPaintOn = !!isOn;
@@ -229,7 +195,7 @@ if (FEW1N.addMenuToggle && FEW1N.onTick) {
     FEW1N.onTick(function () {
         if (!g_rainbowPaintOn && !g_rainbowPlateOn && !g_policePaintOn) return;
         g_tickCount++;
-        var period = g_policePaintOn ? 3 : 5; // Polis ~0.9sn, Gokkusagi ~1.5sn
+        var period = g_policePaintOn ? 3 : 5;
         if (g_tickCount % period !== 0) return;
         var c1 = palette[g_colorIdx % palette.length];
         var c2 = palette[(g_colorIdx + 2) % palette.length];
@@ -250,83 +216,7 @@ if (FEW1N.addMenuToggle && FEW1N.onTick) {
     });
 }
 
-// ============================================================================
-// 4) OYUNCU & ODA AKSİYONLARI (IŞINLA / FIRLAT / ÇEK / KİCK / CHAT / HAVA)
-// ============================================================================
-addBtn("tp_to_player", "🎯 Oyuncunun Yanına Işınlan (Kişi Seç)", "green", function () {
-    FEW1N.pickPlayer("🎯 Kimin Yanına Işınlanacaksın?", function (act, nm) {
-        var myTM = getMyTM();
-        var tgt = findOtherTMByActor(act);
-        var pos = getPosOf(tgt);
-        if (!myTM || !pos) { FEW1N.alert("⚠️", nm + " konumu alınamadı."); return; }
-        pos.y += 2.5;
-        setPosOf(myTM, pos);
-        FEW1N.alert("🎯 Işınlandın!", nm + " yanına geçtin.");
-    });
-});
-
-addBtn("launch_player", "🚀 Oyuncuyu Uzaya Fırlat (Kişi Seç / Tüm Oda)", "red", function () {
-    FEW1N.pickPlayer("🚀 Kimi Uzaya Fırlatacaksın?", function (act, nm) {
-        var others = getOtherTMs();
-        var hit = 0;
-        for (var i = 0; i < others.length; i++) {
-            if (act > 0 && FEW1N.getOwnerActor(others[i]) !== act) continue;
-            var pos = getPosOf(others[i]) || { x: 0, y: 10, z: 0 };
-            if (FEW1N.sendRPC(others[i], "TeleportCar_RPC", 0, [
-                { t: "v3", x: pos.x, y: pos.y + 150.0, z: pos.z }
-            ])) hit++;
-        }
-        FEW1N.alert("🚀 Fırlatıldı!", nm + " (" + hit + " araç) uzaya yollandı!");
-    });
-});
-
-addBtn("kick_player_ota", "🚫 Oyuncuyu Odadan At / Kick (Kişi Seç)", "red", function () {
-    FEW1N.pickPlayer("🚫 Kimi Odadan Atacaksın?", function (act, nm) {
-        if (act <= 0) { FEW1N.alert("⚠️", "Tek bir oyuncu seç."); return; }
-        FEW1N.claimMaster();
-        var lobs = FEW1N.findObjects("", "HR_PhotonLobbyManagerDummy");
-        var ok = false;
-        if (lobs.length > 0) ok = FEW1N.sendRPC(lobs[0], "KickPlayerRPC", 0, [nm]);
-        FEW1N.alert(ok ? "🚫 Kick Yollandı!" : "⚠️ Kick Başarısız", nm + " için KickPlayerRPC gönderildi.");
-    });
-});
-
-addBtn("color_chat_ota", "💬 Renkli Dev Chat Mesajı Gönder", "cyan", function () {
-    FEW1N.prompt("💬 Renkli Chat", "Gönderilecek mesajı yaz:", "FEW1N ON TOP", "FEW1N ON TOP", function (txt) {
-        if (!txt) return;
-        var cm = FEW1N.invoke("", "", "ChatManager", "fzi", []);
-        if (!cm) { FEW1N.alert("⚠️", "ChatManager bulunamadı."); return; }
-        var msg = "<size=160%><color=#00FFFF><b>" + txt + "</b></color></size>";
-        FEW1N.invoke(cm, "", "ChatManager", "Send", [msg]);
-    });
-});
-
-addBtn("weather_storm", "⛈️ Canlı Fırtına + Gece", "cyan", function () {
-    FEW1N.claimMaster();
-    FEW1N.setRoomProp("WeatherRain", 1.0, true);
-    FEW1N.setRoomProp("WeatherLighting", 1.0, true);
-    var wm = FEW1N.invoke("", "Weather", "WeatherManager", "eyo", []);
-    if (wm) {
-        FEW1N.invoke(wm, "Weather", "WeatherManager", "eyt", [1.0]);
-        FEW1N.invoke(wm, "Weather", "WeatherManager", "eyw", [1.0]);
-        FEW1N.invoke(wm, "Weather", "WeatherManager", "eyy", []);
-    }
-    FEW1N.alert("⛈️ Hava Güncellendi", "Fırtına + Gece aktif!");
-});
-
-addBtn("weather_sunny", "☀️ Canlı Güneşli + Gündüz", "gold", function () {
-    FEW1N.claimMaster();
-    FEW1N.setRoomProp("WeatherRain", 0.0, true);
-    FEW1N.setRoomProp("WeatherLighting", 0.0, true);
-    var wm = FEW1N.invoke("", "Weather", "WeatherManager", "eyo", []);
-    if (wm) {
-        FEW1N.invoke(wm, "Weather", "WeatherManager", "eyt", [0.0]);
-        FEW1N.invoke(wm, "Weather", "WeatherManager", "eyw", [0.0]);
-        FEW1N.invoke(wm, "Weather", "WeatherManager", "eyy", []);
-    }
-    FEW1N.alert("☀️ Hava Güncellendi", "Güneşli + Gündüz aktif!");
-});
-
+// 12) ODA RAPORU
 addBtn("room_report", "🔎 Oda & Oyuncu Raporu", "white", function () {
     var me = FEW1N.myActor();
     var plys = FEW1N.players();
