@@ -1,15 +1,18 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.4 — ARABA KASASI ÇALMA (CarManager.gng) + GARAJ!
+// FEW1N LIVE OTA SCRIPT (live.js) v4.5 — ODA EN ÜSTTE TUT + ARABA KASASI ÇALMA!
 // ============================================================================
 
-FEW1N.setMeta("4.4", "Araba Kasası Çalma (CarManager) + Tüm Arabaları Aç + Sende Anlık Görünüm + 2 Satır Plaka");
+FEW1N.setMeta("4.5", "Odamı En Üstte Tut (Bump + epg Analiz) + Araba Kasası Çalma + 2 Satır Plaka");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
 var g_rainbowPlateOn = false;
 var g_policePaintOn  = false;
+var g_keepRoomTopOn  = false;
 var g_tickCount = 0;
 var g_colorIdx  = 0;
+var g_roomTopTick = 0;
+var g_roomMaxFlip = false;
 
 function getMyTM() {
     var tms = FEW1N.findObjects("", "TuningManager");
@@ -342,4 +345,66 @@ addBtn("save_garage", "💾 Şu Anki Modifiyeyi Garaja Kaydet (Sunucu)", "green"
     }
     var locOk = !!FEW1N.invoke(myTM, "", "TuningManager", "eah", [true]);
     FEW1N.alert("💾 Garaja Kaydedildi!", "Araç: " + (myVName || "?") + "\nSunucu (UpdateTuning): " + (srvOk ? "OK" : "-") + " | Lokal: " + (locOk ? "OK" : "-"));
+});
+
+// ============================================================================
+// ODA EN ÜSTTE TUTMA MOTORU (v4.5)
+// ============================================================================
+function boostMyRoomToTop(silent) {
+    var rm = FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_CurrentRoom", []);
+    if (!rm) {
+        if (!silent) FEW1N.alert("⚠️ Odada Değilsin", "Önce bir oda kurup içine gir (oda ismini '!' veya '00' ile başlat: örn. '! FEW1N').");
+        return false;
+    }
+    FEW1N.claimMaster();
+    // 1) Şifresiz + açık + görünür (epg skoru max)
+    FEW1N.setRoomProp("pWd", "", false);
+    FEW1N.invoke(rm, "Photon.Realtime", "Room", "set_IsOpen", [true]);
+    FEW1N.invoke(rm, "Photon.Realtime", "Room", "set_IsVisible", [true]);
+    // 2) MaxPlayers 31 <-> 30 ping -> odayi gizlemeden Photon'a taze OnRoomListUpdate yayinlatir!
+    g_roomMaxFlip = !g_roomMaxFlip;
+    var maxP = g_roomMaxFlip ? 31 : 30;
+    FEW1N.invoke(rm, "Photon.Realtime", "Room", "set_MaxPlayers", [maxP]);
+    var rName = FEW1N.invoke(rm, "Photon.Realtime", "RoomInfo", "get_Name", []) || "?";
+    if (!silent) {
+        FEW1N.alert("🏆 Oda En Üste Taşındı!",
+            "Oda: " + rName + "\n• Şifre temizlendi (Açık)\n• IsOpen & IsVisible: AÇIK\n• MaxPlayers: " + maxP + " (Lobiye taze güncelleme yollandı!)\n\nİpucu: Oda adının başına '!' veya '00' koyarsan alfabetik olarak da 1. sırada kalır.");
+    }
+    return true;
+}
+
+addBtn("room_boost_once", "🏆 Odamı En Üste Taşı / Optimize Et", "gold", function () {
+    boostMyRoomToTop(false);
+});
+
+if (FEW1N.addMenuToggle && FEW1N.onTick) {
+    FEW1N.addMenuToggle("keep_room_top", "🔄 Odamı Üstte Tut (Otomatik Ping)", "Her 15sn'de bir odayı lobi listesinde tazeler (gizlemeden)", false, function (isOn) {
+        g_keepRoomTopOn = !!isOn;
+        if (g_keepRoomTopOn) boostMyRoomToTop(true);
+    });
+    FEW1N.onTick(function () {
+        if (!g_keepRoomTopOn) return;
+        g_roomTopTick++;
+        if (g_roomTopTick % 50 !== 0) return; // ~15sn (50 * 0.3s)
+        boostMyRoomToTop(true);
+    });
+}
+
+addBtn("lobby_epg_scan", "🔎 Lobi Sıralama Analizi (epg Skorları)", "cyan", function () {
+    var lm = FEW1N.invoke("", "", "HR_PhotonLobbyManager", "eov", []);
+    var lines = FEW1N.findObjects("", "HR_UI_RoomListLine");
+    if (!lm || lines.length === 0) {
+        FEW1N.alert("⚠️ Lobide Değilsin", "Oda listesi ekranını açıp tekrar bas (" + lines.length + " satır).");
+        return;
+    }
+    var out = [];
+    for (var i = 0; i < lines.length && i < 8; i++) {
+        var ln = lines[i];
+        var ri = FEW1N.invoke(ln, "Photon.Realtime", "RoomInfo", "get_Name", []); // fallback
+        // roomInfo @0x60 pointer'ini oku
+        var nameTxt = FEW1N.readStr(ln, 0x50) || ("Oda#" + (i + 1));
+        var pwd = FEW1N.readStr(ln, 0x58);
+        out.push((i + 1) + ". " + nameTxt + (pwd ? " 🔒" : " 🔓"));
+    }
+    FEW1N.alert("🔎 Lobi İlk " + out.length + " Oda", out.join("\n"));
 });
