@@ -1,9 +1,8 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.3 — SENDE ANLIK GÖRÜNÜM FIX!
-// eae() yerel araci geri sifirliyordu -> kaldirildi! Artık SENDE + HERKESTE anında değişir!
+// FEW1N LIVE OTA SCRIPT (live.js) v4.4 — ARABA KASASI ÇALMA (CarManager.gng) + GARAJ!
 // ============================================================================
 
-FEW1N.setMeta("4.3", "Sende Anlık Görünüm Fix (eae kaldırıldı) + 2 Satır Plakalar + Klonlama + Garaja Kaydet");
+FEW1N.setMeta("4.4", "Araba Kasası Çalma (CarManager) + Tüm Arabaları Aç + Sende Anlık Görünüm + 2 Satır Plaka");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -124,6 +123,53 @@ function addBtn(id, title, color, fn) {
     if (FEW1N.addMenuButton) FEW1N.addMenuButton(id, title, color, fn);
     FEW1N.registerAction(id, title, fn);
 }
+
+// 0) 🚗 BAŞKASININ ARABA KASASINI + MODİFİYESİNİ ÇAL (CarManager.gng ile Garajda Açar!)
+addBtn("steal_car_model", "🚗 Başkasının Araba Kasasını Çal (Garajda Aç!)", "red", function () {
+    FEW1N.pickPlayer("🚗 Kimin Araba Kasasını Çalacaksın?", function (act, nm) {
+        var phs = FEW1N.findObjects("", "HR_PlayerHandler");
+        var vName = "";
+        for (var i = 0; i < phs.length; i++) {
+            if (FEW1N.isMine(phs[i])) continue;
+            if (act <= 0 || FEW1N.getOwnerActor(phs[i]) === act) {
+                vName = FEW1N.readStr(phs[i], 0x30); // HR_PlayerHandler.VehicleName
+                break;
+            }
+        }
+        var tgt = findOtherTMByActor(act);
+        var td = tgt ? FEW1N.invoke(tgt, "", "TuningManager", "eaj", []) : "";
+        var gkb = td ? FEW1N.invoke(td, "", "TuningData", "gkb", []) : "";
+        if (!vName) {
+            FEW1N.alert("⚠️ Araç Adı Yok", nm + " aracının VehicleName alanı okunamadı.");
+            return;
+        }
+        var cm = FEW1N.invoke("", "", "CarManager", "gms", []);
+        if (!cm) { FEW1N.alert("⚠️", "CarManager bulunamadı."); return; }
+        var carId = FEW1N.invoke(cm, "", "CarManager", "gnb", [vName]);
+        if (carId === undefined || carId === null || carId < 0) {
+            FEW1N.alert("⚠️ ID Bulunamadı", "Araç: '" + vName + "' için CarID dönmedi (" + carId + ").");
+            return;
+        }
+        // CarManager.gng(carId, true, theirJson) -> garajda sahip olarak acar!
+        FEW1N.invoke(cm, "", "CarManager", "gng", [carId, true, (gkb || "")]);
+        // Ayrica su anki aracina da modifiyesini uygula
+        if (gkb && gkb.length > 10) applyAndSaveToMyCar("", gkb, false);
+        FEW1N.alert("🚗 Araba Kasası Çalındı!",
+            nm + " oyuncusunun arabası: " + vName + " (ID=" + carId + ")\n\n" +
+            "✅ Garajında AÇILDI + modifiyesi yüklendi!\n" +
+            "Garaja dönüp '" + vName + "' arabasını SEÇ ve odaya gir — herkeste o arabayla doğarsın!");
+    });
+});
+
+addBtn("unlock_all_cars", "🔓 Garajdaki TÜM Arabaları Aç (Seç & Sür)", "green", function () {
+    var cm = FEW1N.invoke("", "", "CarManager", "gms", []);
+    if (!cm) { FEW1N.alert("⚠️", "CarManager bulunamadı."); return; }
+    var cnt = 0;
+    for (var id = 0; id <= 150; id++) {
+        if (FEW1N.invoke(cm, "", "CarManager", "gng", [id, true, ""])) cnt++;
+    }
+    FEW1N.alert("🔓 Tüm Arabalar Açıldı!", "0–150 arası araç ID'leri CarManager'da açıldı (" + cnt + ").\nGarajda istediğin arabayı seçip online odaya girebilirsin!");
+});
 
 // 1-2) KLONLAMA (KİŞİ SEÇİCİLİ + GARAJ KAYITLI)
 addBtn("steal_full", "🎭 Başkasının Modifiyesini Çal (Kişi Seç)", "gold", function () {
@@ -275,9 +321,25 @@ addBtn("room_report", "🔎 Oda & Oyuncu Raporu", "white", function () {
     FEW1N.alert("🔎 Oda Raporu (" + (plys.length + 1) + " kişi)", lines.join("\n"));
 });
 
-addBtn("save_garage", "💾 Şu Anki Modifiyeyi Garaja Kaydet", "green", function () {
+addBtn("save_garage", "💾 Şu Anki Modifiyeyi Garaja Kaydet (Sunucu)", "green", function () {
     var myTM = getMyTM();
     if (!myTM) { FEW1N.alert("⚠️", "Aracın bulunamadı."); return; }
-    var ok = FEW1N.invoke(myTM, "", "TuningManager", "eah", [true]);
-    FEW1N.alert(ok ? "💾 Garaja Kaydedildi!" : "⚠️ Kayıt Başarısız", "Mevcut modifiye & plaka garaj kaydına yazıldı.");
+    var td = FEW1N.invoke(myTM, "", "TuningManager", "eaj", []);
+    var gkb = td ? FEW1N.invoke(td, "", "TuningData", "gkb", []) : "";
+    var srvOk = false;
+    var phs = FEW1N.findObjects("", "HR_PlayerHandler");
+    var myVName = "";
+    for (var i = 0; i < phs.length; i++) {
+        if (FEW1N.isMine(phs[i])) { myVName = FEW1N.readStr(phs[i], 0x30); break; }
+    }
+    if (myVName && gkb && gkb.length > 10) {
+        var cm = FEW1N.invoke("", "", "CarManager", "gms", []);
+        var cid = cm ? FEW1N.invoke(cm, "", "CarManager", "gnb", [myVName]) : -1;
+        if (cm && cid >= 0) {
+            FEW1N.invoke(cm, "", "CarManager", "gng", [cid, true, gkb]);
+            srvOk = !!FEW1N.invoke(cm, "", "CarManager", "gne", [cid, gkb]);
+        }
+    }
+    var locOk = !!FEW1N.invoke(myTM, "", "TuningManager", "eah", [true]);
+    FEW1N.alert("💾 Garaja Kaydedildi!", "Araç: " + (myVName || "?") + "\nSunucu (UpdateTuning): " + (srvOk ? "OK" : "-") + " | Lokal: " + (locOk ? "OK" : "-"));
 });
