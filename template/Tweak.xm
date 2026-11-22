@@ -724,7 +724,9 @@ static const char* (*i_method_get_name)(void*) = NULL;
 static uint32_t (*i_method_get_param_count)(void*) = NULL;
 static void* (*i_method_get_return_type)(void*) = NULL;
 static void* (*i_method_get_param)(void*, uint32_t) = NULL;
-static char* (*i_type_get_name)(void*) = NULL;   // malloc'lu — free() gerekir
+static char* (*i_type_get_name)(void*) = NULL;   // Unity 6'da il2cpp_free kullanilmali (libc free() SIGABRT yapar!)
+static void  (*i_free)(void*) = NULL;
+static inline void few1n_il2cppFree(void* p) { if (p && i_free) i_free(p); }
 static int32_t (*i_class_value_size)(void*, uint32_t*) = NULL;  // value-type array stride
 // Bir image'da verilen isimdeki sinifi TARAYARAK bul (obfuscation'a dayanikli)
 static long g_classScanned = 0;   // teshis: kac sinif tarandi
@@ -826,6 +828,7 @@ static void few1n_initIl2cpp(void) {
     i_method_get_return_type    = (void*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_method_get_return_type");
     i_method_get_param          = (void*(*)(void*,uint32_t))dlsym(RTLD_DEFAULT, "il2cpp_method_get_param");
     i_type_get_name             = (char*(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_type_get_name");
+    i_free                      = (void(*)(void*))dlsym(RTLD_DEFAULT, "il2cpp_free");
     i_class_value_size          = (int32_t(*)(void*,uint32_t*))dlsym(RTLD_DEFAULT, "il2cpp_class_value_size");
     if (!i_domain_get || !i_domain_get_assemblies || !i_assembly_get_image ||
         !i_class_from_name || !i_class_get_method_from_name || !i_runtime_invoke) {
@@ -1489,7 +1492,7 @@ static int few1n_fieldOffByType(void* cls, const char* typeName, int ordinal, in
             void* t = i_field_get_type(f); if (!t) continue;
             char* tn = i_type_get_name(t);  if (!tn) continue;
             bool hit = few1n_typeIs(tn, typeName);
-            free(tn);
+            few1n_il2cppFree(tn);
             if (!hit) continue;
             if (seen++ != ordinal) continue;
             size_t off = i_field_get_offset(f);
@@ -1513,7 +1516,7 @@ static int few1n_fieldOffByTypeContains(void* cls, const char* sub, int ordinal,
             void* t = i_field_get_type(f); if (!t) continue;
             char* tn = i_type_get_name(t);  if (!tn) continue;
             bool hit = (strstr(tn, sub) != NULL);
-            free(tn);
+            few1n_il2cppFree(tn);
             if (!hit) continue;
             if (seen++ != ordinal) continue;
             size_t off = i_field_get_offset(f);
@@ -1551,7 +1554,7 @@ static void* few1n_methodBySig(void* cls, const char* retType,
                 void* rt = i_method_get_return_type(m); if (!rt) continue;
                 char* rn = i_type_get_name(rt);          if (!rn) continue;
                 bool ok = few1n_typeIs(rn, retType);
-                free(rn);
+                few1n_il2cppFree(rn);
                 if (!ok) continue;
             }
             bool allok = true;
@@ -1564,7 +1567,7 @@ static void* few1n_methodBySig(void* cls, const char* retType,
                     char* pn = i_type_get_name(pt);
                     if (!pn) { allok = false; break; }
                     bool ok = few1n_typeIs(pn, params[i]);
-                    free(pn);
+                    few1n_il2cppFree(pn);
                     if (!ok) { allok = false; break; }
                 }
             }
@@ -7599,7 +7602,7 @@ static id few1n_liveInvokeInternal(NSString *objHandle, NSString *ns, NSString *
         } else {
             argPtrs[i] = NULL;
         }
-        if (ptn) free(ptn);
+        if (ptn) few1n_il2cppFree(ptn);
     }
 
     // Opsiyonel tam 6-alan PhotonView sahiplik spoof'u
@@ -7657,7 +7660,7 @@ static id few1n_liveInvokeInternal(NSString *objHandle, NSString *ns, NSString *
         } else {
             outVal = few1n_ptrToHandle(ret);
         }
-        free(rtn);
+        few1n_il2cppFree(rtn);
     }
     return outVal;
 }
@@ -8104,7 +8107,7 @@ static NSString* few1n_dumpClassFields(NSString *className) {
         if (i_field_get_type && i_type_get_name) {
             void* tp = i_field_get_type(f);
             // il2cpp_type_get_name malloc'lu string dondurur — kopyalayip free et.
-            if (tp) { char *tn = i_type_get_name(tp); if (tn) { typ = [NSString stringWithUTF8String:tn]; free(tn); } }
+            if (tp) { char *tn = i_type_get_name(tp); if (tn) { typ = [NSString stringWithUTF8String:tn]; few1n_il2cppFree(tn); } }
         }
         [out appendFormat:@"  %s @+%d (%@)\n", fname ?: "?", off, typ];
         cnt++;
