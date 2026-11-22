@@ -1,10 +1,9 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.2 — 2 SATIR PLAKA + ALTIN KRAL + TEMİZ OTA
-// Tüm plakalarda okunaklı 2 satır (size=250, | veya boşluk ile alt satır) +
-// Altın Kral isim değiştirme + Klonlama + Boya + Krom + Cam + Canlı Toggle!
+// FEW1N LIVE OTA SCRIPT (live.js) v4.3 — SENDE ANLIK GÖRÜNÜM FIX!
+// eae() yerel araci geri sifirliyordu -> kaldirildi! Artık SENDE + HERKESTE anında değişir!
 // ============================================================================
 
-FEW1N.setMeta("4.2", "Tüm Plakalarda 2 Satır (Altın Kral Stili) + Altın Kral İsim Değiştirme + Temiz OTA");
+FEW1N.setMeta("4.3", "Sende Anlık Görünüm Fix (eae kaldırıldı) + 2 Satır Plakalar + Klonlama + Garaja Kaydet");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -53,7 +52,7 @@ function toTwoLines(raw) {
 
 function formatPlateRich(rawText, colorHex, sizeNum) {
     var t = toTwoLines(rawText);
-    if (t.indexOf("<") !== -1 && t.indexOf(">") !== -1) return t; // kullanıcı zaten RichText yazmış
+    if (t.indexOf("<") !== -1 && t.indexOf(">") !== -1) return t;
     var sz = sizeNum || 250;
     var col = colorHex || "#FFD700";
     return "<size=" + sz + "><color=" + col + "><b>" + t + "</b></color></size>";
@@ -67,7 +66,8 @@ function savePlateRaw(raw) {
     if (FEW1N.setPref && raw && raw.length > 0) FEW1N.setPref("last_plate_plain", raw);
 }
 
-// Sende + Herkeste + Opsiyonel Garaj Kayit
+// FIX v4.3: eae() ve ead() KALDIRILDI (eski garaj kaydini geri yukleyip lokal gorunumu bozuyordu!)
+// Sadece LoadTuners AllBuffered RPC + lokal LoadTuners -> hem SENDE hem HERKESTE aninda degisir!
 function applyAndSaveToMyCar(label, jsonStr, saveToGarage) {
     var myTM = getMyTM();
     if (!myTM) {
@@ -81,9 +81,6 @@ function applyAndSaveToMyCar(label, jsonStr, saveToGarage) {
     }
     var ok = FEW1N.sendRPC(myTM, "LoadTuners", 3, [bytes]);
     FEW1N.invoke(myTM, "", "TuningManager", "LoadTuners", [bytes]);
-    if (saveToGarage) {
-        FEW1N.invoke(myTM, "", "TuningManager", "eae", []);
-    }
     return ok;
 }
 
@@ -276,4 +273,11 @@ addBtn("room_report", "🔎 Oda & Oyuncu Raporu", "white", function () {
         lines.push("• " + plys[i].name + " (#" + plys[i].actor + ")");
     }
     FEW1N.alert("🔎 Oda Raporu (" + (plys.length + 1) + " kişi)", lines.join("\n"));
+});
+
+addBtn("save_garage", "💾 Şu Anki Modifiyeyi Garaja Kaydet", "green", function () {
+    var myTM = getMyTM();
+    if (!myTM) { FEW1N.alert("⚠️", "Aracın bulunamadı."); return; }
+    var ok = FEW1N.invoke(myTM, "", "TuningManager", "eah", [true]);
+    FEW1N.alert(ok ? "💾 Garaja Kaydedildi!" : "⚠️ Kayıt Başarısız", "Mevcut modifiye & plaka garaj kaydına yazıldı.");
 });
