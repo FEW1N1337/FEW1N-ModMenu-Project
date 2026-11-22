@@ -1,9 +1,10 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.1 — TEMİZ OTA PACK
-// 12 Sade & %100 Çalışan Canlı Mod (Klonlama, Plaka, Boya, Krom, Cam, Toggle, Rapor)
+// FEW1N LIVE OTA SCRIPT (live.js) v4.2 — 2 SATIR PLAKA + ALTIN KRAL + TEMİZ OTA
+// Tüm plakalarda okunaklı 2 satır (size=250, | veya boşluk ile alt satır) +
+// Altın Kral isim değiştirme + Klonlama + Boya + Krom + Cam + Canlı Toggle!
 // ============================================================================
 
-FEW1N.setMeta("4.1", "Temiz OTA Pack: Klonlama, Özel Plaka/Boya, Krom, Cam, Gökkuşağı & Polis Boya");
+FEW1N.setMeta("4.2", "Tüm Plakalarda 2 Satır (Altın Kral Stili) + Altın Kral İsim Değiştirme + Temiz OTA");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -35,6 +36,35 @@ function findOtherTMByActor(actorNr) {
         if (actorNr <= 0 || FEW1N.getOwnerActor(others[i]) === actorNr) return others[i];
     }
     return "";
+}
+
+// 2 satır dönüşümü: "|" veya "\n" -> alt satır; yoksa ilk boşluktan 2 satıra böl (Altın Kral stili)
+function toTwoLines(raw) {
+    var s = (raw || "FEW1N|KING").trim();
+    if (s.indexOf("|") !== -1) return s.split("|").join("\n");
+    if (s.indexOf("\\n") !== -1) return s.split("\\n").join("\n");
+    if (s.indexOf("\n") !== -1) return s;
+    var sp = s.indexOf(" ");
+    if (sp > 0 && sp < s.length - 1) {
+        return s.substring(0, sp) + "\n" + s.substring(sp + 1);
+    }
+    return s;
+}
+
+function formatPlateRich(rawText, colorHex, sizeNum) {
+    var t = toTwoLines(rawText);
+    if (t.indexOf("<") !== -1 && t.indexOf(">") !== -1) return t; // kullanıcı zaten RichText yazmış
+    var sz = sizeNum || 250;
+    var col = colorHex || "#FFD700";
+    return "<size=" + sz + "><color=" + col + "><b>" + t + "</b></color></size>";
+}
+
+function getSavedPlateRaw() {
+    return FEW1N.getPref ? FEW1N.getPref("last_plate_plain", "FEW1N|KING") : "FEW1N|KING";
+}
+
+function savePlateRaw(raw) {
+    if (FEW1N.setPref && raw && raw.length > 0) FEW1N.setPref("last_plate_plain", raw);
 }
 
 // Sende + Herkeste + Opsiyonel Garaj Kayit
@@ -111,29 +141,50 @@ addBtn("steal_plate", "🪪 Başkasının Plakasını Çal (Kişi Seç)", "cyan"
     });
 });
 
-// 3-8) ÖZEL PLAKA, BOYA, KROM & CAM (HERKESTE + GARAJ)
-addBtn("custom_mplate", "✏️ Özel 3D Plaka Yaz (Herkeste + Garaj)", "green", function () {
-    var defP = FEW1N.getPref ? FEW1N.getPref("last_plate", "<size=350><color=#FF0033><b>FEW1N</b></color></size>") : "FEW1N";
-    FEW1N.prompt("🔥 Özel 3D Plaka (MPlate)", "RichText destekler (<size>, <color>, <b>):", "FEW1N", defP, function (txt) {
+// 3) 👑 ALTIN KRAL 2 SATIR PLAKA (İSİM DEĞİŞTİRİLEBİLİR!)
+addBtn("gold_king_plate", "👑 Altın Kral 2 Satır Plaka (İsim Yaz)", "gold", function () {
+    var defP = getSavedPlateRaw();
+    FEW1N.prompt("👑 Altın Kral 2 Satır Plaka", "Alt satır için | veya boşluk koy (örn: FEW1N|KING):", "FEW1N|KING", defP, function (txt) {
         if (!txt || txt.length === 0) return;
-        if (FEW1N.setPref) FEW1N.setPref("last_plate", txt);
-        var pl = JSON.stringify({ c: "eu1", t: txt });
-        if (applyAndSaveToMyCar("Özel Plaka", JSON.stringify({ tuners: [{ key: "MPlate", value: pl }] }), true)) {
-            FEW1N.alert("🔥 Plaka Basıldı!", "Sende + herkeste aktif ve garaja kaydedildi!");
+        savePlateRaw(txt);
+        var pl = JSON.stringify({ c: "eu1", t: formatPlateRich(txt, "#FFD700", 250) });
+        if (applyAndSaveToMyCar("Altın Kral Plaka", JSON.stringify({ tuners: [{ key: "MPlate", value: pl }] }), true)) {
+            FEW1N.alert("👑 Altın Kral Plaka!", "2 satır plaka sende + herkeste aktif ve garaja kaydedildi!");
         }
     });
 });
 
-addBtn("secret_plate", "🇯🇵 Gizli Ülke Plakası (cn2 / rusj2 / us1)", "gold", function () {
-    FEW1N.prompt("🇯🇵 Ülke Kodu Seç", "Örnek: cn2 (Çin EV), rusj2 (Japon), us1 (ABD), eu1:", "cn2", "cn2", function (cc) {
-        if (!cc) return;
-        var pl = JSON.stringify({ c: cc, t: "<size=300><color=#FFD700><b>FEW1N</b></color></size>" });
-        if (applyAndSaveToMyCar("Gizli Plaka", JSON.stringify({ tuners: [{ key: "MPlate", value: pl }] }), true)) {
-            FEW1N.alert("🇯🇵 Gizli Plaka Aktif!", "Kod: " + cc + " herkeste ve garajda!");
+// 4) ✏️ ÖZEL 2 SATIR 3D PLAKA (KIRMIZI / ÖZEL RENK)
+addBtn("custom_mplate", "✏️ Özel 2 Satır Plaka Yaz (Herkeste + Garaj)", "green", function () {
+    var defP = getSavedPlateRaw();
+    FEW1N.prompt("🔥 Özel 2 Satır 3D Plaka", "Alt satır için | veya boşluk koy (örn: FEW1N|1337):", "FEW1N|1337", defP, function (txt) {
+        if (!txt || txt.length === 0) return;
+        savePlateRaw(txt);
+        var pl = JSON.stringify({ c: "eu1", t: formatPlateRich(txt, "#FF0033", 250) });
+        if (applyAndSaveToMyCar("Özel 2 Satır Plaka", JSON.stringify({ tuners: [{ key: "MPlate", value: pl }] }), true)) {
+            FEW1N.alert("🔥 2 Satır Plaka Basıldı!", "Sende + herkeste aktif ve garaja kaydedildi!");
         }
     });
 });
 
+// 5) 🇯🇵 GİZLİ ÜLKE PLAKASI (2 SATIR)
+addBtn("secret_plate", "🇯🇵 Gizli Ülke 2 Satır Plaka (cn2/rusj2/us1)", "gold", function () {
+    var defVal = "cn2:" + getSavedPlateRaw();
+    FEW1N.prompt("🇯🇵 Gizli Ülke 2 Satır Plaka", "Format -> kod:Satır1|Satır2 (örn: cn2:FEW1N|KING):", "cn2:FEW1N|KING", defVal, function (val) {
+        if (!val) return;
+        var idx = val.indexOf(":");
+        var cc = (idx > 0) ? val.substring(0, idx).trim() : val.trim();
+        var txt = (idx > 0) ? val.substring(idx + 1).trim() : getSavedPlateRaw();
+        if (!txt) txt = getSavedPlateRaw();
+        savePlateRaw(txt);
+        var pl = JSON.stringify({ c: cc, t: formatPlateRich(txt, "#FFD700", 250) });
+        if (applyAndSaveToMyCar("Gizli 2 Satır Plaka", JSON.stringify({ tuners: [{ key: "MPlate", value: pl }] }), true)) {
+            FEW1N.alert("🇯🇵 Gizli Plaka Aktif!", "Kod: " + cc + " | 2 satır plaka herkeste ve garajda!");
+        }
+    });
+});
+
+// 6-9) BOYA, FULL PAKET, KROM, CAM
 addBtn("custom_rgb", "🎨 Özel RGB Boya Yaz (R,G,B — Herkeste)", "cyan", function () {
     FEW1N.prompt("🎨 Özel RGB Boya", "0-255 arası R,G,B yaz (örn: 255,0,128):", "255,0,128", "255,0,128", function (txt) {
         var parts = (txt || "").split(",");
@@ -146,8 +197,8 @@ addBtn("custom_rgb", "🎨 Özel RGB Boya Yaz (R,G,B — Herkeste)", "cyan", fun
     });
 });
 
-addBtn("full_few1n", "👑 FULL FEW1N Paketi (Plaka + Neon + Altın Jant)", "gold", function () {
-    var pl = JSON.stringify({ c: "eu1", t: "<size=350><color=#FF0033><b>FEW1N</b></color></size>" });
+addBtn("full_few1n", "👑 FULL FEW1N Paketi (2 Satır Plaka + Neon + Jant)", "gold", function () {
+    var pl = JSON.stringify({ c: "eu1", t: formatPlateRich(getSavedPlateRaw(), "#FFD700", 250) });
     var mp = JSON.stringify({ r: 255, g: 0, b: 45, r2: 0, g2: 255, b2: 255, t: 1 });
     var dp = JSON.stringify({ r: 255, g: 215, b: 0, r2: 255, g2: 140, b2: 0, t: 1 });
     var payload = JSON.stringify({
@@ -159,7 +210,7 @@ addBtn("full_few1n", "👑 FULL FEW1N Paketi (Plaka + Neon + Altın Jant)", "gol
         ]
     });
     if (applyAndSaveToMyCar("FULL FEW1N", payload, true)) {
-        FEW1N.alert("👑 FULL Paket Aktif!", "Sende + herkeste aktif ve garaja kaydedildi!");
+        FEW1N.alert("👑 FULL Paket Aktif!", "2 satır Altın plaka + Neon + Altın Jant herkeste ve garajda!");
     }
 });
 
@@ -175,7 +226,7 @@ addBtn("dark_glass", "🪟 Zifiri Siyah Cam (Herkeste + Garaj)", "white", functi
     }
 });
 
-// 9-11) CANLI OTA TOGGLE'LAR (HERKESTE GÖRÜNÜR)
+// 10-12) CANLI OTA TOGGLE'LAR (HERKESTE GÖRÜNÜR)
 if (FEW1N.addMenuToggle && FEW1N.onTick) {
     FEW1N.addMenuToggle("rainbow_paint", "🌈 Gökkuşağı Boya (Herkeste Canlı)", "Aracının boyasını herkeste sürekli değiştirir", false, function (isOn) {
         g_rainbowPaintOn = !!isOn;
@@ -185,7 +236,7 @@ if (FEW1N.addMenuToggle && FEW1N.onTick) {
         g_policePaintOn = !!isOn;
         if (g_policePaintOn) g_rainbowPaintOn = false;
     });
-    FEW1N.addMenuToggle("rainbow_plate", "⚡ Gökkuşağı 3D Plaka (Herkeste Canlı)", "Plaka rengini herkeste canlı değiştirir", false, function (isOn) {
+    FEW1N.addMenuToggle("rainbow_plate", "⚡ Gökkuşağı 2 Satır Plaka (Herkeste Canlı)", "Kayıtlı 2 satır plakanı gökkuşağı renginde döndürür", false, function (isOn) {
         g_rainbowPlateOn = !!isOn;
     });
     var palette = [
@@ -209,14 +260,13 @@ if (FEW1N.addMenuToggle && FEW1N.onTick) {
             arr.push({ key: "MPaint", value: JSON.stringify({ r: c1[0], g: c1[1], b: c1[2], r2: c2[0], g2: c2[1], b2: c2[2], t: 1 }) });
         }
         if (g_rainbowPlateOn) {
-            var pTxt = FEW1N.getPref ? FEW1N.getPref("last_plate_plain", "FEW1N") : "FEW1N";
-            arr.push({ key: "MPlate", value: JSON.stringify({ c: "eu1", t: "<size=320><color=" + c1[3] + "><b>" + pTxt + "</b></color></size>" }) });
+            arr.push({ key: "MPlate", value: JSON.stringify({ c: "eu1", t: formatPlateRich(getSavedPlateRaw(), c1[3], 250) }) });
         }
         if (arr.length > 0) applyAndSaveToMyCar("", JSON.stringify({ tuners: arr }), false);
     });
 }
 
-// 12) ODA RAPORU
+// 13) ODA RAPORU
 addBtn("room_report", "🔎 Oda & Oyuncu Raporu", "white", function () {
     var me = FEW1N.myActor();
     var plys = FEW1N.players();
