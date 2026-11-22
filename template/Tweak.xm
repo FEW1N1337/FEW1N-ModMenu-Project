@@ -7073,7 +7073,7 @@ static NSString* few1n_getLiveTelemetry(void) {
 // targetActor == -1 -> odadaki TÜM diğer oyuncular
 static int few1n_remoteScaleOrFlipActor(int targetActor, float sx, float sy, float sz, bool flip180) {
     if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_array_new || !i_value_box || !mbp_getPhotonView) return 0;
-    void* ssCls   = few1n_classAnyImage("", "SmoothSyncRCC");
+    void* ssCls   = few1n_classAnyImage("Smooth", "SmoothSyncRCC");
     void* pvCls   = few1n_classAnyImage("Photon.Pun", "PhotonView");
     if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
     void* objCls  = few1n_classAnyImage("System", "Object");
@@ -7106,10 +7106,20 @@ static int few1n_remoteScaleOrFlipActor(int targetActor, float sx, float sy, flo
             if (!unityAlive(ss)) continue;
             if (few1n_pvIsMineFor(ss)) continue; // kendi aracimiza dokunma
             void* pv = mbp_getPhotonView(ss);
+            if (!ptrOk(pv) && g_mGetCompInParent && g_photonViewType) {
+                uint8_t inc = 1; void* pa[2] = { g_photonViewType, &inc };
+                @try { pv = few1n_safeInvoke(g_mGetCompInParent, ss, pa); } @catch (...) {}
+            }
             if (!ptrOk(pv)) continue;
             void* box = NULL; @try { box = few1n_safeInvoke(mOwner, pv, NULL); } @catch (...) {}
             int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
             if (targetActor > 0 && act != targetActor) continue;
+
+            // SmoothSyncRCC.syncScale = bt.XYZ (0) ve sendScaleThreshold = 0.001f
+            if (!flip180 && few1n_memOk((void*)((uintptr_t)ss + 0x98)) && few1n_memOk((void*)((uintptr_t)ss + 0x48))) {
+                *(int*)((uintptr_t)ss + 0x98) = 0;
+                *(float*)((uintptr_t)ss + 0x48) = 0.001f;
+            }
 
             void* tr = few1n_safeInvoke(mGetTr, ss, NULL);
             Vec3 pos = {0, 0, 0}, rot = {0, 0, 0};
@@ -7120,8 +7130,8 @@ static int few1n_remoteScaleOrFlipActor(int targetActor, float sx, float sy, flo
             }
             if (flip180) { pos.y += 1.8f; rot.z = 180.0f; sc = (Vec3){1.0f, 1.0f, 1.0f}; }
 
-            // 1) RpcTeleport(pos, rot, scale, 0.0f)
-            float tmp = 0.0f;
+            // 1) RpcTeleport(pos, rot, scale, tempOwnerTime=3.0f -> hemen geri snap olmasin)
+            float tmp = 3.0f;
             void* o4 = i_array_new(objCls, 4);
             void** e4 = (void**)((uintptr_t)o4 + 0x20);
             e4[0] = i_value_box(vecCls, &pos);
@@ -7139,7 +7149,9 @@ static int few1n_remoteScaleOrFlipActor(int targetActor, float sx, float sy, flo
             e3[2] = i_value_box(vecCls, &sc);
             void* r2[3] = { rpcSrv, &all, o3 };
             bool c2 = false; few1n_guardedInvoke(mRPC, pv, r2, &c2);
-            hit++;
+
+            if (!c1 || !c2) hit++;
+            FLog([NSString stringWithFormat:@"🦖 Remote%@ actor=%d c1=%d c2=%d", flip180 ? @"Flip" : @"Scale", act, c1, c2]);
         }
     } @catch (...) {}
     return hit;
@@ -7169,7 +7181,12 @@ static int few1n_remoteRespawnGhostActor(int targetActor) {
         for (int i = 0; i < cnt && i < 64 && items; i++) {
             void* rc = items[i];
             if (!unityAlive(rc)) continue;
+            if (targetActor == -1 && few1n_pvIsMineFor(rc)) continue; // tum oda modunda kendi aracina basma
             void* pv = mbp_getPhotonView(rc);
+            if (!ptrOk(pv) && g_mGetCompInParent && g_photonViewType) {
+                uint8_t inc = 1; void* pa[2] = { g_photonViewType, &inc };
+                @try { pv = few1n_safeInvoke(g_mGetCompInParent, rc, pa); } @catch (...) {}
+            }
             if (!ptrOk(pv)) continue;
             void* box = NULL; @try { box = few1n_safeInvoke(mOwner, pv, NULL); } @catch (...) {}
             int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
@@ -7178,14 +7195,16 @@ static int few1n_remoteRespawnGhostActor(int targetActor) {
             void* args[3] = { rpcName, &all, oArr };
             bool c = false; few1n_guardedInvoke(mRPC, pv, args, &c);
             if (!c) hit++;
+            FLog([NSString stringWithFormat:@"👻 RespawnGhost actor=%d err=%d", act, c]);
         }
     } @catch (...) {}
     return hit;
 }
 
-// #56 Odadaki Herkeste Canlı Yağmur & Gece/Gündüz Değiştir (Room CustomProperties: WeatherRain / WeatherLighting)
+// #56 Odadaki Herkeste Canlı Yağmur & Gece/Gündüz Değiştir (Room CustomProperties + Lokal WeatherManager)
 static bool few1n_setRoomWeatherEveryone(float rainVal, float lightVal) {
     if (!pn_getCurrentRoom || !i_runtime_invoke || !i_class_get_method_from_name || !i_object_new || !i_value_box) return false;
+    few1n_claimMaster();
     void* rm = NULL; @try { rm = pn_getCurrentRoom(); } @catch (...) {}
     if (!ptrOk(rm)) return false;
     void* rmCls  = few1n_classAnyImage("Photon.Realtime", "Room");
@@ -7193,9 +7212,12 @@ static bool few1n_setRoomWeatherEveryone(float rainVal, float lightVal) {
     void* fltCls = few1n_classAnyImage("System", "Single");
     if (!rmCls || !htCls || !fltCls) return false;
     void* htCtor = i_class_get_method_from_name(htCls, ".ctor", 0);
-    void* htSet  = i_class_get_method_from_name(htCls, "set_Item", 2);
+    const char* htPrm[2] = { "Object", "Object" };
+    void* htSet  = few1n_methodBySig(htCls, "Void", htPrm, 2, 0);
+    if (!htSet) htSet = i_class_get_method_from_name(htCls, "set_Item", 2);
     void* mSetP  = i_class_get_method_from_name(rmCls, "SetCustomProperties", 3);
     if (!htCtor || !htSet || !mSetP) return false;
+    bool ok = false;
     @try {
         void* ht = i_object_new(htCls);
         if (!ptrOk(ht)) return false;
@@ -7216,14 +7238,31 @@ static bool few1n_setRoomWeatherEveryone(float rainVal, float lightVal) {
         bool crashed = false;
         few1n_guardedInvoke(mSetP, rm, pArgs, &crashed);
         if (!crashed) {
+            ok = true;
             FLog([NSString stringWithFormat:@"🌦️ Oda hava durumu yayinlandi (Rain=%.2f Light=%.2f)", rainVal, lightVal]);
-            return true;
         }
     } @catch (...) {}
-    return false;
+
+    // WeatherManager OnRoomPropertiesUpdate dinlemedigi icin lokal sahneyi de aninda guncelle
+    @try {
+        void* wmCls = few1n_classAnyImage("Weather", "WeatherManager");
+        if (wmCls) {
+            void* mInst = i_class_get_method_from_name(wmCls, "eyo", 0);
+            void* wm = mInst ? few1n_safeInvoke(mInst, NULL, NULL) : NULL;
+            if (unityAlive(wm)) {
+                void* mRain  = i_class_get_method_from_name(wmCls, "eyt", 1);
+                void* mLight = i_class_get_method_from_name(wmCls, "eyw", 1);
+                void* mUpd   = i_class_get_method_from_name(wmCls, "eyy", 0);
+                if (mRain && rainVal >= 0.0f)   { bool c=false; void* a[1]={&rainVal};  few1n_guardedInvoke(mRain, wm, a, &c); }
+                if (mLight && lightVal >= 0.0f) { bool c=false; void* a[1]={&lightVal}; few1n_guardedInvoke(mLight, wm, a, &c); }
+                if (mUpd)                       { bool c=false; few1n_guardedInvoke(mUpd, wm, NULL, &c); }
+            }
+        }
+    } @catch (...) {}
+    return ok;
 }
 
-// #57 Başkasının / Herkesin Aracına Canlı Plaka / HDR Boya / UFO Tekerlek / Çıplak Bas (TuningManager.eai() Spoof)
+// #57 Başkasının / Herkesin Aracına Canlı Plaka / HDR Boya / UFO Tekerlek / Çıplak Bas (TuningManager.eai() Tam Spoof)
 // presetMode: 0=3D Plaka, 1=HDR Neon Boya, 2=UFO 90° Kamber, 3=Tekerlek Sök (-1)
 static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSString *plateText) {
     if (!g_mFindObjectsPlural || !i_runtime_invoke || !i_class_get_method_from_name || !mbp_getPhotonView) return 0;
@@ -7233,7 +7272,6 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
     if (!tmCls || !pvCls) return 0;
     void* tmType = few1n_typeObjOf(tmCls);
     void* mOwner = i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0);
-    void* mEah   = i_class_get_method_from_name(tmCls, "eah", 1);
     void* mEae   = i_class_get_method_from_name(tmCls, "eae", 0);
     void* mEai   = i_class_get_method_from_name(tmCls, "eai", 0);
     if (!tmType || !mOwner) return 0;
@@ -7286,9 +7324,11 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
         } @catch (...) {}
     }
 
-    // 2) Broadcast LoadTuners via target TuningManager with temporary IsMine spoof + eai()
+    // 2) Broadcast LoadTuners via target TuningManager with FULL 6-field PV spoof (eae -> eai; eah cagrilmaz!)
     int hit = 0;
     void* myLP = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+    int myAN = 0;
+    if (myLP && ply_getActorNumber) { @try { myAN = ply_getActorNumber(myLP); } @catch (...) {} }
     @try {
         void* a[1] = { tmType };
         void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
@@ -7298,6 +7338,10 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
             void* tm = items[i];
             if (!unityAlive(tm) || few1n_pvIsMineFor(tm)) continue;
             void* pv = mbp_getPhotonView(tm);
+            if (!ptrOk(pv) && g_mGetCompInParent && g_photonViewType) {
+                uint8_t inc = 1; void* pa[2] = { g_photonViewType, &inc };
+                @try { pv = few1n_safeInvoke(g_mGetCompInParent, tm, pa); } @catch (...) {}
+            }
             if (!ptrOk(pv)) continue;
             void* box = NULL; @try { box = few1n_safeInvoke(mOwner, pv, NULL); } @catch (...) {}
             int act = ptrOk(box) ? *(int*)((uintptr_t)box + 0x10) : -1;
@@ -7306,23 +7350,36 @@ static int few1n_remoteApplyTuningToActor(int targetActor, int presetMode, NSStr
             uintptr_t b = (uintptr_t)pv;
             int oM = g_isMineOff;
             uint8_t sMine = 0, sAm = 0; void* sCtrl = NULL; void* sOwn = NULL;
+            int sOwnerAN = 0, sCtrlAN = 0;
             bool spoofed = false;
-            if (oM > 0 && ptrOk(myLP) && few1n_memOk((void*)(b + oM)) && few1n_memOk((void*)(b + oM + 0x18))) {
-                sMine = *(uint8_t*)(b + oM); sCtrl = *(void**)(b + oM + 0x08);
-                sAm = *(uint8_t*)(b + oM + 0x14); sOwn = *(void**)(b + oM + 0x18);
-                *(uint8_t*)(b + oM) = 1; *(void**)(b + oM + 0x08) = myLP;
-                *(uint8_t*)(b + oM + 0x14) = 1; *(void**)(b + oM + 0x18) = myLP;
+            if (oM > 0 && ptrOk(myLP) && myAN > 0 && few1n_memOk((void*)(b + oM)) && few1n_memOk((void*)(b + oM + 0x24))) {
+                sMine    = *(uint8_t*)(b + oM);
+                sCtrl    = *(void**)(b + oM + 0x08);
+                sAm      = *(uint8_t*)(b + oM + 0x14);
+                sOwn     = *(void**)(b + oM + 0x18);
+                sOwnerAN = *(int*)(b + oM + 0x20);
+                sCtrlAN  = *(int*)(b + oM + 0x24);
+                *(uint8_t*)(b + oM)        = 1;
+                *(void**)(b + oM + 0x08)   = myLP;
+                *(uint8_t*)(b + oM + 0x14) = 1;
+                *(void**)(b + oM + 0x18)   = myLP;
+                *(int*)(b + oM + 0x20)     = myAN;
+                *(int*)(b + oM + 0x24)     = myAN;
                 spoofed = true;
             }
-            uint8_t t1 = 1;
-            if (mEah) { bool cr=false; void* pa[1]={&t1}; few1n_guardedInvoke(mEah, tm, pa, &cr); }
-            if (mEae) { bool cr=false; few1n_guardedInvoke(mEae, tm, NULL, &cr); }
-            if (mEai) { bool cr=false; few1n_guardedInvoke(mEai, tm, NULL, &cr); }
+            bool crEae = true, crEai = true;
+            if (mEae) { few1n_guardedInvoke(mEae, tm, NULL, &crEae); }
+            if (mEai) { few1n_guardedInvoke(mEai, tm, NULL, &crEai); }
             if (spoofed) {
-                *(uint8_t*)(b + oM) = sMine; *(void**)(b + oM + 0x08) = sCtrl;
-                *(uint8_t*)(b + oM + 0x14) = sAm; *(void**)(b + oM + 0x18) = sOwn;
+                *(uint8_t*)(b + oM)        = sMine;
+                *(void**)(b + oM + 0x08)   = sCtrl;
+                *(uint8_t*)(b + oM + 0x14) = sAm;
+                *(void**)(b + oM + 0x18)   = sOwn;
+                *(int*)(b + oM + 0x20)     = sOwnerAN;
+                *(int*)(b + oM + 0x24)     = sCtrlAN;
             }
-            hit++;
+            if (!crEai || !crEae) hit++;
+            FLog([NSString stringWithFormat:@"🎨 RemoteTuning actor=%d mode=%d spoof=%d eaeErr=%d eaiErr=%d", act, presetMode, spoofed, crEae, crEai]);
         }
     } @catch (...) {}
     return hit;
@@ -7350,6 +7407,8 @@ static NSString* few1n_detectPlateTunerKey(void) {
     void* ptCls = few1n_classAnyImage("", "PlateTuner");
     void* ptType = ptCls ? few1n_typeObjOf(ptCls) : NULL;
     if (!ptCls || !ptType) return @"Plate";
+    void* mDul = i_class_get_method_from_name ? i_class_get_method_from_name(ptCls, "dul", 0) : NULL;
+    void* mDum = i_class_get_method_from_name ? i_class_get_method_from_name(ptCls, "dum", 0) : NULL;
     @try {
         void* a[1] = { ptType };
         bool fc = false;
@@ -7359,8 +7418,17 @@ static NSString* few1n_detectPlateTunerKey(void) {
         for (int i = 0; i < cnt && i < 16; i++) {
             void* pt = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*));
             if (!unityAlive(pt)) continue;
+            // Once hs interface key metotlarini dene (dul / dum), sonra _name (@0x20)
+            if (mDul) {
+                bool c = false; void* s = few1n_guardedInvoke(mDul, pt, NULL, &c);
+                if (!c && few1n_isStringObj(s)) { NSString *k = readStr(s); if (k.length > 0) return k; }
+            }
+            if (mDum) {
+                bool c = false; void* s = few1n_guardedInvoke(mDum, pt, NULL, &c);
+                if (!c && few1n_isStringObj(s)) { NSString *k = readStr(s); if (k.length > 0) return k; }
+            }
             void* nmPtr = few1n_rdPtr(pt, 0x20); // internal string _name
-            if (ptrOk(nmPtr)) { NSString *k = readStr(nmPtr); if (k.length > 0) return k; }
+            if (few1n_isStringObj(nmPtr)) { NSString *k = readStr(nmPtr); if (k.length > 0) return k; }
         }
     } @catch (...) {}
     return @"Plate";
@@ -7373,12 +7441,13 @@ static int few1n_injectRemotePlateZipper(int targetActor, NSString *country, NSS
     NSString *pTxt  = (plateText.length > 0) ? plateText : @"FEW1N";
     NSString *pKey  = few1n_detectPlateTunerKey();
 
+    NSJSONWritingOptions jOpt = NSJSONWritingWithoutEscapingSlashes;
     NSDictionary *inner = @{ @"c": cCode, @"t": pTxt };
-    NSData *innerData = [NSJSONSerialization dataWithJSONObject:inner options:0 error:nil];
+    NSData *innerData = [NSJSONSerialization dataWithJSONObject:inner options:jOpt error:nil];
     if (!innerData) return 0;
     NSString *innerJson = [[NSString alloc] initWithData:innerData encoding:NSUTF8StringEncoding];
     NSDictionary *outer = @{ @"tuners": @[ @{ @"key": pKey, @"value": innerJson } ] };
-    NSData *outerData = [NSJSONSerialization dataWithJSONObject:outer options:0 error:nil];
+    NSData *outerData = [NSJSONSerialization dataWithJSONObject:outer options:jOpt error:nil];
     if (!outerData) return 0;
     NSString *outerJson = [[NSString alloc] initWithData:outerData encoding:NSUTF8StringEncoding];
 
@@ -7413,6 +7482,10 @@ static int few1n_injectRemotePlateZipper(int targetActor, NSString *country, NSS
             if (!unityAlive(tm)) continue;
             if (targetActor == -1 && few1n_pvIsMineFor(tm)) continue;
             void* pv = mbp_getPhotonView(tm);
+            if (!ptrOk(pv) && g_mGetCompInParent && g_photonViewType) {
+                uint8_t inc = 1; void* pa[2] = { g_photonViewType, &inc };
+                @try { pv = few1n_safeInvoke(g_mGetCompInParent, tm, pa); } @catch (...) {}
+            }
             if (!ptrOk(pv)) continue;
             bool oc = false;
             void* box = few1n_guardedInvoke(mOwner, pv, NULL, &oc);
@@ -17285,11 +17358,17 @@ static void few1n_joinTargetRoom(NSString *nm) {
 // #56 Odadaki Herkeste Canlı Yağmur & Gece/Gündüz
 - (void)v18RoomWeatherMenu {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"⛈️ Oda Hava & Saat (#56 — Herkeste)"
-        message:@"Photon Room CustomProperties (WeatherRain / WeatherLighting):" preferredStyle:UIAlertControllerStyleActionSheet];
-    [ac addAction:[UIAlertAction actionWithTitle:@"⛈️ Sağanak Fırtına + Gece" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRoomWeatherEveryone(1.0f, 1.0f); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"🌧️ Sağanak Yağmur + Gündüz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRoomWeatherEveryone(1.0f, 0.0f); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"🌙 Açık Hava + Gece" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRoomWeatherEveryone(0.0f, 1.0f); }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"☀️ Güneşli + Gündüz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ few1n_setRoomWeatherEveryone(0.0f, 0.0f); }]];
+        message:@"Photon Room CustomProperties + lokal WeatherManager güncellenir:" preferredStyle:UIAlertControllerStyleActionSheet];
+    void (^opt)(NSString*, float, float) = ^(NSString* t, float r, float l){
+        [ac addAction:[UIAlertAction actionWithTitle:t style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            bool ok = few1n_setRoomWeatherEveryone(r, l);
+            [self v15Alert:@"⛈️ Oda Hava & Saat" msg:(ok ? @"Oda hava durumu yayınlandı ve lokal sahne güncellendi!" : @"Odada değilsin veya SetCustomProperties başarısız.")];
+        }]];
+    };
+    opt(@"⛈️ Sağanak Fırtına + Gece",   1.0f, 1.0f);
+    opt(@"🌧️ Sağanak Yağmur + Gündüz",  1.0f, 0.0f);
+    opt(@"🌙 Açık Hava + Gece",         0.0f, 1.0f);
+    opt(@"☀️ Güneşli + Gündüz",         0.0f, 0.0f);
     [self v15PresentSheet:ac];
 }
 
