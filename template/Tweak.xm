@@ -4,6 +4,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 #import <PhotosUI/PhotosUI.h>
+#import <JavaScriptCore/JavaScriptCore.h>
 #include <substrate.h>
 #include <mach-o/dyld.h>
 #include <string.h>
@@ -17,7 +18,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 117.24
+#define FEW1N_VERSION 118.0
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -7505,6 +7506,427 @@ static int few1n_injectRemotePlateZipper(int targetActor, NSString *country, NSS
     return hit;
 }
 
+// ============================================================================
+// v118.0 FEW1N LIVE OTA JS ENGINE (JavaScriptCore + il2cpp Bridge)
+// Yeniden .dylib derlemeden GitHub'daki live.js ile anlik fix & yeni aksiyonlar
+// ============================================================================
+static JSContext *g_liveCtx = nil;
+static NSMutableArray<NSDictionary*> *g_liveActions = nil;
+static NSString *g_liveMetaVer  = @"yok";
+static NSString *g_liveMetaNote = @"Henüz indirilmedi";
+static NSString *g_liveLastErr  = @"";
+static void (^g_liveAlertHandler)(NSString *title, NSString *msg) = nil;
+
+static NSString* few1n_liveDefaultUrl(void) {
+    return @"https://raw.githubusercontent.com/FEW1N1337/FEW1N-ModMenu-Project/main/live.js";
+}
+static NSString* few1n_liveCurrentUrl(void) {
+    NSString *u = loadStr(@"live_js_url", @"");
+    return (u.length > 8) ? u : few1n_liveDefaultUrl();
+}
+static NSString* few1n_ptrToHandle(void* p) {
+    if (!ptrOk(p)) return @"";
+    return [NSString stringWithFormat:@"@0x%llx", (unsigned long long)(uintptr_t)p];
+}
+static void* few1n_handleToPtr(id val) {
+    if (![val isKindOfClass:[NSString class]]) return NULL;
+    NSString *s = (NSString*)val;
+    if (![s hasPrefix:@"@0x"]) return NULL;
+    unsigned long long v = 0;
+    if (sscanf(s.UTF8String + 1, "0x%llx", &v) != 1) return NULL;
+    void* p = (void*)(uintptr_t)v;
+    return ptrOk(p) ? p : NULL;
+}
+static void* few1n_livePhotonViewOf(void* obj) {
+    if (!ptrOk(obj)) return NULL;
+    // Eger obj zaten PhotonView ise direkt don
+    void* pvCls = few1n_classAnyImage("Photon.Pun", "PhotonView");
+    if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+    if (pvCls && few1n_memOk(obj)) {
+        void* objCls = *(void**)obj;
+        if (objCls == pvCls) return obj;
+    }
+    void* pv = mbp_getPhotonView ? mbp_getPhotonView(obj) : NULL;
+    if (!ptrOk(pv) && g_mGetCompInParent && g_photonViewType) {
+        uint8_t inc = 1; void* pa[2] = { g_photonViewType, &inc };
+        @try { pv = few1n_safeInvoke(g_mGetCompInParent, obj, pa); } @catch (...) {}
+    }
+    return ptrOk(pv) ? pv : NULL;
+}
+
+static id few1n_liveInvokeInternal(NSString *objHandle, NSString *ns, NSString *clsName, NSString *methodName, NSArray *jsArgs, bool withSpoof) {
+    if (!clsName.length || !methodName.length || !i_runtime_invoke || !i_class_get_method_from_name) return nil;
+    void* cls = few1n_classAnyImage(ns ? ns.UTF8String : "", clsName.UTF8String);
+    if (!cls) return nil;
+    int argc = [jsArgs isKindOfClass:[NSArray class]] ? (int)jsArgs.count : 0;
+    if (argc > 16) argc = 16;
+    void* m = i_class_get_method_from_name(cls, methodName.UTF8String, argc);
+    if (!m) return nil;
+    void* inst = few1n_handleToPtr(objHandle);
+
+    int iv[16] = {0};
+    float fv[16] = {0};
+    uint8_t bv[16] = {0};
+    Vec3 vv[16];
+    Color4 cv[16];
+    void* argPtrs[16] = {0};
+
+    for (int i = 0; i < argc; i++) {
+        id item = jsArgs[i];
+        char *ptn = NULL;
+        if (i_method_get_param && i_type_get_name) {
+            void* pt = i_method_get_param(m, (uint32_t)i);
+            if (pt) ptn = i_type_get_name(pt);
+        }
+        if ([item isKindOfClass:[NSString class]]) {
+            NSString *str = (NSString*)item;
+            if ([str hasPrefix:@"@0x"]) argPtrs[i] = few1n_handleToPtr(str);
+            else argPtrs[i] = mkStr(str);
+        } else if ([item isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *d = (NSDictionary*)item;
+            if (ptn && strstr(ptn, "Color")) {
+                cv[i] = (Color4){ [d[@"r"] floatValue], [d[@"g"] floatValue], [d[@"b"] floatValue], d[@"a"] ? [d[@"a"] floatValue] : 1.0f };
+                argPtrs[i] = &cv[i];
+            } else {
+                vv[i] = (Vec3){ [d[@"x"] floatValue], [d[@"y"] floatValue], [d[@"z"] floatValue] };
+                argPtrs[i] = &vv[i];
+            }
+        } else if ([item isKindOfClass:[NSNumber class]]) {
+            NSNumber *num = (NSNumber*)item;
+            if (ptn && strstr(ptn, "Single"))       { fv[i] = num.floatValue; argPtrs[i] = &fv[i]; }
+            else if (ptn && strstr(ptn, "Boolean")) { bv[i] = num.boolValue ? 1 : 0; argPtrs[i] = &bv[i]; }
+            else                                    { iv[i] = num.intValue; argPtrs[i] = &iv[i]; }
+        } else {
+            argPtrs[i] = NULL;
+        }
+        if (ptn) free(ptn);
+    }
+
+    // Opsiyonel tam 6-alan PhotonView sahiplik spoof'u
+    void* pv = (withSpoof && ptrOk(inst)) ? few1n_livePhotonViewOf(inst) : NULL;
+    void* myLP = (withSpoof && pn_getLocalPlayer) ? pn_getLocalPlayer() : NULL;
+    int myAN = (myLP && ply_getActorNumber) ? ply_getActorNumber(myLP) : 0;
+    uintptr_t pb = (uintptr_t)pv;
+    int oM = g_isMineOff;
+    uint8_t sMine=0, sAm=0; void *sCtrl=NULL, *sOwn=NULL; int sOwnerAN=0, sCtrlAN=0;
+    bool spoofed = false;
+    if (withSpoof && ptrOk(pv) && oM > 0 && ptrOk(myLP) && myAN > 0 && few1n_memOk((void*)(pb + oM)) && few1n_memOk((void*)(pb + oM + 0x24))) {
+        sMine = *(uint8_t*)(pb + oM); sCtrl = *(void**)(pb + oM + 0x08);
+        sAm = *(uint8_t*)(pb + oM + 0x14); sOwn = *(void**)(pb + oM + 0x18);
+        sOwnerAN = *(int*)(pb + oM + 0x20); sCtrlAN = *(int*)(pb + oM + 0x24);
+        *(uint8_t*)(pb + oM) = 1; *(void**)(pb + oM + 0x08) = myLP;
+        *(uint8_t*)(pb + oM + 0x14) = 1; *(void**)(pb + oM + 0x18) = myLP;
+        *(int*)(pb + oM + 0x20) = myAN; *(int*)(pb + oM + 0x24) = myAN;
+        spoofed = true;
+    }
+
+    bool crashed = false;
+    void* ret = few1n_guardedInvoke(m, inst, (argc > 0 ? argPtrs : NULL), &crashed);
+
+    if (spoofed) {
+        *(uint8_t*)(pb + oM) = sMine; *(void**)(pb + oM + 0x08) = sCtrl;
+        *(uint8_t*)(pb + oM + 0x14) = sAm; *(void**)(pb + oM + 0x18) = sOwn;
+        *(int*)(pb + oM + 0x20) = sOwnerAN; *(int*)(pb + oM + 0x24) = sCtrlAN;
+    }
+    if (crashed) return nil;
+
+    char *rtn = NULL;
+    if (i_method_get_return_type && i_type_get_name) {
+        void* rt = i_method_get_return_type(m);
+        if (rt) rtn = i_type_get_name(rt);
+    }
+    id outVal = @(YES);
+    if (rtn) {
+        if (strstr(rtn, "Void")) {
+            outVal = @(YES);
+        } else if (strstr(rtn, "String")) {
+            outVal = few1n_isStringObj(ret) ? readStr(ret) : @"";
+        } else if (strstr(rtn, "Boolean")) {
+            outVal = ptrOk(ret) ? @(*(uint8_t*)((uintptr_t)ret + 0x10) != 0) : @(NO);
+        } else if (strstr(rtn, "Int32")) {
+            outVal = ptrOk(ret) ? @(*(int*)((uintptr_t)ret + 0x10)) : @(0);
+        } else if (strstr(rtn, "Single")) {
+            outVal = ptrOk(ret) ? @(*(float*)((uintptr_t)ret + 0x10)) : @(0.0f);
+        } else if (strstr(rtn, "Vector3")) {
+            if (ptrOk(ret)) {
+                Vec3 v = *(Vec3*)((uintptr_t)ret + 0x10);
+                outVal = @{ @"x": @(v.x), @"y": @(v.y), @"z": @(v.z) };
+            } else {
+                outVal = @{ @"x": @(0), @"y": @(0), @"z": @(0) };
+            }
+        } else {
+            outVal = few1n_ptrToHandle(ret);
+        }
+        free(rtn);
+    }
+    return outVal;
+}
+
+static void few1n_liveSetupContext(void) {
+    if (!g_liveActions) g_liveActions = [NSMutableArray array];
+    [g_liveActions removeAllObjects];
+    g_liveLastErr = @"";
+    g_liveCtx = [[JSContext alloc] init];
+    g_liveCtx.exceptionHandler = ^(JSContext *ctx, JSValue *exc) {
+        g_liveLastErr = [NSString stringWithFormat:@"%@", exc];
+        FLog([NSString stringWithFormat:@"⚠️ [LIVE JS ERR] %@", g_liveLastErr]);
+    };
+
+    JSValue *api = [JSValue valueWithNewObjectInContext:g_liveCtx];
+
+    api[@"log"] = ^(NSString *msg) {
+        if (msg) FLog([NSString stringWithFormat:@"⚡[LIVE] %@", msg]);
+    };
+    api[@"alert"] = ^(NSString *title, NSString *msg) {
+        NSString *t = title ?: @"⚡ Canlı Script";
+        NSString *m = msg ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (g_liveAlertHandler) g_liveAlertHandler(t, m);
+        });
+    };
+    api[@"setMeta"] = ^(NSString *ver, NSString *note) {
+        g_liveMetaVer  = ver.length  ? ver  : @"1.0";
+        g_liveMetaNote = note.length ? note : @"";
+    };
+    api[@"clearActions"] = ^{
+        [g_liveActions removeAllObjects];
+    };
+    api[@"registerAction"] = ^(NSString *aid, NSString *title, JSValue *fn) {
+        if (!title.length || !fn || fn.isUndefined || fn.isNull) return;
+        [g_liveActions addObject:@{ @"id": (aid ?: title), @"title": title, @"fn": fn }];
+    };
+    api[@"claimMaster"] = ^{
+        few1n_claimMaster();
+    };
+    api[@"myActor"] = ^int(void) {
+        void* lp = pn_getLocalPlayer ? pn_getLocalPlayer() : NULL;
+        return (lp && ply_getActorNumber) ? ply_getActorNumber(lp) : -1;
+    };
+    api[@"players"] = ^NSArray*(void) {
+        NSMutableArray *res = [NSMutableArray array];
+        if (!pn_getPlayerListOthers || !i_runtime_invoke) return res;
+        void* others = NULL; @try { others = pn_getPlayerListOthers(); } @catch (...) {}
+        void* plyCls = few1n_classAnyImage("Photon.Realtime", "Player");
+        void* mNick = plyCls ? i_class_get_method_from_name(plyCls, "get_NickName", 0) : NULL;
+        void* mAct  = plyCls ? i_class_get_method_from_name(plyCls, "get_ActorNumber", 0) : NULL;
+        int cnt = ptrOk(others) ? few1n_rdI32(others, 0x18, 0) : 0;
+        for (int i = 0; i < cnt && i < 32; i++) {
+            void* p = few1n_rdPtr(others, 0x20 + (uintptr_t)i * sizeof(void*));
+            if (!ptrOk(p)) continue;
+            NSString *nm = @"Oyuncu"; int act = -1;
+            if (mNick) { bool c=false; void* s = few1n_guardedInvoke(mNick, p, NULL, &c); if (!c && few1n_isStringObj(s)) nm = readStr(s); }
+            if (mAct)  { bool c=false; void* b = few1n_guardedInvoke(mAct,  p, NULL, &c); if (!c && ptrOk(b)) act = few1n_rdI32(b, 0x10, -1); }
+            if (act > 0) [res addObject:@{ @"actor": @(act), @"name": nm }];
+        }
+        return res;
+    };
+    api[@"findClass"] = ^NSString*(NSString *ns, NSString *clsName) {
+        if (!clsName.length) return @"";
+        return few1n_ptrToHandle(few1n_classAnyImage(ns ? ns.UTF8String : "", clsName.UTF8String));
+    };
+    api[@"findObjects"] = ^NSArray*(NSString *ns, NSString *clsName) {
+        NSMutableArray *out = [NSMutableArray array];
+        if (!g_mFindObjectsPlural || !clsName.length) return out;
+        void* cls = few1n_classAnyImage(ns ? ns.UTF8String : "", clsName.UTF8String);
+        void* tp  = cls ? few1n_typeObjOf(cls) : NULL;
+        if (!tp) return out;
+        void* a[1] = { tp };
+        bool fc = false;
+        void* arr = few1n_guardedInvoke(g_mFindObjectsPlural, NULL, a, &fc);
+        if (fc || !ptrOk(arr)) return out;
+        int cnt = few1n_rdI32(arr, 0x18, 0);
+        for (int i = 0; i < cnt && i < 64; i++) {
+            void* obj = few1n_rdPtr(arr, 0x20 + (uintptr_t)i * sizeof(void*));
+            if (unityAlive(obj)) [out addObject:few1n_ptrToHandle(obj)];
+        }
+        return out;
+    };
+    api[@"isMine"] = ^BOOL(NSString *objHandle) {
+        void* obj = few1n_handleToPtr(objHandle);
+        return ptrOk(obj) ? (few1n_pvIsMineFor(obj) ? YES : NO) : NO;
+    };
+    api[@"getOwnerActor"] = ^int(NSString *objHandle) {
+        void* obj = few1n_handleToPtr(objHandle);
+        void* pv  = few1n_livePhotonViewOf(obj);
+        if (!ptrOk(pv) || !i_class_get_method_from_name) return -1;
+        void* pvCls = few1n_classAnyImage("Photon.Pun", "PhotonView");
+        if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+        void* mOwner = pvCls ? i_class_get_method_from_name(pvCls, "get_OwnerActorNr", 0) : NULL;
+        if (!mOwner) return -1;
+        bool c = false; void* box = few1n_guardedInvoke(mOwner, pv, NULL, &c);
+        return (!c && ptrOk(box)) ? few1n_rdI32(box, 0x10, -1) : -1;
+    };
+    api[@"readInt"] = ^int(NSString *objHandle, int off) {
+        void* obj = few1n_handleToPtr(objHandle);
+        return (ptrOk(obj) && off >= 0 && off < 0x4000) ? few1n_rdI32(obj, (uintptr_t)off, 0) : 0;
+    };
+    api[@"writeInt"] = ^BOOL(NSString *objHandle, int off, int val) {
+        void* obj = few1n_handleToPtr(objHandle);
+        if (!ptrOk(obj) || off < 0 || off >= 0x4000 || !few1n_memOk((void*)((uintptr_t)obj + off))) return NO;
+        *(int*)((uintptr_t)obj + off) = val;
+        return YES;
+    };
+    api[@"readFloat"] = ^double(NSString *objHandle, int off) {
+        void* obj = few1n_handleToPtr(objHandle);
+        if (!ptrOk(obj) || off < 0 || off >= 0x4000 || !few1n_memOk((void*)((uintptr_t)obj + off))) return 0.0;
+        return (double)(*(float*)((uintptr_t)obj + off));
+    };
+    api[@"writeFloat"] = ^BOOL(NSString *objHandle, int off, double val) {
+        void* obj = few1n_handleToPtr(objHandle);
+        if (!ptrOk(obj) || off < 0 || off >= 0x4000 || !few1n_memOk((void*)((uintptr_t)obj + off))) return NO;
+        *(float*)((uintptr_t)obj + off) = (float)val;
+        return YES;
+    };
+    api[@"readStr"] = ^NSString*(NSString *objHandle, int off) {
+        void* obj = few1n_handleToPtr(objHandle);
+        if (!ptrOk(obj) || off < 0 || off >= 0x4000) return @"";
+        void* sp = few1n_rdPtr(obj, (uintptr_t)off);
+        return few1n_isStringObj(sp) ? readStr(sp) : @"";
+    };
+    api[@"invoke"] = ^id(NSString *objHandle, NSString *ns, NSString *clsName, NSString *methodName, NSArray *args) {
+        return few1n_liveInvokeInternal(objHandle, ns, clsName, methodName, args, false);
+    };
+    api[@"spoofInvoke"] = ^id(NSString *objHandle, NSString *ns, NSString *clsName, NSString *methodName, NSArray *args) {
+        return few1n_liveInvokeInternal(objHandle, ns, clsName, methodName, args, true);
+    };
+    api[@"sendRPC"] = ^BOOL(NSString *objHandle, NSString *rpcName, int targetInt, NSArray *typedArgs) {
+        if (!rpcName.length || !i_array_new || !i_value_box) return NO;
+        void* pv = few1n_livePhotonViewOf(few1n_handleToPtr(objHandle));
+        if (!ptrOk(pv)) return NO;
+        void* pvCls  = few1n_classAnyImage("Photon.Pun", "PhotonView");
+        if (!pvCls) pvCls = few1n_classAnyImage("", "PhotonView");
+        void* objCls = few1n_classAnyImage("System", "Object");
+        void* intCls = few1n_classAnyImage("System", "Int32");
+        void* fltCls = few1n_classAnyImage("System", "Single");
+        void* booCls = few1n_classAnyImage("System", "Boolean");
+        void* vecCls = few1n_classAnyImage("UnityEngine", "Vector3");
+        if (!pvCls || !objCls) return NO;
+        const char* prm[3] = { "String", "RpcTarget", "Object[]" };
+        void* mRPC = few1n_methodBySig(pvCls, "Void", prm, 3, 0);
+        if (!mRPC) return NO;
+        int n = [typedArgs isKindOfClass:[NSArray class]] ? (int)typedArgs.count : 0;
+        if (n > 16) n = 16;
+        void* oArr = i_array_new(objCls, (unsigned long)n);
+        if (!ptrOk(oArr)) return NO;
+        void** el = (void**)((uintptr_t)oArr + 0x20);
+        for (int i = 0; i < n; i++) {
+            id it = typedArgs[i];
+            if ([it isKindOfClass:[NSString class]]) {
+                NSString *s = (NSString*)it;
+                el[i] = [s hasPrefix:@"@0x"] ? few1n_handleToPtr(s) : mkStr(s);
+            } else if ([it isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *d = (NSDictionary*)it;
+                NSString *t = d[@"t"] ?: @"";
+                if ([t isEqualToString:@"v3"] && vecCls) {
+                    Vec3 v = { [d[@"x"] floatValue], [d[@"y"] floatValue], [d[@"z"] floatValue] };
+                    el[i] = i_value_box(vecCls, &v);
+                } else if ([t isEqualToString:@"i"] && intCls) {
+                    int v = [d[@"v"] intValue]; el[i] = i_value_box(intCls, &v);
+                } else if ([t isEqualToString:@"b"] && booCls) {
+                    uint8_t v = [d[@"v"] boolValue] ? 1 : 0; el[i] = i_value_box(booCls, &v);
+                } else if ([t isEqualToString:@"f"] && fltCls) {
+                    float v = [d[@"v"] floatValue]; el[i] = i_value_box(fltCls, &v);
+                } else if ([t isEqualToString:@"s"]) {
+                    el[i] = mkStr(d[@"v"] ?: @"");
+                } else {
+                    el[i] = NULL;
+                }
+            } else if ([it isKindOfClass:[NSNumber class]] && fltCls) {
+                float v = [(NSNumber*)it floatValue]; el[i] = i_value_box(fltCls, &v);
+            } else {
+                el[i] = NULL;
+            }
+        }
+        int tgt = targetInt;
+        void* rArgs[3] = { mkStr(rpcName), &tgt, oArr };
+        bool cr = false;
+        few1n_guardedInvoke(mRPC, pv, rArgs, &cr);
+        return !cr;
+    };
+    api[@"setRoomProp"] = ^BOOL(NSString *key, id val, BOOL isFloat) {
+        if (!key.length || !pn_getCurrentRoom || !i_object_new || !i_value_box) return NO;
+        void* rm = NULL; @try { rm = pn_getCurrentRoom(); } @catch (...) {}
+        if (!ptrOk(rm)) return NO;
+        void* rmCls = few1n_classAnyImage("Photon.Realtime", "Room");
+        void* htCls = few1n_classAnyImage("ExitGames.Client.Photon", "Hashtable");
+        if (!rmCls || !htCls) return NO;
+        void* htCtor = i_class_get_method_from_name(htCls, ".ctor", 0);
+        const char* htPrm[2] = { "Object", "Object" };
+        void* htSet  = few1n_methodBySig(htCls, "Void", htPrm, 2, 0);
+        if (!htSet) htSet = i_class_get_method_from_name(htCls, "set_Item", 2);
+        void* mSetP  = i_class_get_method_from_name(rmCls, "SetCustomProperties", 3);
+        if (!htCtor || !htSet || !mSetP) return NO;
+        void* ht = i_object_new(htCls);
+        if (!ptrOk(ht)) return NO;
+        few1n_safeInvoke(htCtor, ht, NULL);
+        void* vObj = NULL;
+        if ([val isKindOfClass:[NSString class]]) {
+            vObj = mkStr((NSString*)val);
+        } else if ([val isKindOfClass:[NSNumber class]]) {
+            if (isFloat) {
+                void* fltCls = few1n_classAnyImage("System", "Single");
+                float fv = [(NSNumber*)val floatValue];
+                if (fltCls) vObj = i_value_box(fltCls, &fv);
+            } else {
+                void* intCls = few1n_classAnyImage("System", "Int32");
+                int iv = [(NSNumber*)val intValue];
+                if (intCls) vObj = i_value_box(intCls, &iv);
+            }
+        }
+        void* kv[2] = { mkStr(key), vObj };
+        few1n_safeInvoke(htSet, ht, kv);
+        void* pArgs[3] = { ht, NULL, NULL };
+        bool cr = false;
+        few1n_guardedInvoke(mSetP, rm, pArgs, &cr);
+        return !cr;
+    };
+
+    g_liveCtx[@"FEW1N"] = api;
+}
+
+static BOOL few1n_liveEvalScript(NSString *jsCode) {
+    if (!jsCode.length) return NO;
+    few1n_liveSetupContext();
+    [g_liveCtx evaluateScript:jsCode];
+    if (g_liveLastErr.length > 0) return NO;
+    saveStr(@"live_js_cache", jsCode);
+    FLog([NSString stringWithFormat:@"⚡ Canlı Script yüklendi: v%@ (%lu aksiyon)", g_liveMetaVer, (unsigned long)g_liveActions.count]);
+    return YES;
+}
+
+static void few1n_liveFetchFromUrl(void(^completion)(BOOL ok, NSString *msg)) {
+    NSString *baseUrl = few1n_liveCurrentUrl();
+    NSString *sep = [baseUrl containsString:@"?"] ? @"&" : @"?";
+    NSString *fullUrl = [NSString stringWithFormat:@"%@%@t=%lld", baseUrl, sep, (long long)[[NSDate date] timeIntervalSince1970]];
+    NSURL *url = [NSURL URLWithString:fullUrl];
+    if (!url) {
+        if (completion) completion(NO, @"Geçersiz URL.");
+        return;
+    }
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:12.0];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        NSHTTPURLResponse *hr = [resp isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse*)resp : nil;
+        if (err || !data.length || (hr && hr.statusCode >= 400)) {
+            NSString *em = err ? err.localizedDescription : [NSString stringWithFormat:@"HTTP %ld", (long)(hr ? hr.statusCode : 0)];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(NO, [NSString stringWithFormat:@"İndirme başarısız: %@", em]);
+            });
+            return;
+        }
+        NSString *code = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL ok = few1n_liveEvalScript(code);
+            if (ok) {
+                NSString *m = [NSString stringWithFormat:@"Canlı Script v%@ yüklendi!\n%@\n\nKayıtlı aksiyon: %lu\n(Menüden '⚡ Canlı Aksiyonları Aç' ile çalıştır)",
+                    g_liveMetaVer, g_liveMetaNote, (unsigned long)g_liveActions.count];
+                if (completion) completion(YES, m);
+            } else {
+                if (completion) completion(NO, [NSString stringWithFormat:@"JS Hatası:\n%@", g_liveLastErr]);
+            }
+        });
+    }] resume];
+}
+
 // Per-frame & periodic ticks for v117.15 + v117.16 + v117.17 + v117.19 features
 static void few1n_tickV11715Frame(void) {
     few1n_tickMagnetOrbit();
@@ -8847,6 +9269,10 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)v18RemoteTuningMenu;
 - (void)v19RemotePlateZipperMenu;
 - (void)tapAutoRemotePlateScene;
+- (void)liveFetchNow;
+- (void)liveOpenActions;
+- (void)liveEditUrl;
+- (void)liveRunManualJs;
 - (void)tapAntiReport;
 - (void)tapVoteKickSnitch;
 - (void)tapPoliceStrobe;
@@ -9696,6 +10122,17 @@ static UIViewController* few1n_topVC(void) {
 
     g_secBuildIdx = -1;   // accordion: bolum sayacini sifirla (her build basinda)
     CGFloat y = 12;
+
+    __weak typeof(self) weakSelf = self;
+    g_liveAlertHandler = ^(NSString *title, NSString *msg) {
+        [weakSelf v15Alert:title msg:msg];
+    };
+
+    y = [self header:@"⚡  CANLI GÜNCELLEME (OTA JS)" atY:y];
+    y = [self actionRow:@"🔄  Canlı Scripti İndir & Çalıştır (GitHub)" color:C_ON atY:y action:@selector(liveFetchNow)];
+    y = [self actionRow:@"⚡  Canlı Aksiyonları Aç (OTA Menü)" color:C_GOLD atY:y action:@selector(liveOpenActions)];
+    y = [self actionRow:@"🧪  Hızlı JS Kodu Çalıştır (Manuel)" color:C_CYAN atY:y action:@selector(liveRunManualJs)];
+    y = [self actionRow:@"✏️  Canlı Script URL Ayarla" color:C_SUB atY:y action:@selector(liveEditUrl)];
 
     y = [self header:@"\U0001F6AB  REKLAM BOZUCU" atY:y];
     y = [self toggle:@"\U0001F6AB  Reklam Engelle" sub:@"Tum reklamlari engeller (AdMob/AppLovin/CAS/Unity)" key:@"adblock" atY:y action:@selector(tapAdBlock)];
@@ -17422,6 +17859,77 @@ static void few1n_joinTargetRoom(NSString *nm) {
         few1n_injectRemotePlateZipper(-1, [NSString stringWithUTF8String:g_autoRemotePlateCountry], [NSString stringWithUTF8String:g_autoRemotePlateText]);
     }
     [self refreshUI];
+}
+
+// ============================================================================
+// v118.0 LIVE OTA JS UI HANDLERS
+// ============================================================================
+- (void)liveFetchNow {
+    __weak typeof(self) weakSelf = self;
+    few1n_liveFetchFromUrl(^(BOOL ok, NSString *msg) {
+        [weakSelf v15Alert:(ok ? @"⚡ Canlı Güncelleme Hazır" : @"⚠️ Canlı Güncelleme Hatası") msg:msg];
+    });
+}
+- (void)liveOpenActions {
+    if (!g_liveActions || g_liveActions.count == 0) {
+        NSString *cached = loadStr(@"live_js_cache", @"");
+        if (cached.length > 0) few1n_liveEvalScript(cached);
+    }
+    if (!g_liveActions || g_liveActions.count == 0) {
+        [self v15Alert:@"⚡ Canlı Aksiyon Yok" msg:@"Önce '🔄 Canlı Scripti İndir & Çalıştır' butonuna bas."];
+        return;
+    }
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"⚡ Canlı Aksiyonlar (v%@)", g_liveMetaVer]
+        message:g_liveMetaNote preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSDictionary *item in g_liveActions) {
+        NSString *t = item[@"title"] ?: @"Aksiyon";
+        JSValue *fn = item[@"fn"];
+        [ac addAction:[UIAlertAction actionWithTitle:t style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            if (!fn || fn.isUndefined || fn.isNull) return;
+            g_liveLastErr = @"";
+            [fn callWithArguments:@[]];
+            if (g_liveLastErr.length > 0) {
+                [self v15Alert:@"⚠️ JS Çalıştırma Hatası" msg:g_liveLastErr];
+            }
+        }]];
+    }
+    [self v15PresentSheet:ac];
+}
+- (void)liveRunManualJs {
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"🧪 Hızlı JS Kodu Çalıştır"
+        message:@"FEW1N.* il2cpp köprüsünü kullanan JS kodu yaz:" preferredStyle:UIAlertControllerStyleAlert];
+    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = @"FEW1N.alert('Test', 'Oyuncu: ' + FEW1N.players().length);";
+    }];
+    [al addAction:[UIAlertAction actionWithTitle:@"Çalıştır" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *code = al.textFields.firstObject.text;
+        if (!code.length) return;
+        if (!g_liveCtx) few1n_liveSetupContext();
+        g_liveLastErr = @"";
+        JSValue *res = [g_liveCtx evaluateScript:code];
+        if (g_liveLastErr.length > 0) {
+            [self v15Alert:@"⚠️ JS Hatası" msg:g_liveLastErr];
+        } else if (res && !res.isUndefined && !res.isNull) {
+            [self v15Alert:@"🧪 JS Sonucu" msg:[res toString]];
+        }
+    }]];
+    [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:al];
+}
+- (void)liveEditUrl {
+    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"✏️ Canlı Script URL"
+        message:@"Boş bırakırsan varsayılan GitHub main/live.js kullanılır:" preferredStyle:UIAlertControllerStyleAlert];
+    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){
+        tf.placeholder = few1n_liveDefaultUrl();
+        tf.text = few1n_liveCurrentUrl();
+    }];
+    [al addAction:[UIAlertAction actionWithTitle:@"Kaydet" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *u = [al.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        saveStr(@"live_js_url", u ?: @"");
+        [self v15Alert:@"✅ Kaydedildi" msg:[NSString stringWithFormat:@"Aktif URL:\n%@", few1n_liveCurrentUrl()]];
+    }]];
+    [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+    [self present:al];
 }
 
 // ===== NAN / CRASH PAKET INJECT =====

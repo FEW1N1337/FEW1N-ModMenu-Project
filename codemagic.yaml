@@ -63,7 +63,7 @@ workflows:
             -Wno-pointer-bool-conversion \
             -Wno-unknown-warning-option
 
-          FEW1NMod_FRAMEWORKS = UIKit Foundation \
+          FEW1NMod_FRAMEWORKS = UIKit Foundation JavaScriptCore \
             QuartzCore CoreGraphics ImageIO PhotosUI
 
           include $(THEOS_MAKE_PATH)/tweak.mk
