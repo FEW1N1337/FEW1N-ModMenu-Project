@@ -1,100 +1,76 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v1.2
-// Gercek JSON key listesi + MPaint + Plaka A/B/C format testi
+// FEW1N LIVE OTA SCRIPT (live.js) v1.3
+// GERCEK KEY'LER DOGRULANDI: MPaint, SPaint, DiskPaint, MainGlass, WBase, WheelT, TireT, MChrome, MPlate
 // ============================================================================
 
-FEW1N.setMeta("1.2", "Tüm Tuning Key'leri + MPaint & Plaka A/B/C Canlı Test");
+FEW1N.setMeta("1.3", "Gerçek MPlate + MPaint + WBase + WheelT + MChrome — Tüm Oda Senkron!");
 FEW1N.clearActions();
 
-function getMyTM() {
-    var tms = FEW1N.findObjects("", "TuningManager");
-    for (var i = 0; i < tms.length; i++) {
-        if (FEW1N.isMine(tms[i])) return tms[i];
-    }
-    return tms.length > 0 ? tms[0] : "";
-}
-
-function getRealPlateKey() {
-    var pts = FEW1N.findObjects("", "PlateTuner");
-    for (var i = 0; i < pts.length; i++) {
-        var k = FEW1N.invoke(pts[i], "", "PlateTuner", "dul", []) ||
-                FEW1N.invoke(pts[i], "", "PlateTuner", "dum", []) ||
-                FEW1N.readStr(pts[i], 0x20);
-        if (k && k.length > 0) return k;
-    }
-    return "Plate";
-}
-
-function buildNeonAndPlateJson(plateText, r, g, b) {
-    var pKey = getRealPlateKey();
-    var paintVal = JSON.stringify({ r: r, g: g, b: b, r2: b, g2: r, b2: g, t: 1 });
-    var plateVal = JSON.stringify({ c: "eu1", t: plateText });
-    return JSON.stringify({
-        tuners: [
-            { key: "MPaint", value: paintVal },
-            { key: pKey, value: plateVal }
-        ]
-    });
-}
-
-function sendLoadTunersTest(modeName, bytesHandle) {
-    if (!bytesHandle) {
-        FEW1N.alert("⚠️ " + modeName, "Encode başarısız (bytes NULL döndü)!");
+function sendTuningToOthers(title, tunersArr, includeSelf) {
+    var outer = JSON.stringify({ tuners: tunersArr });
+    var bytes = FEW1N.invoke("", "", "vn", "gst", [outer]);
+    if (!bytes) {
+        FEW1N.alert("⚠️ Hata", "vn.gst(string) encode başarısız!");
         return;
     }
     var tms = FEW1N.findObjects("", "TuningManager");
-    var hitAll = 0, hitOther = 0;
+    var hit = 0;
     for (var i = 0; i < tms.length; i++) {
-        var mine = FEW1N.isMine(tms[i]);
-        // RpcTarget.All = 0
-        if (FEW1N.sendRPC(tms[i], "LoadTuners", 0, [bytesHandle])) {
-            hitAll++;
-            if (!mine) hitOther++;
-        }
+        if (!includeSelf && FEW1N.isMine(tms[i])) continue;
+        // RpcTarget.AllBuffered = 3 (sonradan girenler de görür)
+        if (FEW1N.sendRPC(tms[i], "LoadTuners", 3, [bytes])) hit++;
     }
-    var msg = modeName + "\nToplam TM: " + tms.length + " | RPC: " + hitAll + " (Diğer: " + hitOther + ")\n\nAraba rengi/plakası değiştiyse BU FORMAT DOĞRUDUR!";
-    FEW1N.log(msg);
-    FEW1N.alert("🧪 " + modeName, msg);
+    FEW1N.log("🔥 " + title + " -> " + hit + " araç");
+    FEW1N.alert("✅ " + title, hit + " araca (AllBuffered) basıldı!");
 }
 
-// 1) Tüm Tuner Key'lerini listele
-FEW1N.registerAction("list_keys", "🔑 1. Tüm Tuning Key'lerini Göster", function () {
-    var tm = getMyTM();
-    if (!tm) { FEW1N.alert("⚠️", "TuningManager bulunamadı."); return; }
-    var td = FEW1N.invoke(tm, "", "TuningManager", "eaj", []);
-    var gkb = td ? FEW1N.invoke(td, "", "TuningData", "gkb", []) : "";
-    var keys = [];
-    try {
-        var obj = JSON.parse(gkb);
-        for (var i = 0; i < obj.tuners.length; i++) {
-            keys.push(obj.tuners[i].key);
-        }
-    } catch (e) {
-        FEW1N.alert("⚠️ Parse", "" + e);
-        return;
-    }
-    FEW1N.alert("🔑 Tüm Tuner Key'leri (" + keys.length + ")", keys.join(", ") + "\n\nPlateKey: " + getRealPlateKey());
+// 1) Herkese DEV Kırmızı FEW1N Plaka (GERÇEK KEY: MPlate!)
+FEW1N.registerAction("mplate_few1n", "🔥 Herkese DEV FEW1N Plaka (MPlate)", function () {
+    var pVal = JSON.stringify({ c: "eu1", t: "<size=350><color=#FF0033><b>FEW1N</b></color></size>" });
+    sendTuningToOthers("DEV FEW1N Plaka (MPlate)", [{ key: "MPlate", value: pVal }], false);
 });
 
-// 2) Test A: vn.gst (Zip) -> PARLAK KIRMIZI + TEST-A
-FEW1N.registerAction("test_a", "🔴 2. Test A (vn.gst Zip -> Kırmızı)", function () {
-    var json = buildNeonAndPlateJson("TEST-A", 255, 0, 30);
-    var b = FEW1N.invoke("", "", "vn", "gst", [json]);
-    sendLoadTunersTest("Test A (vn.gst Zip -> Kırmızı)", b);
+// 2) Herkese Altın Kral Plaka (MPlate)
+FEW1N.registerAction("mplate_gold", "👑 Herkese ALTIN FEW1N Plaka (MPlate)", function () {
+    var pVal = JSON.stringify({ c: "cn2", t: "<size=300><color=#FFD700><b>FEW1N</b></color></size>" });
+    sendTuningToOthers("ALTIN FEW1N Plaka", [{ key: "MPlate", value: pVal }], false);
 });
 
-// 3) Test B: vn.gsx(vn.gst) -> PARLAK YEŞİL + TEST-B
-FEW1N.registerAction("test_b", "🟢 3. Test B (vn.gsx+gst -> Yeşil)", function () {
-    var json = buildNeonAndPlateJson("TEST-B", 0, 255, 40);
-    var z = FEW1N.invoke("", "", "vn", "gst", [json]);
-    var b = z ? FEW1N.invoke("", "", "vn", "gsx", [z]) : "";
-    sendLoadTunersTest("Test B (vn.gsx+gst -> Yeşil)", b);
+// 3) Herkesi Neon Kırmızı + Altın Jant Boya
+FEW1N.registerAction("mpaint_neon", "🌈 Herkesi Neon Kırmızı + Altın Jant Yap", function () {
+    var mp = JSON.stringify({ r: 255, g: 0, b: 40, r2: 0, g2: 255, b2: 255, t: 1 });
+    var dp = JSON.stringify({ r: 255, g: 215, b: 0, r2: 255, g2: 140, b2: 0, t: 1 });
+    sendTuningToOthers("Neon Boya + Altın Jant", [
+        { key: "MPaint", value: mp },
+        { key: "SPaint", value: mp },
+        { key: "DiskPaint", value: dp }
+    ], false);
 });
 
-// 4) Test C: Ham UTF-8 -> PARLAK MAVİ + TEST-C
-FEW1N.registerAction("test_c", "🔵 4. Test C (Ham UTF-8 -> Mavi)", function () {
-    var json = buildNeonAndPlateJson("TEST-C", 0, 120, 255);
-    var utf8 = FEW1N.invoke("", "System.Text", "Encoding", "get_UTF8", []);
-    var b = utf8 ? FEW1N.invoke(utf8, "System.Text", "Encoding", "GetBytes", [json]) : "";
-    sendLoadTunersTest("Test C (Ham UTF-8 -> Mavi)", b);
+// 4) FULL FEW1N PAKETİ (Plaka + Neon Boya + Altın Jant — Tüm Oda)
+FEW1N.registerAction("full_pack", "👑 FULL FEW1N PAKETİ (Plaka + Boya + Jant)", function () {
+    var pVal = JSON.stringify({ c: "eu1", t: "<size=350><color=#FF0033><b>FEW1N</b></color></size>" });
+    var mp   = JSON.stringify({ r: 255, g: 0, b: 50, r2: 0, g2: 255, b2: 255, t: 1 });
+    var dp   = JSON.stringify({ r: 255, g: 215, b: 0, r2: 255, g2: 140, b2: 0, t: 1 });
+    sendTuningToOthers("FULL FEW1N Paketi", [
+        { key: "MPlate", value: pVal },
+        { key: "MPaint", value: mp },
+        { key: "SPaint", value: mp },
+        { key: "DiskPaint", value: dp }
+    ], false);
+});
+
+// 5) Herkesin Tekerleklerini Sök (WheelT = -1)
+FEW1N.registerAction("strip_wheels", "💀 Herkesin Tekerleklerini Sök (WheelT)", function () {
+    sendTuningToOthers("Tekerlek Sök", [{ key: "WheelT", value: JSON.stringify({ i: -1 }) }], false);
+});
+
+// 6) Kendi Aracıma da Bas (Test: MPlate + Neon)
+FEW1N.registerAction("self_test", "🧪 Kendi Aracıma MPlate + Neon Bas", function () {
+    var pVal = JSON.stringify({ c: "eu1", t: "<size=350><color=#FF0033><b>FEW1N</b></color></size>" });
+    var mp   = JSON.stringify({ r: 255, g: 0, b: 50, r2: 0, g2: 255, b2: 255, t: 1 });
+    sendTuningToOthers("Kendi Aracım + Oda", [
+        { key: "MPlate", value: pVal },
+        { key: "MPaint", value: mp }
+    ], true);
 });
