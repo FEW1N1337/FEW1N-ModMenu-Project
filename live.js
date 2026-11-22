@@ -1,9 +1,9 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v2.0
-// %100 Calisan & Herkeste Gorunen Canli Aksiyonlar (MPlate + MPaint + Steal)
+// FEW1N LIVE OTA SCRIPT (live.js) v2.1
+// %100 Calisan & Herkeste Gorunen Canli Aksiyonlar + ViewID Bug Testi
 // ============================================================================
 
-FEW1N.setMeta("2.0", "Başkasının Modifiyesini & Plakasını Çal + Kendi Aracına Herkeste Görünür Paketler");
+FEW1N.setMeta("2.1", "Modifiye/Plaka Çal + Herkeste Görünür Paketler + ViewID Bug Testi");
 FEW1N.clearActions();
 
 var g_stealIdx = 0;
@@ -150,4 +150,32 @@ FEW1N.registerAction("weather_storm", "⛈️ Canlı Fırtına + Gece", function
         FEW1N.invoke(wm, "Weather", "WeatherManager", "eyy", []);
     }
     FEW1N.alert("⛈️ Hava Güncellendi", "Fırtına + Gece uygulandı!");
+});
+
+// 7) 🔀 Deneysel: ViewID / NetworkPlayerSpawnedRPC Karıştırma Bug Testi
+FEW1N.registerAction("viewid_swap_bug", "🔀 Deneysel: ViewID Bug Testi (Harita Değişmeden Bas)", function () {
+    var phs = FEW1N.findObjects("", "HR_PhotonHandler");
+    var myTM = getMyTM();
+    var others = getOtherTMs();
+    if (phs.length === 0 || !myTM || others.length === 0) {
+        FEW1N.alert("⚠️ Hazır Değil", "HR_PhotonHandler: " + phs.length + " | Benim TM: " + (myTM ? "VAR" : "YOK") + " | Diğer: " + others.length);
+        return;
+    }
+    var ph = phs[0];
+    var myPV = FEW1N.invoke(myTM, "Photon.Pun", "MonoBehaviourPun", "get_photonView", []);
+    var otherTM = others[0];
+    var otherPV = FEW1N.invoke(otherTM, "Photon.Pun", "MonoBehaviourPun", "get_photonView", []);
+    var myVid = myPV ? FEW1N.invoke(myPV, "Photon.Pun", "PhotonView", "get_ViewID", []) : -1;
+    var otVid = otherPV ? FEW1N.invoke(otherPV, "Photon.Pun", "PhotonView", "get_ViewID", []) : -1;
+
+    // 1) HR_PhotonHandler uzerinden NetworkPlayerSpawnedRPC (AllBuffered = 3) ile capraz ViewID bas
+    var ok1 = (otVid > 0) ? FEW1N.sendRPC(ph, "NetworkPlayerSpawnedRPC", 3, [{ t: "i", v: otVid }]) : false;
+    var ok2 = (myVid > 0) ? FEW1N.sendRPC(ph, "NetworkPlayerSpawnedRPC", 3, [{ t: "i", v: myVid }]) : false;
+    // 2) Oyunun kendi eny(otherPV) metodunu da tetikle
+    if (otherPV) FEW1N.invoke(ph, "", "HR_PhotonHandler", "eny", [otherPV]);
+
+    FEW1N.alert("🔀 ViewID Bug Testi",
+        "MyViewID=" + myVid + " | OtherViewID=" + otVid +
+        "\nRPC1=" + ok1 + " | RPC2=" + ok2 +
+        "\n\nŞimdi Master olup harita değiştirerek sonucu test et!");
 });
