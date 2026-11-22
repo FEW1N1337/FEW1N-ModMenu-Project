@@ -7670,16 +7670,27 @@ static int few1n_injectRemotePlateZipper(int targetActor, NSString *country, NSS
 // ============================================================================
 static JSContext *g_liveCtx = nil;
 static NSMutableArray<NSDictionary*> *g_liveActions = nil;
+static NSMutableArray<NSMutableDictionary*> *g_liveMenuItems = nil;
+static NSMutableArray<JSValue*> *g_liveTickFns = nil;
+static int g_liveMenuSecIdx = -1;
 static NSString *g_liveMetaVer  = @"yok";
 static NSString *g_liveMetaNote = @"Henüz indirilmedi";
 static NSString *g_liveLastErr  = @"";
 static void (^g_liveAlertHandler)(NSString *title, NSString *msg) = nil;
+static void (^g_liveRebuildHandler)(void) = nil;
+static void (^g_livePickPlayerHandler)(NSString *title, void(^cb)(int actorNr, NSString *name)) = nil;
+static void (^g_livePromptHandler)(NSString *title, NSString *msg, NSString *ph, NSString *def, void(^cb)(NSString *txt)) = nil;
 
 static NSString* few1n_liveDefaultUrl(void) {
-    return @"https://raw.githubusercontent.com/FEW1N1337/FEW1N-ModMenu-Project/main/live.js";
+    return @"https://api.github.com/repos/FEW1N1337/FEW1N-ModMenu-Project/contents/live.js?ref=main";
 }
 static NSString* few1n_liveCurrentUrl(void) {
     NSString *u = loadStr(@"live_js_url", @"");
+    // Eski raw.githubusercontent.com/FEW1N1337/FEW1N-ModMenu-Project linkini 0-sn GitHub API'ye oto-yukselt
+    if (u.length > 0 && [u containsString:@"raw.githubusercontent.com/FEW1N1337/FEW1N-ModMenu-Project/"]) {
+        saveStr(@"live_js_url", @"");
+        return few1n_liveDefaultUrl();
+    }
     return (u.length > 8) ? u : few1n_liveDefaultUrl();
 }
 static NSString* few1n_ptrToHandle(void* p) {
@@ -7822,7 +7833,11 @@ static id few1n_liveInvokeInternal(NSString *objHandle, NSString *ns, NSString *
 
 static void few1n_liveSetupContext(void) {
     if (!g_liveActions) g_liveActions = [NSMutableArray array];
+    if (!g_liveMenuItems) g_liveMenuItems = [NSMutableArray array];
+    if (!g_liveTickFns) g_liveTickFns = [NSMutableArray array];
     [g_liveActions removeAllObjects];
+    [g_liveMenuItems removeAllObjects];
+    [g_liveTickFns removeAllObjects];
     g_liveLastErr = @"";
     g_liveCtx = [[JSContext alloc] init];
     g_liveCtx.exceptionHandler = ^(JSContext *ctx, JSValue *exc) {
@@ -7848,10 +7863,82 @@ static void few1n_liveSetupContext(void) {
     };
     api[@"clearActions"] = ^{
         [g_liveActions removeAllObjects];
+        [g_liveMenuItems removeAllObjects];
+        [g_liveTickFns removeAllObjects];
     };
     api[@"registerAction"] = ^(NSString *aid, NSString *title, JSValue *fn) {
         if (!title.length || !fn || fn.isUndefined || fn.isNull) return;
         [g_liveActions addObject:@{ @"id": (aid ?: title), @"title": title, @"fn": fn }];
+    };
+    api[@"addMenuButton"] = ^(NSString *aid, NSString *title, NSString *colorName, JSValue *fn) {
+        if (!title.length || !fn || fn.isUndefined || fn.isNull) return;
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithDictionary:@{
+            @"type": @"btn",
+            @"id": (aid ?: title),
+            @"title": title,
+            @"color": (colorName ?: @"gold"),
+            @"fn": fn
+        }];
+        [g_liveMenuItems addObject:d];
+    };
+    api[@"addMenuToggle"] = ^(NSString *aid, NSString *title, NSString *sub, BOOL defaultOn, JSValue *fn) {
+        if (!aid.length || !title.length || !fn || fn.isUndefined || fn.isNull) return;
+        NSString *pk = [NSString stringWithFormat:@"live_tog_%@", aid];
+        NSString *saved = loadStr(pk, @"");
+        BOOL curOn = saved.length ? ([saved isEqualToString:@"1"] ? YES : NO) : defaultOn;
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithDictionary:@{
+            @"type": @"tog",
+            @"id": aid,
+            @"title": title,
+            @"sub": (sub ?: @""),
+            @"on": @(curOn),
+            @"fn": fn
+        }];
+        [g_liveMenuItems addObject:d];
+    };
+    api[@"onTick"] = ^(JSValue *fn) {
+        if (!fn || fn.isUndefined || fn.isNull) return;
+        [g_liveTickFns addObject:fn];
+    };
+    api[@"rebuildMenu"] = ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (g_liveRebuildHandler) g_liveRebuildHandler();
+        });
+    };
+    api[@"pickPlayer"] = ^(NSString *title, JSValue *cb) {
+        if (!cb || cb.isUndefined || cb.isNull) return;
+        NSString *t = title.length ? title : @"🎯 Oyuncu Seç";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (g_livePickPlayerHandler) {
+                g_livePickPlayerHandler(t, ^(int actorNr, NSString *name) {
+                    g_liveLastErr = @"";
+                    [cb callWithArguments:@[@(actorNr), (name ?: @"")]];
+                });
+            }
+        });
+    };
+    api[@"prompt"] = ^(NSString *title, NSString *msg, NSString *ph, NSString *defText, JSValue *cb) {
+        if (!cb || cb.isUndefined || cb.isNull) return;
+        NSString *t = title.length ? title : @"✏️ Giriş";
+        NSString *m = msg ?: @"";
+        NSString *p = ph ?: @"";
+        NSString *d = defText ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (g_livePromptHandler) {
+                g_livePromptHandler(t, m, p, d, ^(NSString *txt) {
+                    g_liveLastErr = @"";
+                    [cb callWithArguments:@[(txt ?: @"")]];
+                });
+            }
+        });
+    };
+    api[@"getPref"] = ^NSString*(NSString *k, NSString *defVal) {
+        if (!k.length) return defVal ?: @"";
+        return loadStr([NSString stringWithFormat:@"live_pref_%@", k], defVal ?: @"");
+    };
+    api[@"setPref"] = ^(NSString *k, NSString *val) {
+        if (!k.length) return;
+        saveStr([NSString stringWithFormat:@"live_pref_%@", k], val ?: @"");
     };
     api[@"claimMaster"] = ^{
         few1n_claimMaster();
@@ -8048,20 +8135,47 @@ static BOOL few1n_liveEvalScript(NSString *jsCode) {
     [g_liveCtx evaluateScript:jsCode];
     if (g_liveLastErr.length > 0) return NO;
     saveStr(@"live_js_cache", jsCode);
-    FLog([NSString stringWithFormat:@"⚡ Canlı Script yüklendi: v%@ (%lu aksiyon)", g_liveMetaVer, (unsigned long)g_liveActions.count]);
+    FLog([NSString stringWithFormat:@"⚡ Canlı Script yüklendi: v%@ (%lu menü, %lu aksiyon)",
+        g_liveMetaVer, (unsigned long)g_liveMenuItems.count, (unsigned long)g_liveActions.count]);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_liveRebuildHandler) g_liveRebuildHandler();
+    });
     return YES;
+}
+
+static void few1n_liveTick(void) {
+    if (!g_liveTickFns || g_liveTickFns.count == 0 || !g_liveCtx) return;
+    NSArray<JSValue*> *fns = [g_liveTickFns copy];
+    for (JSValue *fn in fns) {
+        if (!fn || fn.isUndefined || fn.isNull) continue;
+        g_liveLastErr = @"";
+        [fn callWithArguments:@[]];
+        if (g_liveLastErr.length > 0) {
+            FLog([NSString stringWithFormat:@"⚠️ Live onTick hata verdi, durduruluyor: %@", g_liveLastErr]);
+            [g_liveTickFns removeObject:fn];
+        }
+    }
 }
 
 static void few1n_liveFetchFromUrl(void(^completion)(BOOL ok, NSString *msg)) {
     NSString *baseUrl = few1n_liveCurrentUrl();
-    NSString *sep = [baseUrl containsString:@"?"] ? @"&" : @"?";
-    NSString *fullUrl = [NSString stringWithFormat:@"%@%@t=%lld", baseUrl, sep, (long long)[[NSDate date] timeIntervalSince1970]];
+    BOOL isGhApi = [baseUrl containsString:@"api.github.com"];
+    NSString *fullUrl = baseUrl;
+    if (!isGhApi) {
+        NSString *sep = [baseUrl containsString:@"?"] ? @"&" : @"?";
+        fullUrl = [NSString stringWithFormat:@"%@%@t=%lld", baseUrl, sep, (long long)[[NSDate date] timeIntervalSince1970]];
+    }
     NSURL *url = [NSURL URLWithString:fullUrl];
     if (!url) {
         if (completion) completion(NO, @"Geçersiz URL.");
         return;
     }
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:12.0];
+    [req setValue:@"no-cache, no-store, must-revalidate" forHTTPHeaderField:@"Cache-Control"];
+    [req setValue:@"FEW1NMod/119" forHTTPHeaderField:@"User-Agent"];
+    if (isGhApi) {
+        [req setValue:@"application/vnd.github.v3.raw" forHTTPHeaderField:@"Accept"];
+    }
     [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         NSHTTPURLResponse *hr = [resp isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse*)resp : nil;
         if (err || !data.length || (hr && hr.statusCode >= 400)) {
@@ -8075,8 +8189,8 @@ static void few1n_liveFetchFromUrl(void(^completion)(BOOL ok, NSString *msg)) {
         dispatch_async(dispatch_get_main_queue(), ^{
             BOOL ok = few1n_liveEvalScript(code);
             if (ok) {
-                NSString *m = [NSString stringWithFormat:@"Canlı Script v%@ yüklendi!\n%@\n\nKayıtlı aksiyon: %lu\n(Menüden '⚡ Canlı Aksiyonları Aç' ile çalıştır)",
-                    g_liveMetaVer, g_liveMetaNote, (unsigned long)g_liveActions.count];
+                NSString *m = [NSString stringWithFormat:@"Canlı Script v%@ yüklendi!\n%@\n\nMenü öğesi: %lu | Aksiyon: %lu\n(Ana menüde '🚀 CANLI MODLAR (OTA)' bölümünde hazır!)",
+                    g_liveMetaVer, g_liveMetaNote, (unsigned long)g_liveMenuItems.count, (unsigned long)g_liveActions.count];
                 if (completion) completion(YES, m);
             } else {
                 if (completion) completion(NO, [NSString stringWithFormat:@"JS Hatası:\n%@", g_liveLastErr]);
@@ -9445,6 +9559,9 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)liveOpenActions;
 - (void)liveEditUrl;
 - (void)liveRunManualJs;
+- (void)rebuildLiveMenuRows;
+- (void)tapLiveMenuButton:(UIButton*)b;
+- (void)tapLiveMenuToggle:(UIButton*)b;
 - (void)tapAntiReport;
 - (void)tapVoteKickSnitch;
 - (void)tapPoliceStrobe;
@@ -10299,12 +10416,46 @@ static UIViewController* few1n_topVC(void) {
     g_liveAlertHandler = ^(NSString *title, NSString *msg) {
         [weakSelf v15Alert:title msg:msg];
     };
+    g_liveRebuildHandler = ^{
+        [weakSelf rebuildLiveMenuRows];
+    };
+    g_livePickPlayerHandler = ^(NSString *title, void(^cb)(int actorNr, NSString *name)) {
+        [weakSelf v18PickPlayer:title onPick:cb];
+    };
+    g_livePromptHandler = ^(NSString *title, NSString *msg, NSString *ph, NSString *def, void(^cb)(NSString *txt)) {
+        UIAlertController *al = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+        [al addTextFieldWithConfigurationHandler:^(UITextField *tf){
+            tf.placeholder = ph;
+            tf.text = def;
+        }];
+        [al addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            if (cb) cb(al.textFields.firstObject.text ?: @"");
+        }]];
+        [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        [weakSelf present:al];
+    };
 
     y = [self header:@"⚡  CANLI GÜNCELLEME (OTA JS)" atY:y];
-    y = [self actionRow:@"🔄  Canlı Scripti İndir & Çalıştır (GitHub)" color:C_ON atY:y action:@selector(liveFetchNow)];
-    y = [self actionRow:@"⚡  Canlı Aksiyonları Aç (OTA Menü)" color:C_GOLD atY:y action:@selector(liveOpenActions)];
+    y = [self actionRow:@"🔄  Canlı Scripti İndir & Çalıştır (0sn GitHub API)" color:C_ON atY:y action:@selector(liveFetchNow)];
+    y = [self actionRow:@"⚡  Canlı Aksiyonları Aç (Ekstra Menü)" color:C_GOLD atY:y action:@selector(liveOpenActions)];
     y = [self actionRow:@"🧪  Hızlı JS Kodu Çalıştır (Manuel)" color:C_CYAN atY:y action:@selector(liveRunManualJs)];
     y = [self actionRow:@"✏️  Canlı Script URL Ayarla" color:C_SUB atY:y action:@selector(liveEditUrl)];
+
+    y = [self header:@"🚀  CANLI MODLAR (OTA)" atY:y];
+    g_liveMenuSecIdx = g_secBuildIdx;
+
+    // Açılışta önbellekteki live.js'i hemen yükle + 4sn sonra arka planda sessizce GitHub API'den güncelle
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSString *cached = loadStr(@"live_js_cache", @"");
+        if (cached.length > 0 && (!g_liveMenuItems || g_liveMenuItems.count == 0)) {
+            few1n_liveEvalScript(cached);
+        }
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        few1n_liveFetchFromUrl(^(BOOL ok, NSString *msg) {
+            if (ok) FLog([NSString stringWithFormat:@"⚡ Oto-OTA güncellendi: v%@", g_liveMetaVer]);
+        });
+    });
 
     y = [self header:@"\U0001F6AB  REKLAM BOZUCU" atY:y];
     y = [self toggle:@"\U0001F6AB  Reklam Engelle" sub:@"Tum reklamlari engeller (AdMob/AppLovin/CAS/Unity)" key:@"adblock" atY:y action:@selector(tapAdBlock)];
@@ -11980,6 +12131,7 @@ static UIViewController* few1n_topVC(void) {
     few1n_yoyoTick();           // v114.94: Firlatip-Getir (yo-yo)
     few1n_forceRoomRichText();  // v114.47: hooksuz renkli oda ismi (richText zorla, sideload)
     few1n_tickV11715Slow();     // v117.15: CrabWalk, FreeTuning, MapsUnlock, BodyTilt, WheelFX, Spoiler, Highway
+    few1n_liveTick();           // v119.0: Live OTA JS onTick callbacks
     { static int richSlow = 0; if ((++richSlow % 5) == 0 && g_il2cppReady) few1n_enableChatRichText(); }
     // v92: BALATA SICAK TUT + HASAR YOK frame update GERI ALINDI — dokunmatik/input bug sebep olabilir
     // Toggle'lar UI'da duruyor ama etkisiz (placeholder). Bug root cause'u bulunca gercek fix gelecek.
@@ -18325,8 +18477,129 @@ static void few1n_joinTargetRoom(NSString *nm) {
 }
 
 // ============================================================================
-// v118.0 LIVE OTA JS UI HANDLERS
+// v119.0 LIVE OTA PRO UI HANDLERS (Direkt Ana Menüye Buton/Toggle Ekleme)
 // ============================================================================
+- (void)rebuildLiveMenuRows {
+    if (!self.contentView || g_liveMenuSecIdx < 0) return;
+    // Eski dinamik OTA satirlarini temizle (tag == 7770)
+    NSArray<UIView*> *subs = [self.contentView.subviews copy];
+    for (UIView *v in subs) {
+        if (v.tag == 7770) [v removeFromSuperview];
+    }
+    // 🚀 CANLI MODLAR (OTA) basliginin indeksini bul
+    NSInteger hdrTag = 5000 + g_liveMenuSecIdx;
+    NSInteger insertIdx = -1;
+    NSArray<UIView*> *curSubs = self.contentView.subviews;
+    for (NSInteger i = 0; i < (NSInteger)curSubs.count; i++) {
+        if (curSubs[i].tag == hdrTag) { insertIdx = i + 1; break; }
+    }
+    if (insertIdx < 0) return;
+
+    CGFloat pw = self.panel.bounds.size.width;
+    if (g_liveMenuItems && g_liveMenuItems.count > 0) {
+        for (NSInteger idx = 0; idx < (NSInteger)g_liveMenuItems.count; idx++) {
+            NSMutableDictionary *item = g_liveMenuItems[idx];
+            NSString *tp = item[@"type"];
+            if ([tp isEqualToString:@"tog"]) {
+                BOOL isOn = [item[@"on"] boolValue];
+                UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, 0, pw - 24, 56)];
+                card.tag = 7770;
+                card.backgroundColor = C_CARD;
+                card.layer.cornerRadius = 14;
+                card.layer.borderWidth = 1.0;
+                card.layer.borderColor = C_BORDER.CGColor;
+                UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, pw - 100, 22)];
+                t.text = item[@"title"] ?: @"Toggle"; t.textColor = C_TEXT;
+                t.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+                [card addSubview:t];
+                UILabel *s = [[UILabel alloc] initWithFrame:CGRectMake(16, 30, pw - 100, 16)];
+                s.text = item[@"sub"] ?: @""; s.textColor = C_SUB;
+                s.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+                [card addSubview:s];
+                UIView *pill = [[UIView alloc] initWithFrame:CGRectMake(pw - 24 - 60, 15, 44, 24)];
+                pill.tag = 7771;
+                pill.backgroundColor = isOn ? C_ON : C_OFF;
+                pill.layer.cornerRadius = 12;
+                UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(isOn ? 22 : 2, 2, 20, 20)];
+                dot.tag = 101;
+                dot.backgroundColor = [UIColor whiteColor];
+                dot.layer.cornerRadius = 10;
+                [pill addSubview:dot];
+                [card addSubview:pill];
+                UIButton *tap = [UIButton buttonWithType:UIButtonTypeCustom];
+                tap.frame = card.bounds;
+                tap.tag = idx;
+                [tap addTarget:self action:@selector(tapLiveMenuToggle:) forControlEvents:UIControlEventTouchUpInside];
+                [card addSubview:tap];
+                objc_setAssociatedObject(card, "adv", @(64.0), OBJC_ASSOCIATION_RETAIN);
+                [self.contentView insertSubview:card atIndex:insertIdx++];
+            } else {
+                NSString *cname = item[@"color"] ?: @"gold";
+                UIColor *col = C_GOLD;
+                if ([cname isEqualToString:@"green"]) col = C_ON;
+                else if ([cname isEqualToString:@"cyan"]) col = C_CYAN;
+                else if ([cname isEqualToString:@"red"]) col = C_RED;
+                else if ([cname isEqualToString:@"white"]) col = C_TEXT;
+                UIView *row = [[UIView alloc] initWithFrame:CGRectMake(12, 0, pw - 24, 44)];
+                row.tag = 7770;
+                row.backgroundColor = C_CARD;
+                row.layer.cornerRadius = 12;
+                row.layer.borderWidth = 1.0;
+                row.layer.borderColor = C_BORDER.CGColor;
+                UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+                b.frame = CGRectMake(0, 0, pw - 24, 44);
+                b.tag = idx;
+                [b setTitle:(item[@"title"] ?: @"Aksiyon") forState:UIControlStateNormal];
+                [b setTitleColor:col forState:UIControlStateNormal];
+                b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+                [b addTarget:self action:@selector(tapLiveMenuButton:) forControlEvents:UIControlEventTouchUpInside];
+                [row addSubview:b];
+                objc_setAssociatedObject(row, "adv", @(52.0), OBJC_ASSOCIATION_RETAIN);
+                [self.contentView insertSubview:row atIndex:insertIdx++];
+            }
+        }
+        if (g_liveMenuSecIdx >= 0 && g_liveMenuSecIdx < 24) g_secOpen[g_liveMenuSecIdx] = true;
+    }
+    [self reflowMenu];
+}
+
+- (void)tapLiveMenuButton:(UIButton*)b {
+    NSInteger idx = b.tag;
+    if (!g_liveMenuItems || idx < 0 || idx >= (NSInteger)g_liveMenuItems.count) return;
+    JSValue *fn = g_liveMenuItems[idx][@"fn"];
+    if (!fn || fn.isUndefined || fn.isNull) return;
+    g_liveLastErr = @"";
+    [fn callWithArguments:@[]];
+    if (g_liveLastErr.length > 0) {
+        [self v15Alert:@"⚠️ JS Çalıştırma Hatası" msg:g_liveLastErr];
+    }
+}
+
+- (void)tapLiveMenuToggle:(UIButton*)b {
+    NSInteger idx = b.tag;
+    if (!g_liveMenuItems || idx < 0 || idx >= (NSInteger)g_liveMenuItems.count) return;
+    NSMutableDictionary *item = g_liveMenuItems[idx];
+    BOOL newOn = ![item[@"on"] boolValue];
+    item[@"on"] = @(newOn);
+    NSString *aid = item[@"id"];
+    if (aid.length) saveStr([NSString stringWithFormat:@"live_tog_%@", aid], newOn ? @"1" : @"0");
+    UIView *card = b.superview;
+    UIView *pill = [card viewWithTag:7771];
+    UIView *dot  = [pill viewWithTag:101];
+    [UIView animateWithDuration:0.15 animations:^{
+        pill.backgroundColor = newOn ? C_ON : C_OFF;
+        CGRect f = dot.frame; f.origin.x = newOn ? 22 : 2; dot.frame = f;
+    }];
+    JSValue *fn = item[@"fn"];
+    if (fn && !fn.isUndefined && !fn.isNull) {
+        g_liveLastErr = @"";
+        [fn callWithArguments:@[@(newOn)]];
+        if (g_liveLastErr.length > 0) {
+            [self v15Alert:@"⚠️ JS Toggle Hatası" msg:g_liveLastErr];
+        }
+    }
+}
+
 - (void)liveFetchNow {
     __weak __typeof__(self) weakSelf = self;
     few1n_liveFetchFromUrl(^(BOOL ok, NSString *msg) {
