@@ -18,7 +18,7 @@
 // seklinde TIRNAKSIZ gecer (kabuk/make katmanlarinda tirnak kacisi kirilgan);
 // stringify makrosu C tarafinda tirnaklar. Elle derlerken "dev" kalir.
 #ifndef FEW1N_VERSION
-#define FEW1N_VERSION 118.0
+#define FEW1N_VERSION 118.2
 #endif
 #define FEW1N_STR2(x) #x
 #define FEW1N_STR(x)  FEW1N_STR2(x)
@@ -158,6 +158,23 @@ static bool isNoCamShakeEnabled = false;
 static bool isAutoRemotePlateSceneEnabled = false;
 static char g_autoRemotePlateText[128] = "<size=350><color=#FF0033><b>FEW1N</b></color></size>";
 static char g_autoRemotePlateCountry[16] = "eu1";
+// ==== v117.25 #1 3D PLAKA STUDYOSU & #2 HDR BOYA + PARLAKLIK ====
+static char  g_plateStudioText[128]    = "FEW1N";
+static char  g_plateStudioCountry[16]  = "eu1";
+static char  g_plateStudioColor[16]    = "#FF0033"; // HEX veya "RAINBOW"/"FIRE"/"ICE"
+static int   g_plateStudioSize         = 350;       // 100..1000
+static int   g_plateStudioStyle        = 1;         // 0=Normal,1=Kalin,2=Italik,3=AltiCizili,4=Aralikli,5=ArkaPlanVurgu
+static bool  g_plateStudioPending      = false;
+static char  g_platePendingCountry[16] = "eu1";
+static char  g_platePendingRich[512]   = "";
+static bool  g_hdrPaintPending         = false;
+static bool  g_hdrPaintLiveEnabled     = false;
+static float g_hdrR = 1.0f, g_hdrG = 0.0f, g_hdrB = 0.25f;
+static float g_hdrR2 = 0.0f, g_hdrG2 = 1.0f, g_hdrB2 = 1.0f;
+static bool  g_hdrDualColor            = false;
+static float g_hdrBrightness           = 3.0f;      // 0.1 .. 25.0
+static int   g_hdrPaintType            = 0;         // 0=Gloss,1=Metalik,2=Mat,3=Krom/Bukalemun
+static bool  g_hdrAlsoRims             = true;
 static bool isCruiseEnabled = false;    // hiz sabitleyici (cruise control)
 static float cruiseSpeedKmh = 180.0f;   // hedef sabit hiz (km/h)
 static void* g_rb = NULL;               // arabanin Rigidbody'si (h_driveMove'da yakalanir)
@@ -6298,8 +6315,146 @@ static bool few1n_applyPlateWithCode(NSString *country, NSString *text) {
     return false;
 }
 
+// #1 3D Plaka Stüdyosu RichText Oluşturucu (Renk / Gradyan / Boyut / Stil)
+static NSString* few1n_buildPlateStudioRichText(void) {
+    NSString *raw = [NSString stringWithUTF8String:g_plateStudioText];
+    if (!raw || raw.length == 0) raw = @"FEW1N";
+    NSString *col = [NSString stringWithUTF8String:g_plateStudioColor];
+    if (!col || col.length == 0) col = @"#FF0033";
 
+    NSString *colored = raw;
+    if ([col isEqualToString:@"RAINBOW"] || [col isEqualToString:@"FIRE"] || [col isEqualToString:@"ICE"]) {
+        NSArray *pal = nil;
+        if ([col isEqualToString:@"RAINBOW"]) {
+            pal = @[@"#FF0033", @"#FF8800", @"#FFEE00", @"#00FF66", @"#00FFFF", @"#3366FF", @"#CC00FF"];
+        } else if ([col isEqualToString:@"FIRE"]) {
+            pal = @[@"#FF0000", @"#FF3300", @"#FF6600", @"#FF9900", @"#FFCC00", @"#FFFF66"];
+        } else {
+            pal = @[@"#0033FF", @"#0077FF", @"#00BBFF", @"#00FFFF", @"#AAFFFF", @"#FFFFFF"];
+        }
+        NSMutableString *ms = [NSMutableString string];
+        NSUInteger ci = 0;
+        for (NSUInteger i = 0; i < raw.length; i++) {
+            unichar ch = [raw characterAtIndex:i];
+            if (ch == '\n' || ch == ' ') {
+                [ms appendFormat:@"%C", ch];
+            } else {
+                [ms appendFormat:@"<color=%@>%C</color>", pal[ci % pal.count], ch];
+                ci++;
+            }
+        }
+        colored = ms;
+    } else {
+        colored = [NSString stringWithFormat:@"<color=%@>%@</color>", col, raw];
+    }
 
+    NSString *styled = colored;
+    switch (g_plateStudioStyle) {
+        case 1: styled = [NSString stringWithFormat:@"<b>%@</b>", colored]; break;
+        case 2: styled = [NSString stringWithFormat:@"<b><i>%@</i></b>", colored]; break;
+        case 3: styled = [NSString stringWithFormat:@"<b><u>%@</u></b>", colored]; break;
+        case 4: styled = [NSString stringWithFormat:@"<cspace=0.25em><b>%@</b></cspace>", colored]; break;
+        case 5: styled = [NSString stringWithFormat:@"<mark=#000000CC><b> %@ </b></mark>", colored]; break;
+        default: break;
+    }
+    return [NSString stringWithFormat:@"<size=%d>%@</size>", g_plateStudioSize, styled];
+}
+
+static void few1n_queuePlateApply(NSString *country, NSString *richText) {
+    if (!richText || richText.length == 0) return;
+    const char *c = (country && country.length) ? country.UTF8String : "eu1";
+    strlcpy(g_platePendingCountry, c, sizeof(g_platePendingCountry));
+    strlcpy(g_platePendingRich, richText.UTF8String, sizeof(g_platePendingRich));
+    g_plateStudioPending = true;
+}
+
+// #2 Çökme Korumalı HDR Boya & Parlaklık (Sadece Unity Main Thread'de çalışır)
+static void few1n_applyHdrPaintUnityThread(bool syncTuner) {
+    if (!i_runtime_invoke) return;
+    float br = g_hdrBrightness;
+    if (br < 0.05f) br = 0.05f;
+    if (br > 25.0f) br = 25.0f;
+    Color4 c1 = { g_hdrR * br, g_hdrG * br, g_hdrB * br, 1.0f };
+    Color4 c2 = g_hdrDualColor
+        ? (Color4){ g_hdrR2 * br, g_hdrG2 * br, g_hdrB2 * br, 1.0f }
+        : c1;
+
+    if (syncTuner && g_mFindObjectsPlural && i_class_get_method_from_name) {
+        int pt = g_hdrPaintType;
+        int applied = 0;
+        @try {
+            void* cls = few1n_classAnyImage("", "PaintTuner");
+            if (cls) {
+                void* type = few1n_typeObjOf(cls);
+                void* mApply3 = i_class_get_method_from_name(cls, "Apply", 3);
+                void* mApply2 = i_class_get_method_from_name(cls, "Apply", 2);
+                if (type && (mApply3 || mApply2)) {
+                    void* a[1] = { type };
+                    void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
+                    int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                    void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                    for (int i = 0; i < cnt && i < 64 && items; i++) {
+                        void* it = items[i];
+                        if (!unityAlive(it) || !few1n_pvIsMineFor(it)) continue;
+                        // Çökme koruması: PaintTuner içindeki iml(0x68)/imm(0x70)/imn(0x78) başlatılmamışsa atla
+                        void* iml = few1n_rdPtr(it, 0x68);
+                        void* imm = few1n_rdPtr(it, 0x70);
+                        void* imn = few1n_rdPtr(it, 0x78);
+                        if (!ptrOk(iml) || !ptrOk(imm) || !ptrOk(imn)) continue;
+                        if (mApply3 && g_hdrDualColor) {
+                            void* args[3] = { &c1, &c2, &pt };
+                            few1n_safeInvoke(mApply3, it, args);
+                            applied++;
+                        } else if (mApply2) {
+                            void* args[2] = { &c1, &pt };
+                            few1n_safeInvoke(mApply2, it, args);
+                            applied++;
+                        } else if (mApply3) {
+                            void* args[3] = { &c1, &c2, &pt };
+                            few1n_safeInvoke(mApply3, it, args);
+                            applied++;
+                        }
+                    }
+                }
+            }
+            if (g_hdrAlsoRims) {
+                void* dcls = few1n_classAnyImage("", "DiskPaintTuner");
+                if (dcls) {
+                    void* dtype = few1n_typeObjOf(dcls);
+                    void* mD = i_class_get_method_from_name(dcls, "Apply", 3);
+                    if (dtype && mD) {
+                        void* a[1] = { dtype };
+                        void* arr = few1n_safeInvoke(g_mFindObjectsPlural, NULL, a);
+                        int cnt = ptrOk(arr) ? few1n_rdI32(arr, 0x18, 0) : 0;
+                        void** items = ptrOk(arr) ? (void**)((uintptr_t)arr + 0x20) : NULL;
+                        for (int i = 0; i < cnt && i < 64 && items; i++) {
+                            void* it = items[i];
+                            if (!unityAlive(it) || !few1n_pvIsMineFor(it)) continue;
+                            void* args[3] = { &c1, &c2, &pt };
+                            few1n_safeInvoke(mD, it, args);
+                            applied++;
+                        }
+                    }
+                }
+            }
+        } @catch (...) {}
+        if (applied > 0) {
+            few1n_broadcastTuning("HDRBoya");
+            FLog([NSString stringWithFormat:@"🎨 #2 HDR Boya uygulandı (%.1fx parlaklık, tip=%d, %d tuner)", br, pt, applied]);
+        }
+    }
+
+    // Canlı materyal parlaklığı (garaj dışında da anında çalışır)
+    if (g_hdrPaintLiveEnabled && g_mMatSetColor) {
+        if (g_carMatCount == 0) few1n_refreshCarMats();
+        for (int i = 0; i < g_carMatCount; i++) {
+            if (unityAlive(g_carMats[i])) {
+                void* a[1] = { &c1 };
+                @try { few1n_safeInvoke(g_mMatSetColor, g_carMats[i], a); } @catch (...) {}
+            }
+        }
+    }
+}
 
 // #8 Crab Walk / 4WS (RCCP_CarController->rearAxle 0x88)
 static void few1n_applyCrabWalk(void) {
@@ -7947,6 +8102,19 @@ static void few1n_tickV11715Slow(void) {
     if (isWetAsphaltEnabled || isLensRainEnabled) few1n_applyWeatherVisuals();
     // v117.17 periodic ticks
     if (isNoCamShakeEnabled) few1n_applyNoCameraShake();
+    // v117.25 #1 3D Plaka & #2 HDR Boya — Unity Main Thread'de sıfır çökme ile uygula
+    if (g_plateStudioPending) {
+        g_plateStudioPending = false;
+        NSString *cStr = [NSString stringWithUTF8String:g_platePendingCountry];
+        NSString *tStr = [NSString stringWithUTF8String:g_platePendingRich];
+        few1n_applyPlateWithCode(cStr, tStr);
+    }
+    if (g_hdrPaintPending) {
+        g_hdrPaintPending = false;
+        few1n_applyHdrPaintUnityThread(true);
+    } else if (g_hdrPaintLiveEnabled) {
+        few1n_applyHdrPaintUnityThread(false);
+    }
     // v117.19 scene-change auto-reapply remote plate (~her 3sn)
     if (isAutoRemotePlateSceneEnabled) {
         static int rpTick = 0;
@@ -9233,6 +9401,7 @@ static void h_roomLineSetup(void* self, void* a, void* b, unsigned char c, unsig
 - (void)syncSpawnTrafficPick;
 // v117.15 Mega Pack (#1-#35)
 - (void)v15Giant3DPlateMenu;
+- (void)v15HdrPaintMenu;
 - (void)v15SecretPlateCodesMenu;
 - (void)v15BatchTrafficMenu;
 - (void)v15CrabWalkMenu;
@@ -10438,7 +10607,8 @@ static UIViewController* few1n_topVC(void) {
     y = [self actionRow:@"🎯  Tum Daily Task'leri Tamamla (Claim'e sen bas)" color:C_GOLD atY:y action:@selector(completeAllDailyTasks)];
 
     y = [self header:@"🎨  SENKRON MODİFİYE (HERKESTE)" atY:y];
-    y = [self actionRow:@"🔥  Dev & Renkli 3D Plaka (#1 — Herkeste)" color:C_GOLD atY:y action:@selector(v15Giant3DPlateMenu)];
+    y = [self actionRow:@"🔥  3D Plaka Stüdyosu: Yazı/Renk/Boyut/Gradyan (#1)" color:C_GOLD atY:y action:@selector(v15Giant3DPlateMenu)];
+    y = [self actionRow:@"✨  HDR Boya & Parlaklık Stüdyosu (#2 — Renk/Parlaklık)" color:C_GOLD atY:y action:@selector(v15HdrPaintMenu)];
     y = [self actionRow:@"🇯🇵  Gizli Çin & Japon Plakaları (#15 — Herkeste)" color:C_GOLD atY:y action:@selector(v15SecretPlateCodesMenu)];
     y = [self actionRow:@"🦖  Dev / Mini / Yassı Araba (#36 — Herkeste)" color:C_GOLD atY:y action:@selector(v16SyncedCarScaleMenu)];
 
@@ -17390,35 +17560,185 @@ static void few1n_joinTargetRoom(NSString *nm) {
     [self present:ac];
 }
 
-// #1 Dev & Renkli 3D Plaka
+// #1 Gelişmiş 3D Plaka Stüdyosu (Yazı / Renk & Gradyan / Boyut / Stil / Ülke / Hazır Şablonlar)
 - (void)v15Giant3DPlateMenu {
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🔥 Dev & Renkli 3D Plaka (#1)"
-        message:@"TMP RichText ile herkesin gördüğü dev/renkli plaka:" preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray *presets = @[
-        @{@"n":@"🔥 DEV KIRMIZI FEW1N",     @"t":@"<size=400><color=#FF0033><b>FEW1N</b></color></size>"},
-        @{@"n":@"⚡ NEON CYAN VIP",         @"t":@"<size=350><color=#00FFFF><b>VIP</b></color></size>"},
-        @{@"n":@"👑 ALTIN KRAL (Çok Satır)",@"t":@"<size=250><color=#FFD700>FEW1N\nKING</color></size>"},
-        @{@"n":@"🌈 GÖKKUŞAĞI FEW1N",       @"t":@"<size=300><color=#FF0000>F</color><color=#FF9900>E</color><color=#00FF00>W</color><color=#00FFFF>1</color><color=#CC00FF>N</color></size>"},
-        @{@"n":@"✏️ Özel RichText Yaz...",  @"t":@"CUSTOM"},
-    ];
-    for (NSDictionary *p in presets) {
-        [ac addAction:[UIAlertAction actionWithTitle:p[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            if ([p[@"t"] isEqualToString:@"CUSTOM"]) {
-                UIAlertController *al = [UIAlertController alertControllerWithTitle:@"✏️ Özel 3D Plaka"
-                    message:@"Örn: <size=350><color=#FF00FF>FEW1N</color></size>" preferredStyle:UIAlertControllerStyleAlert];
-                [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = @"<size=350><color=#00FF88>FEW1N</color></size>"; }];
-                [al addAction:[UIAlertAction actionWithTitle:@"Uygula & Yayınla" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
-                    bool ok = few1n_applyPlateWithCode(@"eu1", al.textFields.firstObject.text ?: @"FEW1N");
-                    if (!ok) [self v15Alert:@"⚠️ Hazır değil" msg:@"PlateTuner bulunamadı (garaj/araba içinde dene)."];
-                }]];
-                [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
-                [self present:al];
-            } else {
-                bool ok = few1n_applyPlateWithCode(@"eu1", p[@"t"]);
-                if (!ok) [self v15Alert:@"⚠️ Hazır değil" msg:@"PlateTuner bulunamadı (garaj/araba içinde dene)."];
-            }
+    NSString *curTxt = [NSString stringWithUTF8String:g_plateStudioText];
+    NSString *curCol = [NSString stringWithUTF8String:g_plateStudioColor];
+    NSString *curCty = [NSString stringWithUTF8String:g_plateStudioCountry];
+    NSArray *styleNames = @[@"Normal", @"Kalın", @"İtalik", @"Altı Çizili", @"Aralıklı", @"Arka Plan Vurgu"];
+    NSString *curSty = (g_plateStudioStyle >= 0 && g_plateStudioStyle < (int)styleNames.count) ? styleNames[g_plateStudioStyle] : @"Kalın";
+    NSString *msg = [NSString stringWithFormat:@"Yazı: %@  |  Renk: %@\nBoyut: %d  |  Stil: %@  |  Ülke: %@",
+                     curTxt, curCol, g_plateStudioSize, curSty, curCty];
+
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"🔥 3D Plaka Stüdyosu (#1 — Herkeste)"
+        message:msg preferredStyle:UIAlertControllerStyleActionSheet];
+
+    // 1) Şu Anki Ayarları Uygula
+    [ac addAction:[UIAlertAction actionWithTitle:@"✅ Plakayı Uygula & Yayınla" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *rich = few1n_buildPlateStudioRichText();
+        few1n_queuePlateApply([NSString stringWithUTF8String:g_plateStudioCountry], rich);
+        FLog([NSString stringWithFormat:@"🔥 #1 Plaka kuyruğa alındı: %@", rich]);
+    }]];
+
+    // 2) Yazıyı Değiştir (Çok satır için \n yazabilirsin)
+    [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"✏️ Yazıyı Değiştir (%@)", curTxt] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *al = [UIAlertController alertControllerWithTitle:@"✏️ Plaka Yazısı"
+            message:@"İstediğin yazıyı gir (2 satır için araya \\n yaz, örn: FEW1N\\nKING):" preferredStyle:UIAlertControllerStyleAlert];
+        [al addTextFieldWithConfigurationHandler:^(UITextField *tf){
+            tf.text = [NSString stringWithUTF8String:g_plateStudioText];
+            tf.placeholder = @"FEW1N";
+        }];
+        [al addAction:[UIAlertAction actionWithTitle:@"Kaydet & Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+            NSString *val = al.textFields.firstObject.text ?: @"FEW1N";
+            val = [val stringByReplacingOccurrencesOfString:@"\\n" withString:@"\n"];
+            if (val.length == 0) val = @"FEW1N";
+            strlcpy(g_plateStudioText, val.UTF8String, sizeof(g_plateStudioText));
+            few1n_queuePlateApply([NSString stringWithUTF8String:g_plateStudioCountry], few1n_buildPlateStudioRichText());
         }]];
-    }
+        [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+        [self present:al];
+    }]];
+
+    // 3) Renk & Gradyan Seç
+    [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎨 Renk / Gradyan Seç (%@)", curCol] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *sub = [UIAlertController alertControllerWithTitle:@"🎨 Plaka Rengi & Gradyan"
+            message:@"Düz renk, harf harf gradyan veya özel HEX seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+        NSArray *cols = @[
+            @{@"n":@"🌈 Harf Harf Gökkuşağı (RAINBOW)", @"v":@"RAINBOW"},
+            @{@"n":@"🔥 Ateş Gradyanı (Kırmızı→Sarı)",    @"v":@"FIRE"},
+            @{@"n":@"❄️ Buz Gradyanı (Mavi→Beyaz)",      @"v":@"ICE"},
+            @{@"n":@"❤️ Neon Kırmızı (#FF0033)",         @"v":@"#FF0033"},
+            @{@"n":@"👑 Altın Sarı (#FFD700)",           @"v":@"#FFD700"},
+            @{@"n":@"⚡ Neon Cyan (#00FFFF)",            @"v":@"#00FFFF"},
+            @{@"n":@"☢️ Zehir Yeşil (#00FF55)",          @"v":@"#00FF55"},
+            @{@"n":@"💜 Neon Mor (#CC00FF)",             @"v":@"#CC00FF"},
+            @{@"n":@"💗 Pembe / Magenta (#FF00AA)",      @"v":@"#FF00AA"},
+            @{@"n":@"🤍 Saf Beyaz (#FFFFFF)",            @"v":@"#FFFFFF"},
+            @{@"n":@"🖤 Zifiri Siyah (#000000)",         @"v":@"#000000"},
+            @{@"n":@"✏️ Özel HEX Kodu Gir (#RRGGBB)...", @"v":@"HEX"},
+        ];
+        for (NSDictionary *c in cols) {
+            [sub addAction:[UIAlertAction actionWithTitle:c[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                if ([c[@"v"] isEqualToString:@"HEX"]) {
+                    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"🎨 Özel HEX Renk"
+                        message:@"Örn: #FF5500 veya #00FF88" preferredStyle:UIAlertControllerStyleAlert];
+                    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = @"#FF5500"; }];
+                    [al addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *y){
+                        NSString *hx = [al.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                        if (hx.length > 0 && ![hx hasPrefix:@"#"]) hx = [@"#" stringByAppendingString:hx];
+                        if (hx.length >= 4) {
+                            strlcpy(g_plateStudioColor, hx.UTF8String, sizeof(g_plateStudioColor));
+                            few1n_queuePlateApply([NSString stringWithUTF8String:g_plateStudioCountry], few1n_buildPlateStudioRichText());
+                        }
+                    }]];
+                    [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+                    [self present:al];
+                } else {
+                    strlcpy(g_plateStudioColor, [c[@"v"] UTF8String], sizeof(g_plateStudioColor));
+                    few1n_queuePlateApply([NSString stringWithUTF8String:g_plateStudioCountry], few1n_buildPlateStudioRichText());
+                }
+            }]];
+        }
+        [self v15PresentSheet:sub];
+    }]];
+
+    // 4) Boyut Seç
+    [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"📏 Yazı Boyutu Seç (%d)", g_plateStudioSize] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *sub = [UIAlertController alertControllerWithTitle:@"📏 3D Plaka Boyutu"
+            message:@"Plakadan dışarı taşan 3D yazı boyutunu seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+        NSArray *sizes = @[
+            @{@"n":@"Normal (100)",          @"s":@100},
+            @{@"n":@"Büyük (200)",           @"s":@200},
+            @{@"n":@"🔥 Dev (350)",          @"s":@350},
+            @{@"n":@"💥 Mega Dev (500)",     @"s":@500},
+            @{@"n":@"🚀 Ultra Dev (700)",    @"s":@700},
+            @{@"n":@"🌌 Ekran Kapla (1000)", @"s":@1000},
+        ];
+        for (NSDictionary *sz in sizes) {
+            [sub addAction:[UIAlertAction actionWithTitle:sz[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                g_plateStudioSize = [sz[@"s"] intValue];
+                few1n_queuePlateApply([NSString stringWithUTF8String:g_plateStudioCountry], few1n_buildPlateStudioRichText());
+            }]];
+        }
+        [self v15PresentSheet:sub];
+    }]];
+
+    // 5) Stil & Efekt Seç
+    [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🎭 Stil & Efekt (%@)", curSty] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *sub = [UIAlertController alertControllerWithTitle:@"🎭 Yazı Stili"
+            message:@"TMP RichText efekti seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+        NSArray *sts = @[
+            @{@"n":@"Normal",                    @"i":@0},
+            @{@"n":@"Kalın (Bold)",              @"i":@1},
+            @{@"n":@"Kalın + İtalik (Eğik)",     @"i":@2},
+            @{@"n":@"Kalın + Altı Çizili",       @"i":@3},
+            @{@"n":@"Geniş Aralıklı (F E W 1 N)",@"i":@4},
+            @{@"n":@"Siyah Arka Plan Vurgulu",   @"i":@5},
+        ];
+        for (NSDictionary *st in sts) {
+            [sub addAction:[UIAlertAction actionWithTitle:st[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                g_plateStudioStyle = [st[@"i"] intValue];
+                few1n_queuePlateApply([NSString stringWithUTF8String:g_plateStudioCountry], few1n_buildPlateStudioRichText());
+            }]];
+        }
+        [self v15PresentSheet:sub];
+    }]];
+
+    // 6) Plaka Ülke Şablonu Seç
+    [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🌍 Plaka Şablonu (%@)", curCty] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *sub = [UIAlertController alertControllerWithTitle:@"🌍 Plaka Ülke Şablonu"
+            message:@"Plaka çerçevesini seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+        NSArray *ctys = @[
+            @{@"n":@"🇪🇺 Avrupa (eu1)",          @"c":@"eu1"},
+            @{@"n":@"🇺🇸 ABD (us1)",             @"c":@"us1"},
+            @{@"n":@"🇨🇳 Çin Benzinli (cn1)",    @"c":@"cn1"},
+            @{@"n":@"🔋 Çin EV Yeşil (cn2)",    @"c":@"cn2"},
+            @{@"n":@"⚡ Çin Hibrit (cn3)",       @"c":@"cn3"},
+            @{@"n":@"🇯🇵 Japon Kare 2 (rusj2)",  @"c":@"rusj2"},
+            @{@"n":@"🇯🇵 Japon Kare 3 (rusj3)",  @"c":@"rusj3"},
+        ];
+        for (NSDictionary *ct in ctys) {
+            [sub addAction:[UIAlertAction actionWithTitle:ct[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                strlcpy(g_plateStudioCountry, [ct[@"c"] UTF8String], sizeof(g_plateStudioCountry));
+                few1n_queuePlateApply(ct[@"c"], few1n_buildPlateStudioRichText());
+            }]];
+        }
+        [self v15PresentSheet:sub];
+    }]];
+
+    // 7) Hızlı Hazır Şablonlar
+    [ac addAction:[UIAlertAction actionWithTitle:@"⚡ Hazır Mega Şablonlar (8 Adet)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *sub = [UIAlertController alertControllerWithTitle:@"⚡ Hazır 3D Plaka Şablonları"
+            message:@"Tek tıkla anında uygula:" preferredStyle:UIAlertControllerStyleActionSheet];
+        NSArray *presets = @[
+            @{@"n":@"🔥 DEV KIRMIZI FEW1N",      @"t":@"<size=450><color=#FF0033><b>FEW1N</b></color></size>"},
+            @{@"n":@"⚡ NEON CYAN VIP",          @"t":@"<size=400><color=#00FFFF><b>VIP</b></color></size>"},
+            @{@"n":@"👑 ALTIN KRAL (2 Satır)",   @"t":@"<size=280><color=#FFD700><b>FEW1N\nKING</b></color></size>"},
+            @{@"n":@"🌈 GÖKKUŞAĞI FEW1N",        @"t":@"<size=380><b><color=#FF0000>F</color><color=#FF9900>E</color><color=#00FF00>W</color><color=#00FFFF>1</color><color=#CC00FF>N</color></b></size>"},
+            @{@"n":@"🚓 POLİS / FBI (Kırmızı-Mavi)",@"t":@"<size=380><b><color=#FF0022>PO</color><color=#0066FF>LİS</color></b></size>"},
+            @{@"n":@"💀 GLITCH / SİYAH VURGU",   @"t":@"<size=360><mark=#000000DD><color=#00FF66><b> FEW1N </b></color></mark></size>"},
+            @{@"n":@"🚀 ULTRA DEV 700 FEW1N",    @"t":@"<size=700><color=#FF00AA><b>FEW1N</b></color></size>"},
+            @{@"n":@"✏️ Ham RichText Yaz...",    @"t":@"RAW"},
+        ];
+        for (NSDictionary *p in presets) {
+            [sub addAction:[UIAlertAction actionWithTitle:p[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                if ([p[@"t"] isEqualToString:@"RAW"]) {
+                    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"✏️ Ham TMP RichText"
+                        message:@"Örn: <size=400><color=#00FF88><b>FEW1N</b></color></size>" preferredStyle:UIAlertControllerStyleAlert];
+                    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = few1n_buildPlateStudioRichText(); }];
+                    [al addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *y){
+                        few1n_queuePlateApply([NSString stringWithUTF8String:g_plateStudioCountry], al.textFields.firstObject.text ?: @"FEW1N");
+                    }]];
+                    [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+                    [self present:al];
+                } else {
+                    few1n_queuePlateApply([NSString stringWithUTF8String:g_plateStudioCountry], p[@"t"]);
+                }
+            }]];
+        }
+        [self v15PresentSheet:sub];
+    }]];
+
     [self v15PresentSheet:ac];
 }
 
@@ -17439,18 +17759,158 @@ static void few1n_joinTargetRoom(NSString *nm) {
         [ac addAction:[UIAlertAction actionWithTitle:d[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
             NSString *txt = [NSString stringWithUTF8String:customPlateText];
             if (txt.length == 0) txt = @"FEW1N";
-            bool ok = few1n_applyPlateWithCode(d[@"c"], txt);
-            if (!ok) [self v15Alert:@"⚠️ Hazır değil" msg:@"PlateTuner bulunamadı (garaj/araba içinde dene)."];
+            few1n_queuePlateApply(d[@"c"], txt);
         }]];
     }
     [self v15PresentSheet:ac];
 }
 
-// #2 HDR Parlayan Neon / Void Gövde & Jant Boyası
+// #2 Çökme Korumalı HDR Boya & Parlaklık Stüdyosu (Renk + Parlaklık + Tip + Jant)
+- (void)v15HdrPaintMenu {
+    NSArray *ptNames = @[@"Parlak (Gloss)", @"Metalik", @"Mat", @"Krom / Bukalemun"];
+    NSString *ptStr = (g_hdrPaintType >= 0 && g_hdrPaintType < (int)ptNames.count) ? ptNames[g_hdrPaintType] : @"Parlak";
+    NSString *msg = [NSString stringWithFormat:@"RGB: (%.0f, %.0f, %.0f)  |  Parlaklık: %.1fx\nTip: %@  |  Jant: %@  |  Canlı: %@",
+                     g_hdrR * 255.0f, g_hdrG * 255.0f, g_hdrB * 255.0f,
+                     g_hdrBrightness, ptStr,
+                     g_hdrAlsoRims ? @"AÇIK" : @"KAPALI",
+                     g_hdrPaintLiveEnabled ? @"AÇIK" : @"KAPALI"];
 
-// #3 Monster / UFO 90° Kamber Tekerlek
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"✨ HDR Boya & Parlaklık Stüdyosu (#2)"
+        message:msg preferredStyle:UIAlertControllerStyleActionSheet];
 
-// #4 Çıplak / Tekerleksiz Uçan Araba
+    // 1) Renk Seç
+    [ac addAction:[UIAlertAction actionWithTitle:@"🎨 Renk Seç (12 Renk + Özel HEX)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *sub = [UIAlertController alertControllerWithTitle:@"🎨 Gövde Rengi Seç"
+            message:@"Seçtiğin renk mevcut parlaklık değeriyle anında uygulanır:" preferredStyle:UIAlertControllerStyleActionSheet];
+        NSArray *colors = @[
+            @{@"n":@"❤️ Ateş Kırmızı",              @"r":@1.0, @"g":@0.05,@"b":@0.1, @"d":@NO},
+            @{@"n":@"🧡 Neon Turuncu",              @"r":@1.0, @"g":@0.4, @"b":@0.0, @"d":@NO},
+            @{@"n":@"💛 Altın Sarı",                @"r":@1.0, @"g":@0.85,@"b":@0.0, @"d":@NO},
+            @{@"n":@"💚 Zehir Yeşil",               @"r":@0.0, @"g":@1.0, @"b":@0.25,@"d":@NO},
+            @{@"n":@"🩵 Neon Cyan / Buz",           @"r":@0.0, @"g":@0.95,@"b":@1.0, @"d":@NO},
+            @{@"n":@"💙 Elektrik Mavi",             @"r":@0.05,@"g":@0.3, @"b":@1.0, @"d":@NO},
+            @{@"n":@"💜 Neon Mor",                  @"r":@0.7, @"g":@0.0, @"b":@1.0, @"d":@NO},
+            @{@"n":@"💗 Pembe / Magenta",           @"r":@1.0, @"g":@0.0, @"b":@0.65,@"d":@NO},
+            @{@"n":@"🤍 Saf Beyaz (Güneş)",         @"r":@1.0, @"g":@1.0, @"b":@1.0, @"d":@NO},
+            @{@"n":@"🖤 Void Siyah",                @"r":@0.02,@"g":@0.02,@"b":@0.02,@"d":@NO},
+            @{@"n":@"🌈 Bukalemun (Mor ↔ Cyan)",    @"r":@0.75,@"g":@0.0, @"b":@1.0, @"r2":@0.0,@"g2":@1.0,@"b2":@1.0,@"d":@YES},
+            @{@"n":@"🔥 Bukalemun (Kırmızı ↔ Altın)",@"r":@1.0,@"g":@0.05,@"b":@0.1, @"r2":@1.0,@"g2":@0.85,@"b2":@0.0,@"d":@YES},
+            @{@"n":@"✏️ Özel HEX Renk Gir (#RRGGBB)...", @"hex":@YES},
+        ];
+        for (NSDictionary *c in colors) {
+            [sub addAction:[UIAlertAction actionWithTitle:c[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                if ([c[@"hex"] boolValue]) {
+                    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"🎨 Özel HEX Renk"
+                        message:@"6 haneli HEX kodu gir (örn: #FF0055 veya 00FFAA):" preferredStyle:UIAlertControllerStyleAlert];
+                    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = @"#FF0055"; }];
+                    [al addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *y){
+                        NSString *hx = [[al.textFields.firstObject.text stringByReplacingOccurrencesOfString:@"#" withString:@""]
+                                        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                        unsigned int rgb = 0;
+                        if (hx.length == 6 && [[NSScanner scannerWithString:hx] scanHexInt:&rgb]) {
+                            g_hdrR = ((rgb >> 16) & 0xFF) / 255.0f;
+                            g_hdrG = ((rgb >> 8)  & 0xFF) / 255.0f;
+                            g_hdrB = (rgb & 0xFF) / 255.0f;
+                            g_hdrDualColor = false;
+                            g_hdrPaintLiveEnabled = true;
+                            g_hdrPaintPending = true;
+                        }
+                    }]];
+                    [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+                    [self present:al];
+                } else {
+                    g_hdrR = [c[@"r"] floatValue];
+                    g_hdrG = [c[@"g"] floatValue];
+                    g_hdrB = [c[@"b"] floatValue];
+                    g_hdrDualColor = [c[@"d"] boolValue];
+                    if (g_hdrDualColor) {
+                        g_hdrR2 = [c[@"r2"] floatValue];
+                        g_hdrG2 = [c[@"g2"] floatValue];
+                        g_hdrB2 = [c[@"b2"] floatValue];
+                    }
+                    g_hdrPaintLiveEnabled = true;
+                    g_hdrPaintPending = true;
+                }
+            }]];
+        }
+        [self v15PresentSheet:sub];
+    }]];
+
+    // 2) Parlaklık (Brightness / HDR Şiddeti) Seç
+    [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"☀️ Parlaklık Seç (Şu an: %.1fx)", g_hdrBrightness] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *sub = [UIAlertController alertControllerWithTitle:@"☀️ Parlaklık / HDR Şiddeti"
+            message:@"0.1x (Mat/Koyu) ile 25x (Güneş Gibi Parlama) arası seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+        NSArray *bList = @[
+            @{@"n":@"🌑 Ultra Koyu / Mat (0.2x)",    @"v":@0.2},
+            @{@"n":@"🌘 Koyu (0.6x)",                @"v":@0.6},
+            @{@"n":@"🌤️ Normal Boya (1.0x)",         @"v":@1.0},
+            @{@"n":@"✨ Parlak (2.0x)",              @"v":@2.0},
+            @{@"n":@"💡 Neon Parlama (4.0x)",        @"v":@4.0},
+            @{@"n":@"🔥 Ultra HDR Neon (7.5x)",      @"v":@7.5},
+            @{@"n":@"☀️ Güneş Gibi Parla (15.0x)",   @"v":@15.0},
+            @{@"n":@"✏️ Özel Parlaklık Gir (0.1–25)...", @"v":@-1.0},
+        ];
+        for (NSDictionary *b in bList) {
+            [sub addAction:[UIAlertAction actionWithTitle:b[@"n"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                float val = [b[@"v"] floatValue];
+                if (val < 0.0f) {
+                    UIAlertController *al = [UIAlertController alertControllerWithTitle:@"☀️ Özel Parlaklık"
+                        message:@"0.1 ile 25.0 arası sayı gir (örn: 5.5):" preferredStyle:UIAlertControllerStyleAlert];
+                    [al addTextFieldWithConfigurationHandler:^(UITextField *tf){
+                        tf.text = [NSString stringWithFormat:@"%.1f", g_hdrBrightness];
+                        tf.keyboardType = UIKeyboardTypeDecimalPad;
+                    }];
+                    [al addAction:[UIAlertAction actionWithTitle:@"Uygula" style:UIAlertActionStyleDefault handler:^(UIAlertAction *y){
+                        float v = [[al.textFields.firstObject.text stringByReplacingOccurrencesOfString:@"," withString:@"."] floatValue];
+                        if (v < 0.1f) v = 0.1f;
+                        if (v > 25.0f) v = 25.0f;
+                        g_hdrBrightness = v;
+                        g_hdrPaintLiveEnabled = true;
+                        g_hdrPaintPending = true;
+                    }]];
+                    [al addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+                    [self present:al];
+                } else {
+                    g_hdrBrightness = val;
+                    g_hdrPaintLiveEnabled = true;
+                    g_hdrPaintPending = true;
+                }
+            }]];
+        }
+        [self v15PresentSheet:sub];
+    }]];
+
+    // 3) Boya Tipi (Gloss / Metalik / Mat / Krom)
+    [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"🪞 Boya Tipi (%@)", ptStr] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        UIAlertController *sub = [UIAlertController alertControllerWithTitle:@"🪞 Boya Yüzey Tipi"
+            message:@"PaintTuner yüzey tipini seç:" preferredStyle:UIAlertControllerStyleActionSheet];
+        for (int i = 0; i < (int)ptNames.count; i++) {
+            [sub addAction:[UIAlertAction actionWithTitle:ptNames[i] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
+                g_hdrPaintType = i;
+                g_hdrPaintPending = true;
+            }]];
+        }
+        [self v15PresentSheet:sub];
+    }]];
+
+    // 4) Jantlara da Uygula Toggle
+    [ac addAction:[UIAlertAction actionWithTitle:(g_hdrAlsoRims ? @"💿 Jantlara Uygula: AÇIK (Kapat)" : @"💿 Jantlara Uygula: KAPALI (Aç)")
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            g_hdrAlsoRims = !g_hdrAlsoRims;
+            g_hdrPaintPending = true;
+        }]];
+
+    // 5) Şimdi Uygula / Kapat
+    [ac addAction:[UIAlertAction actionWithTitle:@"✅ Şimdi Uygula & Yayınla" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        g_hdrPaintLiveEnabled = true;
+        g_hdrPaintPending = true;
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⛔ Canlı HDR Boyayı Kapat" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+        g_hdrPaintLiveEnabled = false;
+    }]];
+
+    [self v15PresentSheet:ac];
+}
 
 // #5 Toplu Trafik (SimpleSpawnBatchRPC)
 - (void)v15BatchTrafficMenu {
