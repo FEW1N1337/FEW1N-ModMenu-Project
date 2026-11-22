@@ -1,9 +1,9 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v1.1
-// .dylib derlemeden anlik test & fix motoru!
+// FEW1N LIVE OTA SCRIPT (live.js) v1.2
+// Gercek JSON key listesi + MPaint + Plaka A/B/C format testi
 // ============================================================================
 
-FEW1N.setMeta("1.1", "LoadTuners Gerçek Format Testi (A: Zip, B: Zip+Şifre, C: UTF8) + Gerçek JSON Okuyucu");
+FEW1N.setMeta("1.2", "Tüm Tuning Key'leri + MPaint & Plaka A/B/C Canlı Test");
 FEW1N.clearActions();
 
 function getMyTM() {
@@ -25,10 +25,16 @@ function getRealPlateKey() {
     return "Plate";
 }
 
-function buildPlateJson(plateText) {
-    var key = getRealPlateKey();
-    var inner = JSON.stringify({ c: "eu1", t: plateText });
-    return JSON.stringify({ tuners: [{ key: key, value: inner }] });
+function buildNeonAndPlateJson(plateText, r, g, b) {
+    var pKey = getRealPlateKey();
+    var paintVal = JSON.stringify({ r: r, g: g, b: b, r2: b, g2: r, b2: g, t: 1 });
+    var plateVal = JSON.stringify({ c: "eu1", t: plateText });
+    return JSON.stringify({
+        tuners: [
+            { key: "MPaint", value: paintVal },
+            { key: pKey, value: plateVal }
+        ]
+    });
 }
 
 function sendLoadTunersTest(modeName, bytesHandle) {
@@ -40,71 +46,55 @@ function sendLoadTunersTest(modeName, bytesHandle) {
     var hitAll = 0, hitOther = 0;
     for (var i = 0; i < tms.length; i++) {
         var mine = FEW1N.isMine(tms[i]);
-        // RpcTarget.All = 0 -> hem sende hem herkeste tetiklenir
-        var ok = FEW1N.sendRPC(tms[i], "LoadTuners", 0, [bytesHandle]);
-        if (ok) {
+        // RpcTarget.All = 0
+        if (FEW1N.sendRPC(tms[i], "LoadTuners", 0, [bytesHandle])) {
             hitAll++;
             if (!mine) hitOther++;
         }
     }
-    var msg = modeName + "\nToplam TM: " + tms.length + "\nRPC Giden: " + hitAll + " (Diğer: " + hitOther + ")\n\nEğer KENDİ plakan değiştiyse bu format %100 DOĞRUDUR!";
+    var msg = modeName + "\nToplam TM: " + tms.length + " | RPC: " + hitAll + " (Diğer: " + hitOther + ")\n\nAraba rengi/plakası değiştiyse BU FORMAT DOĞRUDUR!";
     FEW1N.log(msg);
     FEW1N.alert("🧪 " + modeName, msg);
 }
 
-// 1) Kendi aracinin GERCEK TuningData JSON'unu ve PlateTuner key'ini oku
-FEW1N.registerAction("read_json", "🔎 1. Gerçek Tuning JSON & Key Oku", function () {
+// 1) Tüm Tuner Key'lerini listele
+FEW1N.registerAction("list_keys", "🔑 1. Tüm Tuning Key'lerini Göster", function () {
     var tm = getMyTM();
-    if (!tm) { FEW1N.alert("⚠️", "TuningManager bulunamadı (odada arabaya bin)."); return; }
+    if (!tm) { FEW1N.alert("⚠️", "TuningManager bulunamadı."); return; }
     var td = FEW1N.invoke(tm, "", "TuningManager", "eaj", []);
     var gkb = td ? FEW1N.invoke(td, "", "TuningData", "gkb", []) : "";
-    var dzz = FEW1N.invoke(tm, "", "TuningManager", "dzz", []);
-    var pKey = getRealPlateKey();
-    var sample = (gkb && gkb.length > 0) ? gkb : (dzz || "(boş)");
-    if (sample.length > 320) sample = sample.substring(0, 320) + "...";
-    var msg = "PlateKey: '" + pKey + "'\n\ngkb len=" + (gkb ? gkb.length : 0) + " | dzz len=" + (dzz ? dzz.length : 0) + "\n\nÖrnek:\n" + sample;
-    FEW1N.log("REAL_JSON: " + sample);
-    FEW1N.alert("🔎 Gerçek Tuning JSON", msg);
+    var keys = [];
+    try {
+        var obj = JSON.parse(gkb);
+        for (var i = 0; i < obj.tuners.length; i++) {
+            keys.push(obj.tuners[i].key);
+        }
+    } catch (e) {
+        FEW1N.alert("⚠️ Parse", "" + e);
+        return;
+    }
+    FEW1N.alert("🔑 Tüm Tuner Key'leri (" + keys.length + ")", keys.join(", ") + "\n\nPlateKey: " + getRealPlateKey());
 });
 
-// 2) Test A: Sadece vn.gst(json) (Zip)
-FEW1N.registerAction("test_a", "🧪 2. Test A: LoadTuners (vn.gst Zip)", function () {
-    var json = buildPlateJson("TEST-A");
+// 2) Test A: vn.gst (Zip) -> PARLAK KIRMIZI + TEST-A
+FEW1N.registerAction("test_a", "🔴 2. Test A (vn.gst Zip -> Kırmızı)", function () {
+    var json = buildNeonAndPlateJson("TEST-A", 255, 0, 30);
     var b = FEW1N.invoke("", "", "vn", "gst", [json]);
-    sendLoadTunersTest("Test A (vn.gst Zip)", b);
+    sendLoadTunersTest("Test A (vn.gst Zip -> Kırmızı)", b);
 });
 
-// 3) Test B: vn.gsx(vn.gst(json)) (Zip + AES)
-FEW1N.registerAction("test_b", "🧪 3. Test B: LoadTuners (vn.gsx+gst)", function () {
-    var json = buildPlateJson("TEST-B");
+// 3) Test B: vn.gsx(vn.gst) -> PARLAK YEŞİL + TEST-B
+FEW1N.registerAction("test_b", "🟢 3. Test B (vn.gsx+gst -> Yeşil)", function () {
+    var json = buildNeonAndPlateJson("TEST-B", 0, 255, 40);
     var z = FEW1N.invoke("", "", "vn", "gst", [json]);
     var b = z ? FEW1N.invoke("", "", "vn", "gsx", [z]) : "";
-    sendLoadTunersTest("Test B (vn.gsx+gst)", b);
+    sendLoadTunersTest("Test B (vn.gsx+gst -> Yeşil)", b);
 });
 
-// 4) Test C: Ham UTF-8 Encoding.UTF8.GetBytes(json)
-FEW1N.registerAction("test_c", "🧪 4. Test C: LoadTuners (Ham UTF-8)", function () {
-    var json = buildPlateJson("TEST-C");
+// 4) Test C: Ham UTF-8 -> PARLAK MAVİ + TEST-C
+FEW1N.registerAction("test_c", "🔵 4. Test C (Ham UTF-8 -> Mavi)", function () {
+    var json = buildNeonAndPlateJson("TEST-C", 0, 120, 255);
     var utf8 = FEW1N.invoke("", "System.Text", "Encoding", "get_UTF8", []);
     var b = utf8 ? FEW1N.invoke(utf8, "System.Text", "Encoding", "GetBytes", [json]) : "";
-    sendLoadTunersTest("Test C (Ham UTF-8)", b);
-});
-
-// 5) Test D: Diğer oyuncuları SmoothSyncRCC RpcTeleport ile fırlat/çevir kontrolü
-FEW1N.registerAction("test_flip", "🙃 5. Canlı 180° Ters Çevir (Tüm Oda)", function () {
-    var sss = FEW1N.findObjects("Smooth", "SmoothSyncRCC");
-    var hit = 0;
-    for (var i = 0; i < sss.length; i++) {
-        if (FEW1N.isMine(sss[i])) continue;
-        var tr = FEW1N.invoke(sss[i], "UnityEngine", "Component", "get_transform", []);
-        var pos = tr ? FEW1N.invoke(tr, "UnityEngine", "Transform", "get_position", []) : { x: 0, y: 5, z: 0 };
-        var ok = FEW1N.sendRPC(sss[i], "RpcTeleport", 0, [
-            { t: "v3", x: pos.x, y: pos.y + 3.0, z: pos.z },
-            { t: "v3", x: 0, y: 0, z: 180 },
-            { t: "v3", x: 1, y: 1, z: 1 },
-            { t: "f", v: 3.0 }
-        ]);
-        if (ok) hit++;
-    }
-    FEW1N.alert("🙃 Canlı Flip", "Bulunan SmoothSyncRCC: " + sss.length + "\nRPC Giden: " + hit);
+    sendLoadTunersTest("Test C (Ham UTF-8 -> Mavi)", b);
 });
