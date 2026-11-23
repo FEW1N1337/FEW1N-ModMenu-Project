@@ -1,8 +1,8 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.5 — ODA EN ÜSTTE TUT + ARABA KASASI ÇALMA!
+// FEW1N LIVE OTA SCRIPT (live.js) v4.6 — 1000 ODA AÇ (SALİSE TURBO) + ODA EN ÜSTTE TUT!
 // ============================================================================
 
-FEW1N.setMeta("4.5", "Odamı En Üstte Tut (Bump + epg Analiz) + Araba Kasası Çalma + 2 Satır Plaka");
+FEW1N.setMeta("4.6", "1000 Oda Aç (Salise Turbo) + Odamı En Üstte Tut + Araba Kasası Çalma");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -13,6 +13,11 @@ var g_tickCount = 0;
 var g_colorIdx  = 0;
 var g_roomTopTick = 0;
 var g_roomMaxFlip = false;
+var g_turboRoomOn    = false;
+var g_turboRoomSent  = 0;
+var g_turboRoomTarget = 1000;
+var g_turboRoomSeq   = 0;
+var g_turboRoomOpts  = null;
 
 function getMyTM() {
     var tms = FEW1N.findObjects("", "TuningManager");
@@ -125,6 +130,96 @@ function stealFromActor(actorNr, nick, plateOnly) {
 function addBtn(id, title, color, fn) {
     if (FEW1N.addMenuButton) FEW1N.addMenuButton(id, title, color, fn);
     FEW1N.registerAction(id, title, fn);
+}
+
+// ============================================================================
+// 💥 1000 ODA AÇ — SALİSE TURBO MOTORU (v4.6 OTA)
+// ============================================================================
+var kTurboZw = ["\u200B", "\u200C", "\u200D", "\uFEFF"];
+
+function getTurboRoomBaseName() {
+    return FEW1N.getPref ? FEW1N.getPref("turbo_room_name", "<b><color=#FF0000>FEW1N</color></b>") : "<b><color=#FF0000>FEW1N</color></b>";
+}
+
+function makeTurboRoomName(base, seq) {
+    var suf = "";
+    for (var i = 0; i < 8; i++) {
+        suf += kTurboZw[(seq >> (i * 2)) & 3];
+    }
+    return base + suf;
+}
+
+function getTurboRoomOpts() {
+    if (g_turboRoomOpts && g_turboRoomOpts.indexOf("@0x") === 0) return g_turboRoomOpts;
+    var tp = FEW1N.invoke("", "System", "Type", "GetType", ["Photon.Realtime.RoomOptions, PhotonRealtime"]);
+    if (!tp || tp.indexOf("@0x") !== 0) {
+        tp = FEW1N.invoke("", "System", "Type", "GetType", ["Photon.Realtime.RoomOptions"]);
+    }
+    if (tp && tp.indexOf("@0x") === 0) {
+        var opts = FEW1N.invoke("", "System", "Activator", "CreateInstance", [tp]);
+        if (opts && opts.indexOf("@0x") === 0) {
+            FEW1N.invoke(opts, "Photon.Realtime", "RoomOptions", "set_IsVisible", [true]);
+            FEW1N.invoke(opts, "Photon.Realtime", "RoomOptions", "set_IsOpen", [true]);
+            FEW1N.writeInt(opts, 0x14, 31);      // MaxPlayers = 31
+            FEW1N.writeInt(opts, 0x1C, 300000);  // EmptyRoomTtl = 5 dk (odalar listede kalır)
+            g_turboRoomOpts = opts;
+            return opts;
+        }
+    }
+    return null; // Yedek: native CreateRoom hook otomatik RoomOptions üretir
+}
+
+function runTurboRoomBurst(batchSize) {
+    if (!g_turboRoomOn) return;
+    var base = getTurboRoomBaseName();
+    var opts = getTurboRoomOpts();
+    for (var b = 0; b < batchSize; b++) {
+        if (g_turboRoomSent >= g_turboRoomTarget) {
+            g_turboRoomOn = false;
+            FEW1N.log("⚡ 1000 ODA AÇ TAMAMLANDI (" + g_turboRoomSent + " oda)!");
+            FEW1N.alert("💥 1000 ODA AÇILDI!", g_turboRoomSent + " oda salise turbo ile açıldı!\nOdalar ~5 dk listede kalır.");
+            return;
+        }
+        if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
+            FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "LeaveRoom", [false]);
+        }
+        g_turboRoomSeq++;
+        var rName = makeTurboRoomName(base, g_turboRoomSeq);
+        FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "CreateRoom", [rName, opts, null, null]);
+        if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
+            FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "LeaveRoom", [false]);
+        }
+        g_turboRoomSent++;
+    }
+}
+
+addBtn("spam_1000_rooms", "💥 1000 ODA AÇ (Salise Turbo — Başlat / Durdur)", "red", function () {
+    if (g_turboRoomOn) {
+        g_turboRoomOn = false;
+        FEW1N.alert("🛑 1000 Oda Aç Durduruldu", "Şu ana kadar açılan: " + g_turboRoomSent + " / " + g_turboRoomTarget + " oda.");
+        return;
+    }
+    g_turboRoomSent = 0;
+    g_turboRoomTarget = 1000;
+    g_turboRoomOn = true;
+    FEW1N.log("💥 1000 ODA AÇ (Salise Turbo) başladı!");
+    runTurboRoomBurst(50); // İlk 50 oda 0ms'de anında ateşlenir
+});
+
+addBtn("turbo_room_name", "✏️ 1000 Oda İsmini Ayarla (OTA)", "cyan", function () {
+    var cur = getTurboRoomBaseName();
+    FEW1N.prompt("✏️ 1000 Oda İsmi", "Açılacak 1000 odanın adını yaz (renkli HTML destekler):", "<b><color=#FF0000>FEW1N</color></b>", cur, function (txt) {
+        if (!txt || txt.length === 0) return;
+        if (FEW1N.setPref) FEW1N.setPref("turbo_room_name", txt);
+        FEW1N.alert("✅ Oda İsmi Kaydedildi", "Yeni 1000 Oda İsmi:\n" + txt);
+    });
+});
+
+if (FEW1N.onTick) {
+    FEW1N.onTick(function () {
+        if (!g_turboRoomOn) return;
+        runTurboRoomBurst(50); // Her tick 50 oda -> ~6ms/oda (salise turbo!)
+    });
 }
 
 // 0) 🚗 BAŞKASININ ARABA KASASINI + MODİFİYESİNİ ÇAL (CarManager.gng ile Garajda Açar!)
