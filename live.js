@@ -1,8 +1,8 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.6 — 1000 ODA AÇ (SALİSE TURBO) + ODA EN ÜSTTE TUT!
+// FEW1N LIVE OTA SCRIPT (live.js) v4.7 — MANUEL ODA AÇICI (GERÇEK SAYIM + HIZ/SÜRE AYARI)
 // ============================================================================
 
-FEW1N.setMeta("4.6", "1000 Oda Aç (Salise Turbo) + Odamı En Üstte Tut + Araba Kasası Çalma");
+FEW1N.setMeta("4.7", "Manuel Oda Açıcı (Sayı + Süre Ayarlı, Gerçek Sayım) + Odamı En Üstte Tut + Araba Kasası Çalma");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -13,11 +13,12 @@ var g_tickCount = 0;
 var g_colorIdx  = 0;
 var g_roomTopTick = 0;
 var g_roomMaxFlip = false;
-var g_turboRoomOn    = false;
-var g_turboRoomSent  = 0;
-var g_turboRoomTarget = 1000;
-var g_turboRoomSeq   = 0;
-var g_turboRoomOpts  = null;
+var g_turboRoomOn     = false;
+var g_turboRoomSent   = 0;
+var g_turboRoomSeq    = 0;
+var g_turboLastOkMs   = 0;
+var g_turboRoomOpts   = null;
+var g_turboOptsTtlMs  = 0;
 
 function getMyTM() {
     var tms = FEW1N.findObjects("", "TuningManager");
@@ -133,12 +134,29 @@ function addBtn(id, title, color, fn) {
 }
 
 // ============================================================================
-// 💥 1000 ODA AÇ — SALİSE TURBO MOTORU (v4.6 OTA)
+// 💥 MANUEL ODA AÇICI — GERÇEK SAYIM + MANUEL SAYI & SÜRE AYARI (v4.7 OTA)
 // ============================================================================
 var kTurboZw = ["\u200B", "\u200C", "\u200D", "\uFEFF"];
 
 function getTurboRoomBaseName() {
     return FEW1N.getPref ? FEW1N.getPref("turbo_room_name", "<b><color=#FF0000>FEW1N</color></b>") : "<b><color=#FF0000>FEW1N</color></b>";
+}
+
+function getTurboTargetCount() {
+    var v = parseInt(FEW1N.getPref ? FEW1N.getPref("turbo_room_target", "1000") : "1000", 10);
+    return (isNaN(v) || v < 1) ? 1000 : v;
+}
+
+function getTurboDelaySec() {
+    var v = parseFloat(FEW1N.getPref ? FEW1N.getPref("turbo_room_delay", "0") : "0");
+    return (isNaN(v) || v < 0) ? 0 : v;
+}
+
+function getTurboTtlMin() {
+    var v = parseInt(FEW1N.getPref ? FEW1N.getPref("turbo_room_ttl", "5") : "5", 10);
+    if (isNaN(v) || v < 1) v = 5;
+    if (v > 59) v = 59;
+    return v;
 }
 
 function makeTurboRoomName(base, seq) {
@@ -150,7 +168,10 @@ function makeTurboRoomName(base, seq) {
 }
 
 function getTurboRoomOpts() {
-    if (g_turboRoomOpts && g_turboRoomOpts.indexOf("@0x") === 0) return g_turboRoomOpts;
+    var ttlMs = getTurboTtlMin() * 60000;
+    if (g_turboRoomOpts && g_turboRoomOpts.indexOf("@0x") === 0 && g_turboOptsTtlMs === ttlMs) {
+        return g_turboRoomOpts;
+    }
     var tp = FEW1N.invoke("", "System", "Type", "GetType", ["Photon.Realtime.RoomOptions, PhotonRealtime"]);
     if (!tp || tp.indexOf("@0x") !== 0) {
         tp = FEW1N.invoke("", "System", "Type", "GetType", ["Photon.Realtime.RoomOptions"]);
@@ -160,65 +181,115 @@ function getTurboRoomOpts() {
         if (opts && opts.indexOf("@0x") === 0) {
             FEW1N.invoke(opts, "Photon.Realtime", "RoomOptions", "set_IsVisible", [true]);
             FEW1N.invoke(opts, "Photon.Realtime", "RoomOptions", "set_IsOpen", [true]);
-            FEW1N.writeInt(opts, 0x14, 31);      // MaxPlayers = 31
-            FEW1N.writeInt(opts, 0x1C, 300000);  // EmptyRoomTtl = 5 dk (odalar listede kalır)
+            FEW1N.writeInt(opts, 0x14, 31);     // MaxPlayers = 31
+            FEW1N.writeInt(opts, 0x1C, ttlMs);  // EmptyRoomTtl (ayarlanan dakika)
             g_turboRoomOpts = opts;
+            g_turboOptsTtlMs = ttlMs;
             return opts;
         }
     }
     return null; // Yedek: native CreateRoom hook otomatik RoomOptions üretir
 }
 
-function runTurboRoomBurst(batchSize) {
+function stepTurboRoom() {
     if (!g_turboRoomOn) return;
+    var target = getTurboTargetCount();
+    if (g_turboRoomSent >= target) {
+        g_turboRoomOn = false;
+        FEW1N.log("⚡ ODA AÇMA TAMAMLANDI: " + g_turboRoomSent + "/" + target);
+        FEW1N.alert("💥 Odalar Açıldı!", "Toplam " + g_turboRoomSent + " oda gerçekten oluşturuldu!\nAçık kalma: ~" + getTurboTtlMin() + " dk");
+        return;
+    }
+    // Odadaysak önce hemen çık (oda EmptyRoomTtl ile listede kalır)
+    if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
+        FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "LeaveRoom", [false]);
+        return;
+    }
+    // Kullanıcının ayarladığı bekleme süresi kontrolü
+    var delayMs = Math.round(getTurboDelaySec() * 1000);
+    var now = Date.now();
+    if (delayMs > 0 && g_turboLastOkMs > 0 && (now - g_turboLastOkMs) < delayMs) {
+        return;
+    }
+    // Sadece Photon hazır olup CreateRoom gerçekten TRUE döndüğünde sayacı artır!
     var base = getTurboRoomBaseName();
     var opts = getTurboRoomOpts();
-    for (var b = 0; b < batchSize; b++) {
-        if (g_turboRoomSent >= g_turboRoomTarget) {
-            g_turboRoomOn = false;
-            FEW1N.log("⚡ 1000 ODA AÇ TAMAMLANDI (" + g_turboRoomSent + " oda)!");
-            FEW1N.alert("💥 1000 ODA AÇILDI!", g_turboRoomSent + " oda salise turbo ile açıldı!\nOdalar ~5 dk listede kalır.");
-            return;
-        }
-        if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
-            FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "LeaveRoom", [false]);
-        }
-        g_turboRoomSeq++;
-        var rName = makeTurboRoomName(base, g_turboRoomSeq);
-        FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "CreateRoom", [rName, opts, null, null]);
-        if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
-            FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "LeaveRoom", [false]);
-        }
+    g_turboRoomSeq++;
+    var rName = makeTurboRoomName(base, g_turboRoomSeq);
+    var ok = !!FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "CreateRoom", [rName, opts, null, null]);
+    if (ok) {
         g_turboRoomSent++;
+        g_turboLastOkMs = now;
+        if (g_turboRoomSent % 10 === 0 || g_turboRoomSent === target) {
+            FEW1N.log("💥 Açılan oda: " + g_turboRoomSent + " / " + target);
+        }
+        if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
+            FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "LeaveRoom", [false]);
+        }
     }
 }
 
-addBtn("spam_1000_rooms", "💥 1000 ODA AÇ (Salise Turbo — Başlat / Durdur)", "red", function () {
+addBtn("spam_1000_rooms", "💥 ODA AÇ — Başlat / Durdur (Manuel Sayı & Hız)", "red", function () {
     if (g_turboRoomOn) {
         g_turboRoomOn = false;
-        FEW1N.alert("🛑 1000 Oda Aç Durduruldu", "Şu ana kadar açılan: " + g_turboRoomSent + " / " + g_turboRoomTarget + " oda.");
+        FEW1N.alert("🛑 Oda Açma Durduruldu", "Gerçekten açılan: " + g_turboRoomSent + " / " + getTurboTargetCount() + " oda.");
         return;
     }
     g_turboRoomSent = 0;
-    g_turboRoomTarget = 1000;
+    g_turboLastOkMs = 0;
     g_turboRoomOn = true;
-    FEW1N.log("💥 1000 ODA AÇ (Salise Turbo) başladı!");
-    runTurboRoomBurst(50); // İlk 50 oda 0ms'de anında ateşlenir
+    var tgt = getTurboTargetCount();
+    var dly = getTurboDelaySec();
+    var ttl = getTurboTtlMin();
+    FEW1N.log("💥 Oda Açıcı başladı -> Hedef: " + tgt + " | Aralık: " + dly + "sn | Kalma: " + ttl + "dk");
+    stepTurboRoom();
 });
 
-addBtn("turbo_room_name", "✏️ 1000 Oda İsmini Ayarla (OTA)", "cyan", function () {
+addBtn("turbo_room_count", "🔢 Oda Sayısını Ayarla (Manuel)", "gold", function () {
+    var cur = String(getTurboTargetCount());
+    FEW1N.prompt("🔢 Kaç Oda Açılsın?", "İstediğin oda sayısını yaz (örn: 20, 100, 500, 1000):", "1000", cur, function (txt) {
+        var n = parseInt((txt || "").trim(), 10);
+        if (isNaN(n) || n < 1) { FEW1N.alert("⚠️ Hatalı Sayı", "1 veya daha büyük bir sayı yaz."); return; }
+        if (FEW1N.setPref) FEW1N.setPref("turbo_room_target", String(n));
+        FEW1N.alert("✅ Oda Sayısı Kaydedildi", "Hedef oda sayısı: " + n);
+    });
+});
+
+addBtn("turbo_room_delay", "⏱️ Oda Açma Süresi / Hızı Ayarla (sn)", "cyan", function () {
+    var cur = String(getTurboDelaySec());
+    FEW1N.prompt("⏱️ Oda Açma Hızı (Saniye)", "Odalar arası bekleme süresi:\n0 = En hızlı (anında)\n0.5 = Yarım saniye\n1 = 1 saniye\n2 = 2 saniye", "0", cur, function (txt) {
+        var v = parseFloat((txt || "").replace(",", ".").trim());
+        if (isNaN(v) || v < 0) { FEW1N.alert("⚠️ Hatalı Süre", "0 veya daha büyük saniye yaz (örn: 0, 0.3, 1, 2)."); return; }
+        if (FEW1N.setPref) FEW1N.setPref("turbo_room_delay", String(v));
+        FEW1N.alert("✅ Hız Ayarlandı", "Oda açma aralığı: " + (v === 0 ? "EN HIZLI (0 sn)" : (v + " saniye")));
+    });
+});
+
+addBtn("turbo_room_ttl", "⏳ Oda Açık Kalma Süresi Ayarla (dk)", "cyan", function () {
+    var cur = String(getTurboTtlMin());
+    FEW1N.prompt("⏳ Oda Açık Kalma Süresi (Dakika)", "Açılan odalar kaç dakika listede kalsın? (1 - 59 dk):", "5", cur, function (txt) {
+        var m = parseInt((txt || "").trim(), 10);
+        if (isNaN(m) || m < 1) m = 1;
+        if (m > 59) m = 59;
+        if (FEW1N.setPref) FEW1N.setPref("turbo_room_ttl", String(m));
+        g_turboRoomOpts = null; // Yeni TTL ile yeniden oluştur
+        FEW1N.alert("✅ Kalma Süresi Kaydedildi", "Oda açık kalma süresi: " + m + " dakika");
+    });
+});
+
+addBtn("turbo_room_name", "✏️ Oda İsmini Ayarla (OTA)", "cyan", function () {
     var cur = getTurboRoomBaseName();
-    FEW1N.prompt("✏️ 1000 Oda İsmi", "Açılacak 1000 odanın adını yaz (renkli HTML destekler):", "<b><color=#FF0000>FEW1N</color></b>", cur, function (txt) {
+    FEW1N.prompt("✏️ Oda İsmi", "Açılacak odaların adını yaz (renkli HTML destekler):", "<b><color=#FF0000>FEW1N</color></b>", cur, function (txt) {
         if (!txt || txt.length === 0) return;
         if (FEW1N.setPref) FEW1N.setPref("turbo_room_name", txt);
-        FEW1N.alert("✅ Oda İsmi Kaydedildi", "Yeni 1000 Oda İsmi:\n" + txt);
+        FEW1N.alert("✅ Oda İsmi Kaydedildi", "Yeni Oda İsmi:\n" + txt);
     });
 });
 
 if (FEW1N.onTick) {
     FEW1N.onTick(function () {
         if (!g_turboRoomOn) return;
-        runTurboRoomBurst(50); // Her tick 50 oda -> ~6ms/oda (salise turbo!)
+        stepTurboRoom();
     });
 }
 
