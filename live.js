@@ -1,8 +1,8 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v5.1 — TÜM ODALAR DOLU ODA SNIPER (4/4) + 4 KATMANLI KALICI BAN
+// FEW1N LIVE OTA SCRIPT (live.js) v5.2 — BUTONLA DOLU ODA SEÇİCİ + 4 KATMANLI KALICI BAN
 // ============================================================================
 
-FEW1N.setMeta("5.1", "Dolu Oda Sniper (Tüm Odalar + Sayfalama) + 4 Katmanlı Kalıcı Ban + Oto VoteKick + Manuel Oda Açıcı");
+FEW1N.setMeta("5.2", "Butonla Dolu Oda Seçici (Yazmasız 4/4 Sniper) + 4 Katmanlı Kalıcı Ban + Oto VoteKick");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -24,7 +24,30 @@ var g_vkSentMap       = {};
 var g_banScanTick     = 0;
 var g_sniperOn        = false;
 var g_sniperTarget    = "";
+var g_sniperClean     = "";
 var g_sniperTries     = 0;
+var g_sniperMenuOpen  = false;
+var g_sniperRooms     = [];
+
+var g_regItems = [];
+var g_regTicks = [];
+var _origAddBtn = FEW1N.addMenuButton;
+var _origRegAct = FEW1N.registerAction;
+var _origAddTog = FEW1N.addMenuToggle;
+var _origOnTick = FEW1N.onTick;
+
+if (_origAddTog) {
+    FEW1N.addMenuToggle = function (id, title, sub, defOn, fn) {
+        g_regItems.push({ type: "tog", id: id, title: title, sub: sub, defOn: defOn, fn: fn });
+        return _origAddTog(id, title, sub, defOn, fn);
+    };
+}
+if (_origOnTick) {
+    FEW1N.onTick = function (fn) {
+        g_regTicks.push(fn);
+        return _origOnTick(fn);
+    };
+}
 
 function getMyTM() {
     var tms = FEW1N.findObjects("", "TuningManager");
@@ -134,9 +157,65 @@ function stealFromActor(actorNr, nick, plateOnly) {
     }
 }
 
+function rawAddBtn(id, title, color, fn) {
+    if (_origAddBtn) _origAddBtn(id, title, color, fn);
+    if (_origRegAct) _origRegAct(id, title, fn);
+}
+
 function addBtn(id, title, color, fn) {
-    if (FEW1N.addMenuButton) FEW1N.addMenuButton(id, title, color, fn);
-    FEW1N.registerAction(id, title, fn);
+    g_regItems.push({ type: "btn", id: id, title: title, color: color, fn: fn });
+    rawAddBtn(id, title, color, fn);
+}
+
+function rebuildOTAMenu() {
+    FEW1N.clearActions();
+    if (g_sniperOn && g_sniperTarget) {
+        rawAddBtn("sniper_stop_top", "🛑 Sniper Durdur: " + (g_sniperClean || g_sniperTarget), "red", function () {
+            var tgt = g_sniperClean || g_sniperTarget;
+            var tr = g_sniperTries;
+            g_sniperOn = false;
+            rebuildOTAMenu();
+            FEW1N.alert("🛑 Sniper Durduruldu", "Hedef: " + tgt + "\nToplam deneme: " + tr);
+        });
+    }
+    if (g_sniperMenuOpen) {
+        rawAddBtn("sniper_close_list", "❌ Oda Listesini Kapat", "red", function () {
+            g_sniperMenuOpen = false;
+            rebuildOTAMenu();
+        });
+        rawAddBtn("sniper_refresh_list", "🔄 Odaları Yenile (" + g_sniperRooms.length + " Oda)", "cyan", function () {
+            g_sniperRooms = getLobbyRoomEntries();
+            if (g_sniperRooms.length === 0) {
+                g_sniperMenuOpen = false;
+                rebuildOTAMenu();
+                FEW1N.alert("⚠️ Oda Bulunamadı", "Önce Lobi / Oda Listesi ekranını açıp tekrar bas.");
+                return;
+            }
+            rebuildOTAMenu();
+        });
+        for (var i = 0; i < g_sniperRooms.length; i++) {
+            (function (idx, r) {
+                var lbl = "🚪 " + (idx + 1) + ". " + r.clean + (r.locked ? " 🔒" : "");
+                rawAddBtn("sniper_pick_" + idx, lbl, "gold", function () {
+                    g_sniperMenuOpen = false;
+                    startSniperForRoom(r.raw, r.clean);
+                    rebuildOTAMenu();
+                });
+            })(i, g_sniperRooms[i]);
+        }
+    }
+    for (var j = 0; j < g_regItems.length; j++) {
+        var it = g_regItems[j];
+        if (it.type === "btn") {
+            rawAddBtn(it.id, it.title, it.color, it.fn);
+        } else if (it.type === "tog" && _origAddTog) {
+            _origAddTog(it.id, it.title, it.sub, it.defOn, it.fn);
+        }
+    }
+    for (var k = 0; k < g_regTicks.length; k++) {
+        if (_origOnTick) _origOnTick(g_regTicks[k]);
+    }
+    if (FEW1N.rebuildMenu) FEW1N.rebuildMenu();
 }
 
 // ============================================================================
@@ -439,7 +518,7 @@ if (FEW1N.onTick) {
 }
 
 // ============================================================================
-// 🎯 DOLU ODA SNIPER (4/4 OTO-KAP + TÜM ODALAR SEÇİCİ — v5.1 OTA)
+// 🎯 DOLU ODA SNIPER — BUTONLA SEÇİM (YAZMASIZ, TÜM ODALAR — v5.2 OTA)
 // ============================================================================
 function getLobbyRoomEntries() {
     var lines = FEW1N.findObjects("", "HR_UI_RoomListLine");
@@ -458,73 +537,27 @@ function getLobbyRoomEntries() {
     return out;
 }
 
-function startSniperForRoom(target) {
+function startSniperForRoom(target, cleanName) {
     if (!target) return;
     if (FEW1N.setPref) FEW1N.setPref("last_sniper_room", target);
     if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
         FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "LeaveRoom", [false]);
     }
     g_sniperTarget = target;
+    g_sniperClean = cleanName || target;
     g_sniperTries = 0;
     g_sniperOn = true;
-    FEW1N.log("🎯 [SNIPER] Başladı -> Hedef: " + target);
+    FEW1N.log("🎯 [SNIPER] Başladı -> Hedef: " + g_sniperClean);
     stepFullRoomSniper();
-}
-
-function openSniperRoomPicker(rooms, page) {
-    var perPage = 18;
-    var total = rooms.length;
-    var maxPage = total > 0 ? Math.floor((total - 1) / perPage) : 0;
-    if (page < 0) page = 0;
-    if (page > maxPage) page = maxPage;
-
-    var msg = "4/4 dolu odanın adını yaz.\nUI kilidini aşar, yer açıldığı salisede otomatik girer!";
-    if (total > 0) {
-        var start = page * perPage;
-        var end = Math.min(start + perPage, total);
-        var preview = [];
-        for (var i = start; i < end; i++) {
-            preview.push((i + 1) + ". " + rooms[i].clean + (rooms[i].locked ? " 🔒" : ""));
-        }
-        var nav = (maxPage > 0) ? ("\nSayfa " + (page + 1) + "/" + (maxPage + 1) + " (Sonraki: N | Önceki: P)") : "";
-        msg = "Tüm Odalar (" + total + " oda):" + nav + "\n" + preview.join("\n") + "\n\nSıra no (1-" + total + "), oda adı veya N/P yaz:";
-    }
-    var defName = (page === 0 && FEW1N.getPref) ? FEW1N.getPref("last_sniper_room", "") : "";
-    FEW1N.prompt("🎯 Dolu Oda Sniper (" + total + " Oda)", msg, "1-" + (total || 1) + " / Oda adı / N", defName, function (val) {
-        var q = (val || "").trim();
-        if (!q) return;
-        var qu = q.toUpperCase();
-        if (total > 0 && (qu === "N" || qu === "ILERI" || qu === "İLERİ" || qu === "+")) {
-            openSniperRoomPicker(rooms, (page < maxPage) ? (page + 1) : 0);
-            return;
-        }
-        if (total > 0 && (qu === "P" || qu === "GERI" || qu === "GERİ" || qu === "-")) {
-            openSniperRoomPicker(rooms, (page > 0) ? (page - 1) : maxPage);
-            return;
-        }
-        var target = q;
-        var idx = parseInt(q, 10);
-        if (!isNaN(idx) && String(idx) === q && idx >= 1 && idx <= total) {
-            target = rooms[idx - 1].raw;
-        } else if (total > 0) {
-            var ql = normalizeNick(q);
-            for (var j = 0; j < total; j++) {
-                if (normalizeNick(rooms[j].clean).indexOf(ql) !== -1 || normalizeNick(rooms[j].raw).indexOf(ql) !== -1) {
-                    target = rooms[j].raw;
-                    break;
-                }
-            }
-        }
-        startSniperForRoom(target);
-    });
 }
 
 function stepFullRoomSniper() {
     if (!g_sniperOn || !g_sniperTarget) return;
     if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
-        var entered = g_sniperTarget;
+        var entered = g_sniperClean || g_sniperTarget;
         var tries = g_sniperTries;
         g_sniperOn = false;
+        rebuildOTAMenu();
         FEW1N.log("✅ [SNIPER] Dolu odaya girildi: " + entered + " (" + tries + ". deneme)");
         FEW1N.alert("✅ Dolu Odaya Girildi!", "Oda: " + entered + "\n" + tries + ". denemede yer açıldığı anda yakalandı!");
         return;
@@ -533,18 +566,32 @@ function stepFullRoomSniper() {
     // Doğrudan PhotonNetwork.JoinRoom -> UI 4/4 kilidini aşar, 3/4 olduğu salisede kapar!
     FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "JoinRoom", [g_sniperTarget, null]);
     if (g_sniperTries % 15 === 0) {
-        FEW1N.log("🎯 [SNIPER] '" + g_sniperTarget + "' bekleniyor... (" + g_sniperTries + ". deneme)");
+        FEW1N.log("🎯 [SNIPER] '" + (g_sniperClean || g_sniperTarget) + "' bekleniyor... (" + g_sniperTries + ". deneme)");
     }
 }
 
-addBtn("full_room_sniper", "🎯 Dolu Odaya Gir / 4/4 Sniper (Tüm Odalar)", "gold", function () {
+addBtn("full_room_sniper", "🎯 Dolu Odaya Gir — Odaları Butonla Seç (4/4)", "gold", function () {
     if (g_sniperOn) {
+        var tgt = g_sniperClean || g_sniperTarget;
+        var tr = g_sniperTries;
         g_sniperOn = false;
-        FEW1N.alert("🛑 Dolu Oda Sniper Durduruldu", "Hedef: " + g_sniperTarget + "\nToplam deneme: " + g_sniperTries);
+        g_sniperMenuOpen = false;
+        rebuildOTAMenu();
+        FEW1N.alert("🛑 Dolu Oda Sniper Durduruldu", "Hedef: " + tgt + "\nToplam deneme: " + tr);
         return;
     }
-    var rooms = getLobbyRoomEntries();
-    openSniperRoomPicker(rooms, 0);
+    if (g_sniperMenuOpen) {
+        g_sniperMenuOpen = false;
+        rebuildOTAMenu();
+        return;
+    }
+    g_sniperRooms = getLobbyRoomEntries();
+    if (g_sniperRooms.length === 0) {
+        FEW1N.alert("⚠️ Oda Listesi Boş", "Önce oyunda Lobi / Oda Listesi ekranını açıp tekrar bas.");
+        return;
+    }
+    g_sniperMenuOpen = true;
+    rebuildOTAMenu();
 });
 
 if (FEW1N.onTick) {
