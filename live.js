@@ -1,8 +1,8 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.7 — MANUEL ODA AÇICI (GERÇEK SAYIM + HIZ/SÜRE AYARI)
+// FEW1N LIVE OTA SCRIPT (live.js) v4.8 — KALICI BAN + OTO VOTEKICK + MANUEL ODA AÇICI
 // ============================================================================
 
-FEW1N.setMeta("4.7", "Manuel Oda Açıcı (Sayı + Süre Ayarlı, Gerçek Sayım) + Odamı En Üstte Tut + Araba Kasası Çalma");
+FEW1N.setMeta("4.8", "Kalıcı Ban + Girene Oto VoteKick + Manuel Oda Açıcı + Odamı En Üstte Tut");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -19,6 +19,9 @@ var g_turboRoomSeq    = 0;
 var g_turboLastOkMs   = 0;
 var g_turboRoomOpts   = null;
 var g_turboOptsTtlMs  = 0;
+var g_autoBanVkOn     = true;
+var g_vkSentMap       = {};
+var g_banScanTick     = 0;
 
 function getMyTM() {
     var tms = FEW1N.findObjects("", "TuningManager");
@@ -131,6 +134,208 @@ function stealFromActor(actorNr, nick, plateOnly) {
 function addBtn(id, title, color, fn) {
     if (FEW1N.addMenuButton) FEW1N.addMenuButton(id, title, color, fn);
     FEW1N.registerAction(id, title, fn);
+}
+
+// ============================================================================
+// 🚫 KALICI BAN + ODAYA GİRENE OTO VOTEKICK OYLAMASI (v4.8 OTA)
+// ============================================================================
+function normalizeNick(s) {
+    if (!s) return "";
+    return String(s)
+        .replace(/<[^>]*>/g, "")
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+}
+
+function loadPermBans() {
+    var raw = FEW1N.getPref ? FEW1N.getPref("perm_vk_bans", "[]") : "[]";
+    try {
+        var arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return arr;
+    } catch (e) {}
+    return [];
+}
+
+function savePermBans(arr) {
+    if (FEW1N.setPref) FEW1N.setPref("perm_vk_bans", JSON.stringify(arr || []));
+}
+
+function getRoomPlayerHandle(actorNr) {
+    if (!actorNr || actorNr <= 0) return "";
+    var rm = FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_CurrentRoom", []);
+    if (!rm || rm.indexOf("@0x") !== 0) return "";
+    var ply = FEW1N.invoke(rm, "Photon.Realtime", "Room", "GetPlayer", [actorNr, false]);
+    return (ply && ply.indexOf("@0x") === 0) ? ply : "";
+}
+
+function getPlayerUserId(plyHandle) {
+    if (!plyHandle || plyHandle.indexOf("@0x") !== 0) return "";
+    var uid = FEW1N.invoke(plyHandle, "Photon.Realtime", "Player", "get_UserId", []);
+    return (uid && typeof uid === "string") ? uid.trim() : "";
+}
+
+function getVoteKickInst() {
+    var vk = FEW1N.invoke("", "", "VoteKick", "kyb", []);
+    if (vk && vk.indexOf("@0x") === 0) return vk;
+    vk = FEW1N.invoke("", "", "VoteKick", "get_pac", []);
+    if (vk && vk.indexOf("@0x") === 0) return vk;
+    var arr = FEW1N.findObjects("", "VoteKick");
+    return (arr && arr.length > 0) ? arr[0] : "";
+}
+
+function sendVoteKickToActor(actorNr, displayName) {
+    var vk = getVoteKickInst();
+    if (!vk) return false;
+    var ply = getRoomPlayerHandle(actorNr);
+    if (!ply) return false;
+    // 0sn bekleme: 60sn giriş ve 180sn oylama kilitlerini sıfırla + Master al
+    FEW1N.claimMaster();
+    FEW1N.writeFloat(vk, 0x5C, -99999.0);
+    FEW1N.writeFloat(vk, 0x60, -99999.0);
+    var ok = FEW1N.invoke(vk, "", "VoteKick", "mkw", [ply]);
+    if (!ok) ok = FEW1N.invoke(vk, "", "VoteKick", "VoteKickStart", [ply]);
+    // Kendi EVET oyumuzu da anında bas
+    FEW1N.invoke(vk, "", "VoteKick", "mkx", [true]);
+    FEW1N.log("🗳️ [OTO BAN-VOTEKICK] " + (displayName || ("#" + actorNr)) + " için oylama gönderildi!");
+    return true;
+}
+
+function addPermBanEntry(rawName, uid) {
+    var norm = normalizeNick(rawName);
+    var cleanUid = (uid || "").trim();
+    if (!norm && !cleanUid) return false;
+    var list = loadPermBans();
+    for (var i = 0; i < list.length; i++) {
+        if ((cleanUid && list[i].uid && list[i].uid === cleanUid) || (norm && list[i].nick === norm)) {
+            if (cleanUid && !list[i].uid) list[i].uid = cleanUid;
+            savePermBans(list);
+            return true;
+        }
+    }
+    list.push({ nick: norm, raw: (rawName || norm), uid: cleanUid });
+    savePermBans(list);
+    return true;
+}
+
+function isPlayerPermBanned(rawName, uid) {
+    var list = loadPermBans();
+    if (list.length === 0) return false;
+    var norm = normalizeNick(rawName);
+    var cleanUid = (uid || "").trim();
+    for (var i = 0; i < list.length; i++) {
+        if (cleanUid && list[i].uid && list[i].uid === cleanUid) return true;
+        if (norm && list[i].nick && list[i].nick === norm) return true;
+    }
+    return false;
+}
+
+function scanAndVoteKickBanned() {
+    if (!g_autoBanVkOn) return;
+    var list = loadPermBans();
+    if (list.length === 0) return;
+    var plys = FEW1N.players();
+    if (!plys || plys.length === 0) return;
+    var now = Date.now();
+    for (var i = 0; i < plys.length; i++) {
+        var p = plys[i];
+        if (!p || !p.actor) continue;
+        var plyH = getRoomPlayerHandle(p.actor);
+        var uid = getPlayerUserId(plyH);
+        if (isPlayerPermBanned(p.name, uid)) {
+            var key = String(p.actor);
+            if (!g_vkSentMap[key] || (now - g_vkSentMap[key]) >= 12000) {
+                g_vkSentMap[key] = now;
+                sendVoteKickToActor(p.actor, p.name);
+                return; // Aynı anda tek oylama başlat
+            }
+        }
+    }
+}
+
+addBtn("perm_ban_pick", "🚫 Kalıcı Banla + Oylama Gönder (Kişi Seç)", "red", function () {
+    FEW1N.pickPlayer("🚫 Kimi Kalıcı Banlayıp Oylama Göndereceksin?", function (act, nm) {
+        var plyH = getRoomPlayerHandle(act);
+        var uid = getPlayerUserId(plyH);
+        addPermBanEntry(nm, uid);
+        var sent = sendVoteKickToActor(act, nm);
+        FEW1N.alert(
+            "🚫 Kalıcı Banlandı!",
+            "Oyuncu: " + nm + (uid ? ("\nUserId: " + uid) : "") +
+            "\n\n• Kalıcı ban listesine eklendi (renk/harf değiştirse de tanınır)." +
+            "\n• VoteKick oylaması: " + (sent ? "GÖNDERİLDİ ✓" : "Odaya girdiğinde otomatik gönderilecek") +
+            "\n\nİpucu: Menüdeki 'Oylamayı Full Evet Yap (Oto 99+)' açıksa anında atılır!"
+        );
+    });
+});
+
+if (FEW1N.addMenuToggle) {
+    FEW1N.addMenuToggle("auto_ban_votekick", "🗳️ Oto Ban-VoteKick (Girene Oylama Gönder)", "Banlı kişi odaya girdiği anda otomatik VoteKick oylaması başlatır", true, function (isOn) {
+        g_autoBanVkOn = !!isOn;
+        if (g_autoBanVkOn) scanAndVoteKickBanned();
+    });
+}
+
+addBtn("perm_ban_manual", "✏️ İsimle Kalıcı Banla (Elle Yaz)", "gold", function () {
+    FEW1N.prompt("✏️ İsimle Kalıcı Banla", "Toxic/küfür eden oyuncunun nickini yaz:", "nick", "", function (txt) {
+        if (!txt || !txt.trim()) return;
+        addPermBanEntry(txt.trim(), "");
+        FEW1N.alert("🚫 Kalıcı Ban Eklendi", "'" + txt.trim() + "' listeye eklendi.\nOdaya girdiği anda otomatik VoteKick oylaması gönderilecek!");
+    });
+});
+
+addBtn("perm_ban_list", "📋 Kalıcı Ban Listesi / Kaldır", "white", function () {
+    var list = loadPermBans();
+    if (list.length === 0) {
+        FEW1N.alert("📋 Kalıcı Ban Listesi", "Henüz banlı kimse yok.");
+        return;
+    }
+    var lines = [];
+    for (var i = 0; i < list.length; i++) {
+        lines.push((i + 1) + ". " + (list[i].raw || list[i].nick) + (list[i].uid ? (" [ID:" + list[i].uid.substring(0, 8) + "]") : ""));
+    }
+    FEW1N.prompt(
+        "📋 Kalıcı Ban Listesi (" + list.length + " kişi)",
+        lines.join("\n") + "\n\nKaldırmak için sıra no veya nick yaz (hepsini silmek için: TEMIZLE):",
+        "1 veya TEMIZLE",
+        "",
+        function (val) {
+            var q = (val || "").trim();
+            if (!q) return;
+            if (q.toUpperCase() === "TEMIZLE") {
+                savePermBans([]);
+                FEW1N.alert("🗑️ Temizlendi", "Tüm kalıcı ban listesi silindi.");
+                return;
+            }
+            var idx = parseInt(q, 10);
+            var cur = loadPermBans();
+            if (!isNaN(idx) && idx >= 1 && idx <= cur.length) {
+                var rem = cur.splice(idx - 1, 1)[0];
+                savePermBans(cur);
+                FEW1N.alert("✅ Ban Kaldırıldı", (rem.raw || rem.nick) + " listeden çıkarıldı.");
+                return;
+            }
+            var nq = normalizeNick(q);
+            var next = [];
+            var removed = 0;
+            for (var j = 0; j < cur.length; j++) {
+                if (cur[j].nick === nq) removed++;
+                else next.push(cur[j]);
+            }
+            savePermBans(next);
+            FEW1N.alert(removed > 0 ? "✅ Ban Kaldırıldı" : "⚠️ Bulunamadı", removed > 0 ? (removed + " kayıt silindi.") : ("'" + q + "' listede yok."));
+        }
+    );
+});
+
+if (FEW1N.onTick) {
+    FEW1N.onTick(function () {
+        if (!g_autoBanVkOn) return;
+        g_banScanTick++;
+        if (g_banScanTick % 2 !== 0) return; // ~0.6sn'de bir hızlı tarama
+        scanAndVoteKickBanned();
+    });
 }
 
 // ============================================================================
