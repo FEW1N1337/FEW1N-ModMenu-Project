@@ -1,8 +1,8 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v5.2 — BUTONLA DOLU ODA SEÇİCİ + 4 KATMANLI KALICI BAN
+// FEW1N LIVE OTA SCRIPT (live.js) v5.3 — BUTONLA DOLU ODA SEÇİCİ (ÇİFT YOL GİRİŞ) + KALICI BAN
 // ============================================================================
 
-FEW1N.setMeta("5.2", "Butonla Dolu Oda Seçici (Yazmasız 4/4 Sniper) + 4 Katmanlı Kalıcı Ban + Oto VoteKick");
+FEW1N.setMeta("5.3", "Butonla Dolu Oda Seçici (eqm + JoinRoom Çift Yol) + 4 Katmanlı Kalıcı Ban + Oto VoteKick");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -25,6 +25,8 @@ var g_banScanTick     = 0;
 var g_sniperOn        = false;
 var g_sniperTarget    = "";
 var g_sniperClean     = "";
+var g_sniperLine      = "";
+var g_sniperLocked    = false;
 var g_sniperTries     = 0;
 var g_sniperMenuOpen  = false;
 var g_sniperRooms     = [];
@@ -198,7 +200,7 @@ function rebuildOTAMenu() {
                 var lbl = "🚪 " + (idx + 1) + ". " + r.clean + (r.locked ? " 🔒" : "");
                 rawAddBtn("sniper_pick_" + idx, lbl, "gold", function () {
                     g_sniperMenuOpen = false;
-                    startSniperForRoom(r.raw, r.clean);
+                    startSniperForRoom(r);
                     rebuildOTAMenu();
                 });
             })(i, g_sniperRooms[i]);
@@ -518,7 +520,7 @@ if (FEW1N.onTick) {
 }
 
 // ============================================================================
-// 🎯 DOLU ODA SNIPER — BUTONLA SEÇİM (YAZMASIZ, TÜM ODALAR — v5.2 OTA)
+// 🎯 DOLU ODA SNIPER — BUTONLA SEÇİM (ÇİFT YOL: eqm + JoinRoom — v5.3 OTA)
 // ============================================================================
 function getLobbyRoomEntries() {
     var lines = FEW1N.findObjects("", "HR_UI_RoomListLine");
@@ -532,19 +534,22 @@ function getLobbyRoomEntries() {
         seen[nm] = true;
         var pwd = FEW1N.readStr(ln, 0x58) || "";
         var clean = nm.replace(/<[^>]*>/g, "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim() || nm;
-        out.push({ raw: nm, clean: clean, locked: !!pwd });
+        out.push({ ln: ln, raw: nm, clean: clean, locked: !!pwd });
     }
     return out;
 }
 
-function startSniperForRoom(target, cleanName) {
-    if (!target) return;
-    if (FEW1N.setPref) FEW1N.setPref("last_sniper_room", target);
+function startSniperForRoom(roomObj) {
+    if (!roomObj || !roomObj.raw) return;
+    if (FEW1N.setPref) FEW1N.setPref("last_sniper_room", roomObj.raw);
+    FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "set_IsMessageQueueRunning", [true]);
     if (FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "get_InRoom", [])) {
         FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "LeaveRoom", [false]);
     }
-    g_sniperTarget = target;
-    g_sniperClean = cleanName || target;
+    g_sniperTarget = roomObj.raw;
+    g_sniperClean = roomObj.clean || roomObj.raw;
+    g_sniperLine = roomObj.ln || "";
+    g_sniperLocked = !!roomObj.locked;
     g_sniperTries = 0;
     g_sniperOn = true;
     FEW1N.log("🎯 [SNIPER] Başladı -> Hedef: " + g_sniperClean);
@@ -559,14 +564,19 @@ function stepFullRoomSniper() {
         g_sniperOn = false;
         rebuildOTAMenu();
         FEW1N.log("✅ [SNIPER] Dolu odaya girildi: " + entered + " (" + tries + ". deneme)");
-        FEW1N.alert("✅ Dolu Odaya Girildi!", "Oda: " + entered + "\n" + tries + ". denemede yer açıldığı anda yakalandı!");
+        FEW1N.alert("✅ Dolu Odaya Girildi!", "Oda: " + entered + "\n" + tries + ". denemede içeri girildi!");
         return;
     }
     g_sniperTries++;
-    // Doğrudan PhotonNetwork.JoinRoom -> UI 4/4 kilidini aşar, 3/4 olduğu salisede kapar!
-    FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "JoinRoom", [g_sniperTarget, null]);
+    FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "set_IsMessageQueueRunning", [true]);
+    // Yol 1: Doğrudan PhotonNetwork.JoinRoom (şifre paneli ve UI 4/4 kilidini aşar)
+    var ok = !!FEW1N.invoke("", "Photon.Pun", "PhotonNetwork", "JoinRoom", [g_sniperTarget, null]);
+    // Yol 2: Şifresiz odada oyun içi gerçek bağlantı metodu (HR_UI_RoomListLine.eqm) yedek dene
+    if (!ok && !g_sniperLocked && g_sniperLine && g_sniperLine.indexOf("@0x") === 0) {
+        FEW1N.invoke(g_sniperLine, "", "HR_UI_RoomListLine", "eqm", []);
+    }
     if (g_sniperTries % 15 === 0) {
-        FEW1N.log("🎯 [SNIPER] '" + (g_sniperClean || g_sniperTarget) + "' bekleniyor... (" + g_sniperTries + ". deneme)");
+        FEW1N.log("🎯 [SNIPER] '" + (g_sniperClean || g_sniperTarget) + "' bekleniyor... (" + g_sniperTries + ". deneme, ok=" + ok + ")");
     }
 }
 
