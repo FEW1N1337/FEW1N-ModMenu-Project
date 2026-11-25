@@ -1,8 +1,8 @@
 // ============================================================================
-// FEW1N LIVE OTA SCRIPT (live.js) v4.8 — KALICI BAN + OTO VOTEKICK + MANUEL ODA AÇICI
+// FEW1N LIVE OTA SCRIPT (live.js) v4.9 — 4 KATMANLI KALICI BAN (ID+NİCK+PLAKA+ARAÇ) + OTO VOTEKICK
 // ============================================================================
 
-FEW1N.setMeta("4.8", "Kalıcı Ban + Girene Oto VoteKick + Manuel Oda Açıcı + Odamı En Üstte Tut");
+FEW1N.setMeta("4.9", "4 Katmanlı Kalıcı Ban (UserId + Nick + Plaka + Araç) + Oto VoteKick + Manuel Oda Açıcı");
 FEW1N.clearActions();
 
 var g_rainbowPaintOn = false;
@@ -137,7 +137,7 @@ function addBtn(id, title, color, fn) {
 }
 
 // ============================================================================
-// 🚫 KALICI BAN + ODAYA GİRENE OTO VOTEKICK OYLAMASI (v4.8 OTA)
+// 🚫 4 KATMANLI KALICI BAN (UserId + Nick + Plaka + Araç) + OTO VOTEKICK (v4.9 OTA)
 // ============================================================================
 function normalizeNick(s) {
     if (!s) return "";
@@ -147,6 +147,15 @@ function normalizeNick(s) {
         .replace(/\s+/g, " ")
         .trim()
         .toLowerCase();
+}
+
+function fnv1aHash(str) {
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h.toString(16);
 }
 
 function loadPermBans() {
@@ -176,6 +185,48 @@ function getPlayerUserId(plyHandle) {
     return (uid && typeof uid === "string") ? uid.trim() : "";
 }
 
+function getActorCarFingerprint(actorNr) {
+    var out = { vName: "", plate: "", carSig: "" };
+    if (!actorNr || actorNr <= 0) return out;
+    // 1) HR_PlayerHandler.VehicleName @ 0x30
+    var phs = FEW1N.findObjects("", "HR_PlayerHandler");
+    for (var i = 0; i < phs.length; i++) {
+        if (FEW1N.isMine(phs[i])) continue;
+        if (FEW1N.getOwnerActor(phs[i]) === actorNr) {
+            out.vName = FEW1N.readStr(phs[i], 0x30) || "";
+            break;
+        }
+    }
+    // 2) TuningManager -> TuningData.gkb() -> MPlate + tam modifiye imzası
+    var tm = findOtherTMByActor(actorNr);
+    if (tm) {
+        var td = FEW1N.invoke(tm, "", "TuningManager", "eaj", []);
+        var gkb = td ? FEW1N.invoke(td, "", "TuningData", "gkb", []) : "";
+        if (gkb && gkb.length > 20) {
+            if (out.vName && gkb.length > 40) {
+                out.carSig = out.vName + "#" + fnv1aHash(gkb);
+            }
+            try {
+                var obj = JSON.parse(gkb);
+                if (obj && obj.tuners) {
+                    for (var j = 0; j < obj.tuners.length; j++) {
+                        if (obj.tuners[j].key === "MPlate" && obj.tuners[j].value) {
+                            var pv = JSON.parse(obj.tuners[j].value);
+                            var pt = normalizeNick(pv && pv.t ? pv.t : "");
+                            // Çok kısa veya varsayılan genel plakaları ele (yanlış pozitif olmasın)
+                            if (pt.length >= 3 && pt !== "dreamroad" && pt !== "plate" && pt !== "car" && pt !== "000" && pt !== "123") {
+                                out.plate = pt;
+                            }
+                            break;
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+    }
+    return out;
+}
+
 function getVoteKickInst() {
     var vk = FEW1N.invoke("", "", "VoteKick", "kyb", []);
     if (vk && vk.indexOf("@0x") === 0) return vk;
@@ -185,7 +236,7 @@ function getVoteKickInst() {
     return (arr && arr.length > 0) ? arr[0] : "";
 }
 
-function sendVoteKickToActor(actorNr, displayName) {
+function sendVoteKickToActor(actorNr, displayName, reason) {
     var vk = getVoteKickInst();
     if (!vk) return false;
     var ply = getRoomPlayerHandle(actorNr);
@@ -198,37 +249,71 @@ function sendVoteKickToActor(actorNr, displayName) {
     if (!ok) ok = FEW1N.invoke(vk, "", "VoteKick", "VoteKickStart", [ply]);
     // Kendi EVET oyumuzu da anında bas
     FEW1N.invoke(vk, "", "VoteKick", "mkx", [true]);
-    FEW1N.log("🗳️ [OTO BAN-VOTEKICK] " + (displayName || ("#" + actorNr)) + " için oylama gönderildi!");
+    FEW1N.log("🗳️ [OTO BAN-VOTEKICK] " + (displayName || ("#" + actorNr)) + " (" + (reason || "ban") + ") -> Oylama gönderildi!");
     return true;
 }
 
-function addPermBanEntry(rawName, uid) {
+function addPermBanEntry(rawName, uid, fp) {
     var norm = normalizeNick(rawName);
     var cleanUid = (uid || "").trim();
-    if (!norm && !cleanUid) return false;
+    var plate = (fp && fp.plate) ? fp.plate : "";
+    var carSig = (fp && fp.carSig) ? fp.carSig : "";
+    if (!norm && !cleanUid && !plate && !carSig) return false;
     var list = loadPermBans();
     for (var i = 0; i < list.length; i++) {
-        if ((cleanUid && list[i].uid && list[i].uid === cleanUid) || (norm && list[i].nick === norm)) {
-            if (cleanUid && !list[i].uid) list[i].uid = cleanUid;
+        var e = list[i];
+        var same =
+            (cleanUid && e.uid && e.uid === cleanUid) ||
+            (norm && e.nick === norm) ||
+            (plate && e.plate && e.plate === plate) ||
+            (carSig && e.carSig && e.carSig === carSig);
+        if (same) {
+            if (cleanUid && !e.uid) e.uid = cleanUid;
+            if (plate && !e.plate) e.plate = plate;
+            if (carSig && !e.carSig) e.carSig = carSig;
+            if (norm && e.nick !== norm) {
+                e.aliases = e.aliases || [];
+                if (e.aliases.indexOf(norm) === -1) e.aliases.push(norm);
+            }
             savePermBans(list);
             return true;
         }
     }
-    list.push({ nick: norm, raw: (rawName || norm), uid: cleanUid });
+    list.push({ nick: norm, raw: (rawName || norm), uid: cleanUid, plate: plate, carSig: carSig, aliases: [] });
     savePermBans(list);
     return true;
 }
 
-function isPlayerPermBanned(rawName, uid) {
+function matchPermBan(rawName, uid, fp) {
     var list = loadPermBans();
-    if (list.length === 0) return false;
+    if (list.length === 0) return null;
     var norm = normalizeNick(rawName);
     var cleanUid = (uid || "").trim();
+    var plate = (fp && fp.plate) ? fp.plate : "";
+    var carSig = (fp && fp.carSig) ? fp.carSig : "";
     for (var i = 0; i < list.length; i++) {
-        if (cleanUid && list[i].uid && list[i].uid === cleanUid) return true;
-        if (norm && list[i].nick && list[i].nick === norm) return true;
+        var e = list[i];
+        var reason = "";
+        if (cleanUid && e.uid && e.uid === cleanUid) reason = "UserId";
+        else if (norm && e.nick && e.nick === norm) reason = "Nick";
+        else if (norm && e.aliases && e.aliases.indexOf(norm) !== -1) reason = "EskiNick";
+        else if (plate && e.plate && e.plate === plate) reason = "Plaka:" + plate;
+        else if (carSig && e.carSig && e.carSig === carSig) reason = "Araçİmzası";
+        if (reason) {
+            // İsim değiştirdiyse yeni ismini de otomatik kalıcı listeye öğren!
+            var changed = false;
+            if (norm && e.nick !== norm) {
+                e.aliases = e.aliases || [];
+                if (e.aliases.indexOf(norm) === -1) { e.aliases.push(norm); changed = true; }
+            }
+            if (cleanUid && !e.uid) { e.uid = cleanUid; changed = true; }
+            if (plate && !e.plate) { e.plate = plate; changed = true; }
+            if (carSig && !e.carSig) { e.carSig = carSig; changed = true; }
+            if (changed) savePermBans(list);
+            return reason;
+        }
     }
-    return false;
+    return null;
 }
 
 function scanAndVoteKickBanned() {
@@ -243,11 +328,13 @@ function scanAndVoteKickBanned() {
         if (!p || !p.actor) continue;
         var plyH = getRoomPlayerHandle(p.actor);
         var uid = getPlayerUserId(plyH);
-        if (isPlayerPermBanned(p.name, uid)) {
+        var fp = getActorCarFingerprint(p.actor);
+        var reason = matchPermBan(p.name, uid, fp);
+        if (reason) {
             var key = String(p.actor);
             if (!g_vkSentMap[key] || (now - g_vkSentMap[key]) >= 12000) {
                 g_vkSentMap[key] = now;
-                sendVoteKickToActor(p.actor, p.name);
+                sendVoteKickToActor(p.actor, p.name, reason);
                 return; // Aynı anda tek oylama başlat
             }
         }
@@ -258,20 +345,23 @@ addBtn("perm_ban_pick", "🚫 Kalıcı Banla + Oylama Gönder (Kişi Seç)", "re
     FEW1N.pickPlayer("🚫 Kimi Kalıcı Banlayıp Oylama Göndereceksin?", function (act, nm) {
         var plyH = getRoomPlayerHandle(act);
         var uid = getPlayerUserId(plyH);
-        addPermBanEntry(nm, uid);
-        var sent = sendVoteKickToActor(act, nm);
+        var fp = getActorCarFingerprint(act);
+        addPermBanEntry(nm, uid, fp);
+        var sent = sendVoteKickToActor(act, nm, "ManuelBan");
         FEW1N.alert(
-            "🚫 Kalıcı Banlandı!",
-            "Oyuncu: " + nm + (uid ? ("\nUserId: " + uid) : "") +
-            "\n\n• Kalıcı ban listesine eklendi (renk/harf değiştirse de tanınır)." +
-            "\n• VoteKick oylaması: " + (sent ? "GÖNDERİLDİ ✓" : "Odaya girdiğinde otomatik gönderilecek") +
-            "\n\nİpucu: Menüdeki 'Oylamayı Full Evet Yap (Oto 99+)' açıksa anında atılır!"
+            "🚫 4 Katmanlı Kalıcı Ban!",
+            "Oyuncu: " + nm +
+            "\n• UserId: " + (uid || "(odada gizli)") +
+            "\n• Plaka İzi: " + (fp.plate || "(yok/standart)") +
+            "\n• Araç İzi: " + (fp.carSig ? fp.vName + " ✓" : "(yok)") +
+            "\n• VoteKick Oylaması: " + (sent ? "GÖNDERİLDİ ✓" : "Girdiğinde otomatik gönderilecek") +
+            "\n\nİsmini değiştirse bile UserId, Plaka veya Araç izinden yakalanıp yeni ismi de banlanır!"
         );
     });
 });
 
 if (FEW1N.addMenuToggle) {
-    FEW1N.addMenuToggle("auto_ban_votekick", "🗳️ Oto Ban-VoteKick (Girene Oylama Gönder)", "Banlı kişi odaya girdiği anda otomatik VoteKick oylaması başlatır", true, function (isOn) {
+    FEW1N.addMenuToggle("auto_ban_votekick", "🗳️ Oto Ban-VoteKick (ID + Nick + Plaka + Araç)", "Banlı kişi isim değiştirse bile ID/Plaka/Araç izinden tanıyıp otomatik VoteKick atar", true, function (isOn) {
         g_autoBanVkOn = !!isOn;
         if (g_autoBanVkOn) scanAndVoteKickBanned();
     });
@@ -280,7 +370,7 @@ if (FEW1N.addMenuToggle) {
 addBtn("perm_ban_manual", "✏️ İsimle Kalıcı Banla (Elle Yaz)", "gold", function () {
     FEW1N.prompt("✏️ İsimle Kalıcı Banla", "Toxic/küfür eden oyuncunun nickini yaz:", "nick", "", function (txt) {
         if (!txt || !txt.trim()) return;
-        addPermBanEntry(txt.trim(), "");
+        addPermBanEntry(txt.trim(), "", null);
         FEW1N.alert("🚫 Kalıcı Ban Eklendi", "'" + txt.trim() + "' listeye eklendi.\nOdaya girdiği anda otomatik VoteKick oylaması gönderilecek!");
     });
 });
@@ -293,7 +383,13 @@ addBtn("perm_ban_list", "📋 Kalıcı Ban Listesi / Kaldır", "white", function
     }
     var lines = [];
     for (var i = 0; i < list.length; i++) {
-        lines.push((i + 1) + ". " + (list[i].raw || list[i].nick) + (list[i].uid ? (" [ID:" + list[i].uid.substring(0, 8) + "]") : ""));
+        var e = list[i];
+        var tags = [];
+        if (e.uid) tags.push("ID:" + e.uid.substring(0, 6));
+        if (e.plate) tags.push("Plaka:" + e.plate);
+        if (e.carSig) tags.push("Araç✓");
+        if (e.aliases && e.aliases.length > 0) tags.push("+" + e.aliases.length + "isim");
+        lines.push((i + 1) + ". " + (e.raw || e.nick) + (tags.length ? (" [" + tags.join("|") + "]") : ""));
     }
     FEW1N.prompt(
         "📋 Kalıcı Ban Listesi (" + list.length + " kişi)",
@@ -320,7 +416,8 @@ addBtn("perm_ban_list", "📋 Kalıcı Ban Listesi / Kaldır", "white", function
             var next = [];
             var removed = 0;
             for (var j = 0; j < cur.length; j++) {
-                if (cur[j].nick === nq) removed++;
+                var hit = (cur[j].nick === nq) || (cur[j].aliases && cur[j].aliases.indexOf(nq) !== -1);
+                if (hit) removed++;
                 else next.push(cur[j]);
             }
             savePermBans(next);
@@ -386,6 +483,7 @@ function getTurboRoomOpts() {
         if (opts && opts.indexOf("@0x") === 0) {
             FEW1N.invoke(opts, "Photon.Realtime", "RoomOptions", "set_IsVisible", [true]);
             FEW1N.invoke(opts, "Photon.Realtime", "RoomOptions", "set_IsOpen", [true]);
+            FEW1N.invoke(opts, "Photon.Realtime", "RoomOptions", "set_PublishUserId", [true]);
             FEW1N.writeInt(opts, 0x14, 31);     // MaxPlayers = 31
             FEW1N.writeInt(opts, 0x1C, ttlMs);  // EmptyRoomTtl (ayarlanan dakika)
             g_turboRoomOpts = opts;
